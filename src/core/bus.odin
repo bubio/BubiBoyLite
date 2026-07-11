@@ -38,6 +38,7 @@ Bus :: struct {
 	dma_start_delay:           int, // (再)開始までの残りM-cycle数(0=保留無し)。開始には1 M-cycleの遅延がある
 	dma_pending_source:        u16, // dma_start_delay が0になった時点で dma_source に反映される転送元
 	ppu:                       Ppu, // LCD レジスタ・モードタイミング・フレームバッファ(ppu.odin、T3-1)
+	apu:                       Apu, // 4ch + フレームシーケンサ + 48kHzサンプル生成(apu.odin、T5-1)
 	cart_load_error:           Cartridge_Parse_Error, // 直近の bus_load_rom 失敗理由(T4-2)。成功時は .None
 }
 
@@ -71,15 +72,17 @@ bus_destroy :: proc(bus: ^Bus) {
 // (T2-3/T2-4で確認済み、テスト ROM は自前で初期化するか値を仮定しない)。
 bus_power_on :: proc(bus: ^Bus) {
 	ppu_power_on(&bus.ppu)
+	apu_power_on(&bus.apu)
 }
 
 // bus_tick は t_cycles ぶん時間を進める。CPU の全メモリアクセスごとに呼ばれる。
-// Timer(timer.odin、T2-3)、PPU(ppu.odin、T3-2)、OAM DMA(T2-5)を駆動する。APU の駆動はフェーズ5以降。
+// Timer(timer.odin、T2-3)、PPU(ppu.odin、T3-2)、APU(apu.odin、T5-1)、OAM DMA(T2-5)を駆動する。
 // t_cycles は常に4の倍数(1 M-cycle単位)で渡される想定(architecture.md のタイミングモデル)。
 bus_tick :: proc(bus: ^Bus, t_cycles: int) {
 	bus.cycles += u64(t_cycles)
 	timer_tick(bus, t_cycles)
 	ppu_tick(bus, t_cycles)
+	apu_tick(&bus.apu, t_cycles)
 	for _ in 0 ..< t_cycles / 4 {
 		dma_tick_one_mcycle(bus)
 	}
@@ -180,6 +183,9 @@ bus_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 // SB/SC(シリアル)は serial.odin にハンドリングを委譲する(T1-7)。
 @(private)
 bus_io_read :: proc(bus: ^Bus, addr: u16) -> u8 {
+	if (addr >= NR10_ADDR && addr <= NR52_ADDR) || (addr >= WAVE_RAM_START && addr <= WAVE_RAM_END) {
+		return apu_read_register(&bus.apu, addr)
+	}
 	switch addr {
 	case JOYP_ADDR:
 		return joypad_read_p1(bus)
@@ -207,6 +213,10 @@ bus_io_read :: proc(bus: ^Bus, addr: u16) -> u8 {
 
 @(private)
 bus_io_write :: proc(bus: ^Bus, addr: u16, value: u8) {
+	if (addr >= NR10_ADDR && addr <= NR52_ADDR) || (addr >= WAVE_RAM_START && addr <= WAVE_RAM_END) {
+		apu_write_register(&bus.apu, addr, value)
+		return
+	}
 	switch addr {
 	case JOYP_ADDR:
 		joypad_write_p1(bus, value)

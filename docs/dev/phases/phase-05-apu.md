@@ -21,7 +21,7 @@ odin test tests -collection:bbl=src   # blargg dmg_sound 対象が PASS
 
 ### T5-1: APU 骨格・フレームシーケンサ・制御レジスタ
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: APU の駆動基盤と NR50/51/52 を作る。
 **作るもの**: `src/core/apu.odin`:
@@ -154,3 +154,17 @@ odin test tests -collection:bbl=src
 ## 検証ログ
 
 （タスク完了ごとに 1 行追記）
+
+2026-07-12 T5-1 完了: `src/core/apu.odin` 新規作成(構造体・NR52電源セマンティクス・
+読み出しマスク表・wave RAM・フレームシーケンサの巡回機構)。bus_tick から apu_tick を、
+bus_io_read/write から apu_read_register/apu_write_register を呼ぶよう bus.odin に配線。
+timer_write_div から apu_notify_div_write を呼ぶよう timer.odin に配線(DIV書き込み時の
+フレームシーケンサへの影響、dmg_sound 07 用の土台)。ch1-4 の実挙動(トリガー・duty・
+sweep・envelope・LFSR・ミキサー)はまだプレースホルダで常時無効(T5-2〜T5-5で追加、
+T3-1がLYを固定0のままにしたのと同じ方針)。tests/apu_test.odin 6件追加(読み出しマスク、
+NR52電源off/onでのステータス、電源offでのレジスタクリア/wave RAM保持/DMGのlengthデータ
+書き込み例外、length_counterのoff/on跨ぎ保持、フレームシーケンサの8step巡回、FF15/FF1Fが
+0xFFで読める)。既存 tests/bus_test.odin の「未実装IOレジスタ」テストが 0xFF10 を使っていて
+T5-1実装と衝突したため、真に未使用な 0xFF08 に差し替え。
+`odin build src/app -collection:bbl=src -out:bbl` 成功、
+`odin test tests -collection:bbl=src` 231件全パス(新規6件含む)。

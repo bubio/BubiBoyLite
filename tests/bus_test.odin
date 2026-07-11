@@ -29,10 +29,11 @@ test_bus_echo_mirrors_wram :: proc(t: ^testing.T) {
 
 @(test)
 test_bus_unimplemented_io_reads_ff :: proc(t: ^testing.T) {
+	// 0xFF08は未使用領域(TAC-IF間の空き)。0xFF10はT5-1でAPU用に実装したためここでは使わない。
 	bus: core.Bus
-	testing.expect(t, core.bus_read(&bus, 0xFF10) == 0xFF)
-	core.bus_write(&bus, 0xFF10, 0x00)
-	testing.expect(t, core.bus_read(&bus, 0xFF10) == 0xFF, "未実装IOレジスタの読み出しは常に0xFF")
+	testing.expect(t, core.bus_read(&bus, 0xFF08) == 0xFF)
+	core.bus_write(&bus, 0xFF08, 0x00)
+	testing.expect(t, core.bus_read(&bus, 0xFF08) == 0xFF, "未実装IOレジスタの読み出しは常に0xFF")
 }
 
 @(test)

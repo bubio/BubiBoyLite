@@ -93,12 +93,16 @@ timer_tick :: proc(bus: ^Bus, t_cycles: int) {
 
 // timer_write_div は DIV(0xFF04) への書き込みを処理する: 値によらず内部カウンタ全体を
 // 0にする。このとき選択ビットが1→0に落ちるなら TIMA も余分に進む(実機の仕様)。
+// 同じ内部カウンタの bit12 の落下エッジは APU のフレームシーケンサにも影響する
+// (apu_notify_div_write、T5-1)。
 timer_write_div :: proc(bus: ^Bus) {
 	old_signal := timer_signal(bus.div_counter, bus.tac)
+	old_div := bus.div_counter
 	bus.div_counter = 0
 	if old_signal {
 		timer_increment_tima(bus)
 	}
+	apu_notify_div_write(&bus.apu, old_div)
 }
 
 // timer_write_tima は TIMA(0xFF05) への書き込みを処理する。
