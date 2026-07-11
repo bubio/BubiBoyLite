@@ -1,5 +1,7 @@
 package core
 
+import "core:fmt"
+
 // カートリッジヘッダ解析(0x0134-0x014D)。BubiBoy Cartridge.fs のアルゴリズムを移植
 // (references.md「BubiBoy ↔ BubiBoyLite モジュール対応表」)。
 // このファイルはヘッダ解析のみを扱う。ROM/RAM/MBC 状態の実体は mbc.odin(T4-2 以降)。
@@ -195,6 +197,78 @@ classify_cgb_flag :: proc(code: u8) -> Cgb_Flag {
 	case:
 		return .Dmg_Only
 	}
+}
+
+// Cartridge は1本のロード済みカートリッジ(ヘッダ情報 + ROM + 外部RAM + MBC状態)を表す(T4-2)。
+// rom は借用スライス(所有権は呼び出し側に残る。emulator.odin のコメント参照)、
+// ram はカートリッジが external RAM を持つ場合のみ cartridge_init が確保して所有する
+// (MBC2 の内蔵512バイトRAMは Mbc2_State 側に埋め込むため、この ram フィールドは使わない。T4-3)。
+Cartridge :: struct {
+	info:      Cartridge_Info,
+	rom:       []u8, // 借用。所有権は呼び出し側
+	ram:       []u8, // 所有。cartridge_destroy で解放する
+	mbc:       Mbc_State,
+	ram_dirty: bool, // T4-6: mbc_write の実書き込みでのみ立つ(バッテリーセーブの保存タイミング判定用)
+}
+
+// cartridge_init はヘッダを解析し、外部RAMを確保し、MBC種別に応じた初期状態を作る。
+// rom の所有権は呼び出し側に残る(Cartridge.rom はそれを指す借用スライス)。
+cartridge_init :: proc(rom: []u8) -> (cart: Cartridge, err: Cartridge_Parse_Error) {
+	info, parse_err := cartridge_parse_header(rom)
+	if parse_err != .None {
+		return Cartridge{info = info}, parse_err
+	}
+
+	cart.info = info
+	cart.rom = rom
+
+	// MBC2 の内蔵RAMは Mbc2_State に埋め込むため、ここでは確保しない(T4-3)。
+	if info.mbc_kind != .Mbc2 && info.ram_size > 0 {
+		cart.ram = make([]u8, info.ram_size)
+	}
+
+	switch info.mbc_kind {
+	case .Rom_Only:
+		cart.mbc = Mbc_None{}
+	case .Mbc1:
+		cart.mbc = Mbc1_State {
+			rom_bank_low5 = 1,
+		}
+	case .Mbc2, .Mbc3, .Mbc5:
+		// T4-3〜T4-5 で実装され次第、対応する *_State の初期値に置き換える。
+		// それまでは ROM only 相当(バンク0/1固定、外部RAM無効)にフォールバックする。
+		cart.mbc = Mbc_None{}
+	}
+
+	return cart, .None
+}
+
+// cartridge_destroy は cartridge_init が確保した外部RAMを解放する(ROM 自体は借用のため解放しない)。
+cartridge_destroy :: proc(cart: ^Cartridge) {
+	if len(cart.ram) > 0 {
+		delete(cart.ram)
+	}
+	cart.ram = nil
+}
+
+// cartridge_error_message は Cartridge_Parse_Error を app 側表示用の文字列に変換する
+// (T4-1「未対応種別は明示的なエラーを返し、app 側で『未対応カートリッジ (type=0xNN)』と表示」)。
+cartridge_error_message :: proc(err: Cartridge_Parse_Error, type_code: u8) -> string {
+	switch err {
+	case .None:
+		return ""
+	case .Header_Too_Small:
+		return "ROM データが小さすぎてヘッダを読めません"
+	case .Unsupported_Type:
+		return fmt.tprintf("未対応カートリッジ (type=0x%02X)", type_code)
+	case .Unsupported_Rom_Size:
+		return "未対応の ROM サイズコードです"
+	case .Unsupported_Ram_Size:
+		return "未対応の RAM サイズコードです"
+	case .Rom_Smaller_Than_Header:
+		return "ROM ファイルサイズがヘッダの申告するサイズより小さいです"
+	}
+	return ""
 }
 
 // parse_title は 0x0134-0x0143 の16バイトを最初の 0x00 で打ち切って文字列化する。

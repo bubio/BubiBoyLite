@@ -38,7 +38,7 @@ odin test tests -collection:bbl=src   # cpu_instrs 統合版 + mooneye emulator-
 
 ### T4-2: MBC1
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: 最も普及した MBC1 のバンク切替を実装する。
 **作るもの**: `src/core/mbc.odin`:
@@ -158,3 +158,26 @@ ROM/RAMサイズコード変換、MBC2内蔵RAMの0x0149非依存、未対応種
 `odin test tests -collection:bbl=src` 164 tests 全パス(既存148 + 新規16)。
 `odin build src/app -collection:bbl=src` もクリーン。bus.odin へのMBC配線はT4-2で行う
 (このタスクはヘッダ解析のみで、既存のbus_load_rom(ROM-onlyそのままmap)は未変更)。
+
+2026-07-11 T4-2 完了: src/core/mbc.odin 新規作成(Mbc_State :: union { Mbc_None, Mbc1_State }、
+mbc_read/mbc_write)。src/core/cartridge.odin に Cartridge struct(info/rom借用/ram所有/mbc/
+ram_dirty)と cartridge_init/cartridge_destroy/cartridge_error_message を追加。
+bus.odin を大幅refactor: Bus.rom フィールドを Bus.cart(Cartridge)に置換し、0000-7FFF・
+A000-BFFFの読み書きをmbc_read/mbc_write経由に配線(既存のROM-onlyそのままmapは
+Mbc_Noneとして挙動保存)。bus_load_rom はカートリッジヘッダ解析込みになり、失敗理由は
+bus.cart_load_errorに残る(app側はcartridge_error_messageで整形、src/app/main.odinを更新)。
+既存テスト(cpu_*_test.odin/interrupt_test.odin/bus_test.odin/rom_runner.odin)の
+`bus.rom`参照は機械的に`bus.cart.rom`へ置換(意味は不変、借用スライスの所有権は従来どおり
+呼び出し側)。tests/mbc1_test.odin新規作成(8件: バンク0→1読み替え、5bitマスク後の0→1判定
+(0x20書き込みでも0x21が選ばれる)、ROM/RAMモード切替、RAM有効化/無効化、RAMバンク独立性)。
+tests/blargg_test.odin に cpu_instrs.gb 統合版(MBC1、64KiB)の@(test)を追加(許可リストには
+入れていなかったので除外作業は不要)。実測224,317,844 T-cycleかかることが判明したため、
+共通タイムアウト(120M)とは別にCPU_INSTRS_INTEGRATED_TIMEOUT_TCYCLES=240Mを
+rom_runner.odinに追加しrun_blargg_romにtimeout引数を持たせた(T-cycle数はホスト速度非依存の
+決定的な値なのでマージンを乗せて固定)。開発時の追加検証として mooneye emulator-only/mbc1/
+の bits_bank1・bits_bank2・bits_mode・bits_ramg・ram_64kb・ram_256kb・rom_512kb・rom_1Mb・
+rom_2Mb・rom_4Mb・rom_8Mb・rom_16Mb 全12本を手元で個別実行しPASSを確認済み(正式な@(test)化と
+fetch_test_roms.shへの追加はT4-7で行う。tests/roms/は.gitignore対象のためこの時点では
+未コミット)。`odin test tests -collection:bbl=src` 172 tests 全パス(既存164 + 新規8)、
+15.9秒(cpu_instrs.gb統合版の実行時間を含む)。`odin build src/app -collection:bbl=src`も
+クリーン。

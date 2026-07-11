@@ -107,3 +107,40 @@ blargg_cpu_instrs_11_op_a_hl :: proc(t: ^testing.T) {
 blargg_instr_timing :: proc(t: ^testing.T) {
 	run_blargg_test(t, "instr_timing/instr_timing", "instr_timing/instr_timing.gb")
 }
+
+// cpu_instrs 統合版(T4-2)。11本の個別テストを直列に実行する MBC1 カートリッジ(64KiB、
+// type=0x01)なので、MBC1 のバンク切替が正しく動くことの結合確認を兼ねる
+// (phase-04-cartridge.md T4-2 の完了条件)。共通タイムアウトを超えるため個別に長めの
+// タイムアウトを指定する(rom_runner.odin の CPU_INSTRS_INTEGRATED_TIMEOUT_TCYCLES 参照)。
+@(test)
+blargg_cpu_instrs_integrated :: proc(t: ^testing.T) {
+	path := fmt.tprintf("%s/%s", BLARGG_ROMS_DIR, "cpu_instrs/cpu_instrs.gb")
+
+	if !os.exists(path) {
+		fmt.printfln(
+			"blargg_test: ROM 未取得のためスキップ: %s (./scripts/fetch_test_roms.sh を実行してください)",
+			path,
+		)
+		return
+	}
+
+	result := run_blargg_rom(path, CPU_INSTRS_INTEGRATED_TIMEOUT_TCYCLES)
+	name := "cpu_instrs/cpu_instrs (integrated)"
+	expected_fail := is_expected_failure(name)
+
+	if expected_fail {
+		if result == .Pass {
+			testing.fail_now(
+				t,
+				fmt.tprintf(
+					"%s は expected_failures 許可リストに入っているが PASS した。tests/expected_failures.odin から外すこと",
+					name,
+				),
+			)
+		}
+		fmt.printfln("blargg_test: %s は許可リストにより %v でも成功扱い", name, result)
+		return
+	}
+
+	testing.expectf(t, result == .Pass, "%s: PASS を期待したが結果は %v だった", name, result)
+}

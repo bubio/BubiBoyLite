@@ -23,7 +23,7 @@ make_daa_system :: proc() -> (core.Cpu, core.Bus) {
 test_daa_add_0x15_plus_0x27 :: proc(t: ^testing.T) {
 	// 0x15 + 0x27 (BCD) = 0x3C (バイナリ加算結果、H=0,C=0) => DAA で 0x42 に補正
 	cpu, bus := make_daa_system()
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.a = 0x3C
 	core.cpu_set_flags(&cpu, false, false, false, false)
 	core.cpu_step(&cpu, &bus)
@@ -36,7 +36,7 @@ test_daa_add_0x15_plus_0x27 :: proc(t: ^testing.T) {
 test_daa_add_with_half_carry :: proc(t: ^testing.T) {
 	// 0x09 + 0x08 (BCD: 9+8=17) => バイナリ加算結果 0x11, H=1 => DAA で 0x17 に補正
 	cpu, bus := make_daa_system()
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.a = 0x11
 	core.cpu_set_flags(&cpu, false, false, true, false)
 	core.cpu_step(&cpu, &bus)
@@ -49,7 +49,7 @@ test_daa_add_carries_into_hundreds :: proc(t: ^testing.T) {
 	// 0x99 + 0x01 (BCD: 99+1=100) => バイナリ加算結果 0x9A, H=0,C=0
 	// => DAA で 0x00 に折り返り、C=1 (桁あふれ) がセットされる
 	cpu, bus := make_daa_system()
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.a = 0x9A
 	core.cpu_set_flags(&cpu, false, false, false, false)
 	core.cpu_step(&cpu, &bus)
@@ -62,7 +62,7 @@ test_daa_add_carries_into_hundreds :: proc(t: ^testing.T) {
 test_daa_add_carry_flag_forces_upper_correction :: proc(t: ^testing.T) {
 	// C フラグが既にセットされていれば、A の値によらず上位補正(+0x60)が入る
 	cpu, bus := make_daa_system()
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.a = 0x05
 	core.cpu_set_flags(&cpu, false, false, false, true)
 	core.cpu_step(&cpu, &bus)
@@ -74,7 +74,7 @@ test_daa_add_carry_flag_forces_upper_correction :: proc(t: ^testing.T) {
 test_daa_add_no_correction_needed :: proc(t: ^testing.T) {
 	// 0x11 + 0x14 (BCD: 11+14=25) => バイナリ結果 0x25 は既に正しい BCD => 補正なし
 	cpu, bus := make_daa_system()
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.a = 0x25
 	core.cpu_set_flags(&cpu, false, false, false, false)
 	core.cpu_step(&cpu, &bus)
@@ -87,7 +87,7 @@ test_daa_sub_66_minus_39 :: proc(t: ^testing.T) {
 	// 0x66 - 0x39 (BCD: 66-39=27) => バイナリ減算結果 0x2D, N=1,H=1(下位借り),C=0
 	// => DAA (減算側) で 0x27 に補正
 	cpu, bus := make_daa_system()
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.a = 0x2D
 	core.cpu_set_flags(&cpu, false, true, true, false)
 	core.cpu_step(&cpu, &bus)

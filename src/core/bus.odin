@@ -14,7 +14,7 @@ DMA_ADDR :: 0xFF46
 OAM_SIZE :: 160
 
 Bus :: struct {
-	rom:                       []u8, // ROM-only カートリッジ(32KiB)。MBC はフェーズ4
+	cart:                      Cartridge, // ヘッダ情報・ROM(借用)・外部RAM(所有)・MBC状態(T4-2、cartridge.odin/mbc.odin)
 	vram:                      [8192]u8,
 	wram:                      [8192]u8,
 	oam:                       [160]u8,
@@ -38,15 +38,31 @@ Bus :: struct {
 	dma_start_delay:           int, // (再)開始までの残りM-cycle数(0=保留無し)。開始には1 M-cycleの遅延がある
 	dma_pending_source:        u16, // dma_start_delay が0になった時点で dma_source に反映される転送元
 	ppu:                       Ppu, // LCD レジスタ・モードタイミング・フレームバッファ(ppu.odin、T3-1)
+	cart_load_error:           Cartridge_Parse_Error, // 直近の bus_load_rom 失敗理由(T4-2)。成功時は .None
 }
 
-// bus_load_rom は ROM-only カートリッジをそのまま map する(MBC はフェーズ4)。
+// bus_load_rom はヘッダを解析してカートリッジ(ROM/RAM/MBC状態)をロードする(T4-2)。
+// 失敗時は bus.cart_load_error に理由が残る(app 側は cartridge_error_message で整形できる)。
+// data の所有権は呼び出し側に残る(bus.cart.rom はそれを指す借用スライス)。
 bus_load_rom :: proc(bus: ^Bus, data: []u8) -> bool {
 	if len(data) == 0 {
+		bus.cart_load_error = .Header_Too_Small
 		return false
 	}
-	bus.rom = data
+	cart, err := cartridge_init(data)
+	if err != .None {
+		bus.cart_load_error = err
+		bus.cart = cart // type_code 等、エラーメッセージ表示に使える情報だけ残す
+		return false
+	}
+	bus.cart = cart
+	bus.cart_load_error = .None
 	return true
+}
+
+// bus_destroy は cartridge_init が確保した外部RAMを解放する(T4-2)。
+bus_destroy :: proc(bus: ^Bus) {
+	cartridge_destroy(&bus.cart)
 }
 
 // bus_power_on はブート ROM 完了直後の IO レジスタ状態を直接セットする(T3-8、
@@ -112,14 +128,11 @@ bus_read :: proc(bus: ^Bus, addr: u16) -> u8 {
 bus_read_raw :: proc(bus: ^Bus, addr: u16) -> u8 {
 	switch {
 	case addr <= 0x7FFF:
-		if int(addr) < len(bus.rom) {
-			return bus.rom[addr]
-		}
-		return 0xFF
+		return mbc_read(&bus.cart, addr)
 	case addr <= 0x9FFF:
 		return bus.vram[addr - 0x8000]
 	case addr <= 0xBFFF:
-		return 0xFF // 外部RAM未実装(フェーズ4)
+		return mbc_read(&bus.cart, addr)
 	case addr <= 0xDFFF:
 		return bus.wram[addr - 0xC000]
 	case addr <= 0xFDFF:
@@ -140,11 +153,11 @@ bus_read_raw :: proc(bus: ^Bus, addr: u16) -> u8 {
 bus_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 	switch {
 	case addr <= 0x7FFF:
-	// ROM への書き込みは無視(MBC バンク切替はフェーズ4)
+		mbc_write(&bus.cart, addr, value) // MBC バンク切替レジスタ(T4-2)
 	case addr <= 0x9FFF:
 		bus.vram[addr - 0x8000] = value
 	case addr <= 0xBFFF:
-	// 外部RAM未実装(フェーズ4)
+		mbc_write(&bus.cart, addr, value) // 外部RAM(T4-2)
 	case addr <= 0xDFFF:
 		bus.wram[addr - 0xC000] = value
 	case addr <= 0xFDFF:

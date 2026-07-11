@@ -22,7 +22,7 @@ make_halt_ei_system :: proc(program: []u8) -> (core.Cpu, core.Bus) {
 @(test)
 test_ei_delay_skips_interrupt_for_one_instruction :: proc(t: ^testing.T) {
 	cpu, bus := make_halt_ei_system([]u8{0xFB, 0x00, 0x00}) // EI; NOP; NOP
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	core.bus_write(&bus, 0xFFFF, 0x01) // IE: VBlank
 	core.bus_write(&bus, 0xFF0F, 0x01) // IF: VBlank(既に成立)
 
@@ -44,7 +44,7 @@ test_ei_delay_skips_interrupt_for_one_instruction :: proc(t: ^testing.T) {
 @(test)
 test_ei_immediately_followed_by_di_cancels_pending_enable :: proc(t: ^testing.T) {
 	cpu, bus := make_halt_ei_system([]u8{0xFB, 0xF3, 0x00, 0x00}) // EI; DI; NOP; NOP
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	core.bus_write(&bus, 0xFFFF, 0x01)
 	core.bus_write(&bus, 0xFF0F, 0x01)
 
@@ -62,7 +62,7 @@ test_ei_immediately_followed_by_di_cancels_pending_enable :: proc(t: ^testing.T)
 @(test)
 test_halt_bug_rereads_next_byte_when_ime_false_and_pending :: proc(t: ^testing.T) {
 	cpu, bus := make_halt_ei_system([]u8{0x76, 0x3C}) // HALT; INC A
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.ime = false
 	cpu.a = 0x00 // cpu_reset(.DMG) はA=0x01から始まるので明示的に0へ揃える
 	core.bus_write(&bus, 0xFFFF, 0x01)
@@ -86,7 +86,7 @@ test_halt_bug_rereads_next_byte_when_ime_false_and_pending :: proc(t: ^testing.T
 @(test)
 test_halt_wakes_and_dispatches_when_ime_true :: proc(t: ^testing.T) {
 	cpu, bus := make_halt_ei_system([]u8{0x76}) // HALT
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.ime = true
 
 	core.cpu_step(&cpu, &bus) // HALT: 保留中の割り込みが無いので実際に停止する
@@ -108,7 +108,7 @@ test_halt_wakes_and_dispatches_when_ime_true :: proc(t: ^testing.T) {
 @(test)
 test_halt_wakes_without_dispatch_when_ime_false_and_no_pending_at_halt_time :: proc(t: ^testing.T) {
 	cpu, bus := make_halt_ei_system([]u8{0x76, 0x00}) // HALT; NOP
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.ime = false
 	core.bus_write(&bus, 0xFFFF, 0x01)
 	core.bus_write(&bus, 0xFF0F, 0x00) // HALT実行時点では保留中でない(バグは発動しない)

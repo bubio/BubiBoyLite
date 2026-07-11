@@ -11,9 +11,10 @@ Emulator :: struct {
 	bus:         Bus,
 }
 
-// emulator_load_rom は ROM-only カートリッジ(MBCはフェーズ4)をロードし、CPUを
+// emulator_load_rom はカートリッジ(ヘッダ解析 + MBC 初期化、T4-1/T4-2)をロードし、CPUを
 // ブートROM完了直後の状態(references.md「ブート後レジスタ初期値」)にリセットする。
-// rom_data の所有権は呼び出し側に残る(bus.rom はスライスをそのまま参照するだけなので、
+// 失敗時は emu.bus.cart_load_error に理由が残る(cartridge_error_message で整形できる)。
+// rom_data の所有権は呼び出し側に残る(bus.cart.rom はスライスをそのまま参照するだけなので、
 // Emulator が使われている間は呼び出し側が rom_data を解放しないこと)。
 emulator_load_rom :: proc(emu: ^Emulator, rom_data: []u8) -> bool {
 	if !bus_load_rom(&emu.bus, rom_data) {

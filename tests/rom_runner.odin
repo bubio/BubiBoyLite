@@ -13,6 +13,11 @@ import core "bbl:core"
 // タイムアウト = 120,000,000 T-cycle (約 28.6 秒相当、testing.md 共通仕様)。
 ROM_TIMEOUT_TCYCLES :: 120_000_000
 
+// cpu_instrs.gb(統合版、T4-2)は11本の個別テストを直列に実行するため共通タイムアウトを
+// 超える。実測 224,317,844 T-cycle で PASS することを確認済み(2026-07-11、MBC1実装完了時)。
+// T-cycle数はホストの実行速度に依存しない決定的な値なのでマージンを乗せて固定する。
+CPU_INSTRS_INTEGRATED_TIMEOUT_TCYCLES :: 240_000_000
+
 Rom_Result :: enum {
 	Pass,
 	Fail,
@@ -22,7 +27,9 @@ Rom_Result :: enum {
 // run_blargg_rom は ROM-only カートリッジをロードして実行し、シリアル出力に
 // "Passed"/"Failed" が現れたタイミングで判定する。タイムアウトまで現れなければ .Timeout。
 // 失敗・タイムアウト時はデバッグのためシリアル出力全文を標準エラーに出す。
-run_blargg_rom :: proc(path: string) -> Rom_Result {
+// timeout_tcycles を省略すると共通タイムアウト(ROM_TIMEOUT_TCYCLES)を使う
+// (cpu_instrs.gb統合版のように長時間かかるROMは呼び出し側で個別に指定する、T4-2)。
+run_blargg_rom :: proc(path: string, timeout_tcycles: u64 = ROM_TIMEOUT_TCYCLES) -> Rom_Result {
 	data, err := os.read_entire_file(path, context.allocator)
 	if err != nil {
 		fmt.eprintfln("rom_runner: ROM を読み込めません: %s (%v)", path, err)
@@ -31,17 +38,18 @@ run_blargg_rom :: proc(path: string) -> Rom_Result {
 
 	cpu: core.Cpu
 	bus: core.Bus
-	defer delete(bus.rom)
+	defer core.bus_destroy(&bus)
+	defer delete(bus.cart.rom)
 	defer delete(bus.serial_log)
 
 	if !core.bus_load_rom(&bus, data) {
-		fmt.eprintfln("rom_runner: ROM のロードに失敗: %s", path)
+		fmt.eprintfln("rom_runner: ROM のロードに失敗: %s (%v)", path, bus.cart_load_error)
 		return .Fail
 	}
 	core.bus_power_on(&bus)
 	core.cpu_reset(&cpu, .DMG)
 
-	for bus.cycles < ROM_TIMEOUT_TCYCLES {
+	for bus.cycles < timeout_tcycles {
 		core.cpu_step(&cpu, &bus)
 
 		log_str := core.serial_get_log(&bus)
@@ -81,11 +89,12 @@ run_mooneye_rom :: proc(path: string) -> Rom_Result {
 
 	cpu: core.Cpu
 	bus: core.Bus
-	defer delete(bus.rom)
+	defer core.bus_destroy(&bus)
+	defer delete(bus.cart.rom)
 	defer delete(bus.serial_log)
 
 	if !core.bus_load_rom(&bus, data) {
-		fmt.eprintfln("rom_runner: ROM のロードに失敗: %s", path)
+		fmt.eprintfln("rom_runner: ROM のロードに失敗: %s (%v)", path, bus.cart_load_error)
 		return .Fail
 	}
 	core.bus_power_on(&bus)

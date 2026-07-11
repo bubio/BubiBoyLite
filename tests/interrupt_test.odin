@@ -19,7 +19,7 @@ make_interrupt_system :: proc() -> (core.Cpu, core.Bus) {
 @(test)
 test_interrupt_dispatch_jumps_to_vblank_handler :: proc(t: ^testing.T) {
 	cpu, bus := make_interrupt_system()
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.ime = true
 	cpu.pc = 0x0200
 	cpu.sp = 0xFFFE
@@ -40,7 +40,7 @@ test_interrupt_dispatch_jumps_to_vblank_handler :: proc(t: ^testing.T) {
 @(test)
 test_interrupt_priority_is_lowest_bit_first :: proc(t: ^testing.T) {
 	cpu, bus := make_interrupt_system()
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.ime = true
 	cpu.pc = 0x0200
 	cpu.sp = 0xFFFE
@@ -56,7 +56,7 @@ test_interrupt_priority_is_lowest_bit_first :: proc(t: ^testing.T) {
 @(test)
 test_no_dispatch_when_ime_false :: proc(t: ^testing.T) {
 	cpu, bus := make_interrupt_system()
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.ime = false
 	cpu.pc = 0x0100
 	core.bus_write(&bus, 0xFFFF, 0x01)
@@ -72,7 +72,7 @@ test_no_dispatch_when_ime_false :: proc(t: ^testing.T) {
 @(test)
 test_no_dispatch_when_if_and_ie_do_not_overlap :: proc(t: ^testing.T) {
 	cpu, bus := make_interrupt_system()
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.ime = true
 	cpu.pc = 0x0100
 	core.bus_write(&bus, 0xFFFF, 0x02) // IE: Statのみ
@@ -90,7 +90,7 @@ test_no_dispatch_when_if_and_ie_do_not_overlap :: proc(t: ^testing.T) {
 @(test)
 test_ie_push_cancels_dispatch_when_high_byte_write_clears_pending_bit :: proc(t: ^testing.T) {
 	cpu, bus := make_interrupt_system()
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.ime = true
 	cpu.pc = 0x0200 // PCH=0x02: 上位バイトPUSHでIEが0x02(Stat)になる
 	cpu.sp = 0x0000 // 上位バイトはSP-1=0xFFFF(IE)へ書かれる
@@ -110,7 +110,7 @@ test_ie_push_cancels_dispatch_when_high_byte_write_clears_pending_bit :: proc(t:
 @(test)
 test_ie_push_low_byte_corruption_is_too_late_to_cancel :: proc(t: ^testing.T) {
 	cpu, bus := make_interrupt_system()
-	defer delete(bus.rom)
+	defer delete(bus.cart.rom)
 	cpu.ime = true
 	cpu.pc = 0x0300
 	cpu.sp = 0x0001 // 下位バイトはSP-2=0xFFFF(IE)へ書かれる、上位バイトはSP-1=0x0000(ROM)

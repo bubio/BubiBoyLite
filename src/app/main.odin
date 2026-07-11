@@ -51,7 +51,8 @@ run_rom_window :: proc(opts: Options) {
 
 	emu: core.Emulator
 	if !core.emulator_load_rom(&emu, rom_data) {
-		fmt.eprintfln("ROM のロードに失敗しました: %s", opts.rom_path)
+		message := core.cartridge_error_message(emu.bus.cart_load_error, emu.bus.cart.info.type_code)
+		fmt.eprintfln("ROM のロードに失敗しました: %s (%s)", opts.rom_path, message)
 		os.exit(1)
 	}
 
