@@ -14,7 +14,7 @@ make_halt_ei_system :: proc(program: []u8) -> (core.Cpu, core.Bus) {
 		rom[0x0100 + i] = b
 	}
 	_ = core.bus_load_rom(&bus, rom)
-	core.cpu_reset(&cpu, .DMG)
+	core.cpu_reset(&cpu, .Dmg)
 	return cpu, bus
 }
 
@@ -64,7 +64,7 @@ test_halt_bug_rereads_next_byte_when_ime_false_and_pending :: proc(t: ^testing.T
 	cpu, bus := make_halt_ei_system([]u8{0x76, 0x3C}) // HALT; INC A
 	defer delete(bus.cart.rom)
 	cpu.ime = false
-	cpu.a = 0x00 // cpu_reset(.DMG) はA=0x01から始まるので明示的に0へ揃える
+	cpu.a = 0x00 // cpu_reset(.Dmg) はA=0x01から始まるので明示的に0へ揃える
 	core.bus_write(&bus, 0xFFFF, 0x01)
 	core.bus_write(&bus, 0xFF0F, 0x01) // 割り込み保留中
 

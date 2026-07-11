@@ -47,7 +47,7 @@ run_blargg_rom :: proc(path: string, timeout_tcycles: u64 = ROM_TIMEOUT_TCYCLES)
 		return .Fail
 	}
 	core.bus_power_on(&bus)
-	core.cpu_reset(&cpu, .DMG)
+	core.cpu_reset(&cpu, .Dmg)
 
 	for bus.cycles < timeout_tcycles {
 		core.cpu_step(&cpu, &bus)
@@ -99,7 +99,7 @@ run_blargg_rom_mem_result :: proc(path: string, timeout_tcycles: u64 = ROM_TIMEO
 		return .Fail
 	}
 	core.bus_power_on(&bus)
-	core.cpu_reset(&cpu, .DMG)
+	core.cpu_reset(&cpu, .Dmg)
 
 	for bus.cycles < timeout_tcycles {
 		core.cpu_step(&cpu, &bus)
@@ -168,7 +168,7 @@ run_mooneye_rom :: proc(path: string) -> Rom_Result {
 		return .Fail
 	}
 	core.bus_power_on(&bus)
-	core.cpu_reset(&cpu, .DMG)
+	core.cpu_reset(&cpu, .Dmg)
 	cpu.debug_break_on_ld_b_b = true
 
 	for bus.cycles < ROM_TIMEOUT_TCYCLES {

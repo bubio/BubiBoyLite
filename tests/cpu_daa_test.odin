@@ -15,7 +15,7 @@ make_daa_system :: proc() -> (core.Cpu, core.Bus) {
 	rom := make([]u8, 32768)
 	rom[0x0100] = 0x27 // DAA
 	_ = core.bus_load_rom(&bus, rom)
-	core.cpu_reset(&cpu, .DMG)
+	core.cpu_reset(&cpu, .Dmg)
 	return cpu, bus
 }
 

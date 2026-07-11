@@ -30,7 +30,7 @@ test_all_opcodes_are_handled :: proc(t: ^testing.T) {
 		rom := make([]u8, 32768)
 		rom[0x0100] = op
 		_ = core.bus_load_rom(&bus, rom)
-		core.cpu_reset(&cpu, .DMG)
+		core.cpu_reset(&cpu, .Dmg)
 		core.cpu_step(&cpu, &bus)
 
 		if is_known_illegal(op) {
@@ -60,7 +60,7 @@ test_all_cb_opcodes_are_handled :: proc(t: ^testing.T) {
 		rom[0x0100] = 0xCB
 		rom[0x0101] = op
 		_ = core.bus_load_rom(&bus, rom)
-		core.cpu_reset(&cpu, .DMG)
+		core.cpu_reset(&cpu, .Dmg)
 		core.cpu_step(&cpu, &bus)
 
 		testing.expect(

@@ -22,7 +22,7 @@ odin test tests -collection:bbl=src   # cgb_acid2 が PASS
 
 ### T6-1: CGB モードと起動状態
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: モード判定と CGB のブート後状態を実装する。
 **作るもの**:
@@ -167,3 +167,13 @@ odin test tests -collection:bbl=src
 ## 検証ログ
 
 （タスク完了ごとに 1 行追記）
+
+2026-07-12 T6-1 完了: `Gb_Mode :: enum { Dmg, Cgb }` を hardware.odin に追加し、cpu.odin にあった
+重複概念の `Console_Mode` は削除して `Gb_Mode` に統一(cpu_reset のシグネチャも変更、既存呼び出し元
+(tests/*.odin 含む)を全て追従させた)。`Bus` に `mode: Gb_Mode` を追加し、`emulator_load_rom` が
+ヘッダ 0x0143(拡張子ではない)から `gb_mode_from_cgb_flag` で判定して設定するようにした。
+単体テスト3件追加(tests/cgb_mode_test.odin): 0x80/0xC0 で Cgb モード・A=0x11、CGBフラグ無しで
+Dmg モード・A=0x01 を確認。`odin test tests -collection:bbl=src` 273 tests 全パス(既存270+新規3、
+dmg-acid2ハッシュ含めリグレッションなし)。CGB固有ハードウェアレジスタ(VBK/SVBK/KEY1/HDMA/
+BCPS/OCPS)の初期値はレジスタ自体がまだ存在しないため、それぞれの実装タスク(T6-2/3/4/6/7)で
+合わせて設定する方針とした(このタスクではCPUレジスタとモード判定のみ)。

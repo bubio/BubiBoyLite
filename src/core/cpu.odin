@@ -11,12 +11,6 @@ FLAG_N :: 0x40 // Subtract
 FLAG_H :: 0x20 // Half carry
 FLAG_C :: 0x10 // Carry
 
-// 起動後レジスタ初期値を切り替えるための実行モード。
-Console_Mode :: enum {
-	DMG,
-	CGB,
-}
-
 Cpu :: struct {
 	a, f, b, c, d, e, h, l: u8,
 	sp, pc:                 u16,
@@ -106,14 +100,14 @@ cpu_flag_c :: proc(cpu: ^Cpu) -> bool {
 
 // cpu_reset はブート ROM 完了直後のレジスタ状態を直接セットする
 // (実 BIOS は読み込まない。references.md の表を参照)。
-cpu_reset :: proc(cpu: ^Cpu, mode: Console_Mode) {
+cpu_reset :: proc(cpu: ^Cpu, mode: Gb_Mode) {
 	switch mode {
-	case .DMG:
+	case .Dmg:
 		cpu_set_af(cpu, 0x01B0)
 		cpu_set_bc(cpu, 0x0013)
 		cpu_set_de(cpu, 0x00D8)
 		cpu_set_hl(cpu, 0x014D)
-	case .CGB:
+	case .Cgb:
 		cpu_set_af(cpu, 0x1180)
 		cpu_set_bc(cpu, 0x0000)
 		cpu_set_de(cpu, 0xFF56)

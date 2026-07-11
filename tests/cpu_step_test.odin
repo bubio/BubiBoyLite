@@ -14,7 +14,7 @@ make_test_system :: proc(program: []u8) -> (core.Cpu, core.Bus) {
 		rom[0x0100 + i] = b
 	}
 	_ = core.bus_load_rom(&bus, rom)
-	core.cpu_reset(&cpu, .DMG)
+	core.cpu_reset(&cpu, .Dmg)
 	return cpu, bus
 }
 

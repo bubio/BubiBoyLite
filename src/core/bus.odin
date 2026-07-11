@@ -14,6 +14,7 @@ DMA_ADDR :: 0xFF46
 OAM_SIZE :: 160
 
 Bus :: struct {
+	mode:                      Gb_Mode, // T6-1: ヘッダのCGBフラグから決まる実行モード(emulator_load_romが設定)
 	cart:                      Cartridge, // ヘッダ情報・ROM(借用)・外部RAM(所有)・MBC状態(T4-2、cartridge.odin/mbc.odin)
 	vram:                      [8192]u8,
 	wram:                      [8192]u8,

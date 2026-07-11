@@ -20,8 +20,10 @@ emulator_load_rom :: proc(emu: ^Emulator, rom_data: []u8) -> bool {
 	if !bus_load_rom(&emu.bus, rom_data) {
 		return false
 	}
+	// T6-1: モード判定はヘッダのCGBフラグ(0x0143)のみで行う(拡張子ではない。落とし穴)。
+	emu.bus.mode = gb_mode_from_cgb_flag(emu.bus.cart.info.cgb_flag)
 	bus_power_on(&emu.bus)
-	cpu_reset(&emu.cpu, .DMG)
+	cpu_reset(&emu.cpu, emu.bus.mode)
 	return true
 }
 

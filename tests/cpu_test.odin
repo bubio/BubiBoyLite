@@ -44,7 +44,7 @@ test_cpu_set_flags :: proc(t: ^testing.T) {
 @(test)
 test_cpu_reset_dmg :: proc(t: ^testing.T) {
 	cpu: core.Cpu
-	core.cpu_reset(&cpu, .DMG)
+	core.cpu_reset(&cpu, .Dmg)
 	testing.expect(t, core.cpu_af(&cpu) == 0x01B0)
 	testing.expect(t, core.cpu_bc(&cpu) == 0x0013)
 	testing.expect(t, core.cpu_de(&cpu) == 0x00D8)
@@ -58,7 +58,7 @@ test_cpu_reset_dmg :: proc(t: ^testing.T) {
 @(test)
 test_cpu_reset_cgb :: proc(t: ^testing.T) {
 	cpu: core.Cpu
-	core.cpu_reset(&cpu, .CGB)
+	core.cpu_reset(&cpu, .Cgb)
 	testing.expect(t, core.cpu_af(&cpu) == 0x1180)
 	testing.expect(t, core.cpu_bc(&cpu) == 0x0000)
 	testing.expect(t, core.cpu_de(&cpu) == 0xFF56)
