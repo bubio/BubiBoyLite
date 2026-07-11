@@ -96,7 +96,7 @@ odin test tests -collection:bbl=src
 
 ### T0-4: ビルドスクリプト
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: ローカルと CI が共有するビルドスクリプトを作る（M88M 方式）。
 **作るもの**:
@@ -202,3 +202,4 @@ grep "mise install" README.md
 2026-07-11 T0-1 完了: odin build src/app -collection:bbl=src -out:bbl && ./bbl => "BubiBoyLite" 出力, odin test tests -collection:bbl=src => 1 test passed
 2026-07-11 T0-2 完了: ./bbl -v => "bbl 0.1.0" exit=0, ./bbl -h に --scale/--fullscreen 記載を確認
 2026-07-11 T0-3 完了: scale 12→8 丸め確認、--shader bogus/2重ROM指定で exit=1、odin test tests -collection:bbl=src 8 tests 全パス (cli_test.odin 7本追加)
+2026-07-11 T0-4 完了: ./scripts/build_macos.sh --test && ./bbl -v => "bbl 0.1.0"、build_linux.sh は sh -n で構文チェック済み（実行環境が macOS のため実ビルドは未検証）、build_win.ps1 は pwsh 未導入のため構文チェック未実施（構造は macos/linux 版と同一）
