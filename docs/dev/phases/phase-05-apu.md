@@ -78,7 +78,7 @@ odin test tests -collection:bbl=src   # blargg dmg_sound 対象が PASS
 
 ### T5-4: ノイズチャンネル (ch4)
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: LFSR ノイズの ch4 を実装する。
 **作るもの**: apu.odin:
@@ -198,3 +198,17 @@ position(0-31)を進める。`apu_wave_current_nibble(apu)`(公開関数)でFF30
 リスト残留、理由コメント付きで対応予定、フェーズドキュメントの「落とし穴」どおり)。
 `odin build src/app -collection:bbl=src -out:bbl` 成功、
 `odin test tests -collection:bbl=src` 247件全パス(新規6件含む)。
+
+2026-07-12 T5-4 完了: apu.odin に ch4(ノイズ)を実装。15bit LFSR: XOR(bit0,bit1)を
+bit14に挿入して右シフト、NR43 bit3=1(7bitモード)ならbit6にも同じ値を書き込む。周期は
+divisor(NR43下位3bit、表: 0→8,1→16,2→32,...n→n*16) << shift(NR43上位4bit)。length/
+エンベロープ/トリガーはT5-2の共通ヘルパ(apu_apply_length_and_trigger)をそのまま流用。
+LFSR系列の期待値はPythonで実装と同一アルゴリズムを独立に再現して求めた(検証目的の
+セカンドオピニオン、tests/apu_noise_test.odin冒頭コメント参照)。出力(LFSR bit0の反転)の
+実際の音量スケーリングはT5-5のミキサーで扱う(wave chのニブル読み出しと同様、生データへの
+アクセス=LFSR状態は既にpublicフィールドなので追加ヘルパは不要)。
+tests/apu_noise_test.odin 新規6件(トリガーでのLFSR初期化とDACゲート、15bit LFSR系列4ステップ、
+7bit LFSR系列3ステップ、divisor表に基づく周期タイミング、length満了での停止、DAC offでの
+即停止)。
+`odin build src/app -collection:bbl=src -out:bbl` 成功、
+`odin test tests -collection:bbl=src` 253件全パス(新規6件含む)。

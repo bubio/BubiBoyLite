@@ -482,6 +482,54 @@ apu_trigger_wave :: proc(apu: ^Apu) {
 	apu.wave.enabled = apu.wave.dac_enabled
 }
 
+// --- ch4: ノイズ(T5-4) ---
+
+// apu_noise_divisors は NR43 下位3bit(divisor code)から実際の除数(divisor)への変換表。
+// 0→8, 1→16, 2→32, ... n→n*16(n>=1)。Pan Docs "Sound Channel 4"。
+@(private)
+apu_noise_divisors := [8]int{8, 16, 32, 48, 64, 80, 96, 112}
+
+// apu_noise_period は NR43(divisor code<<3 | shift<<4 相当)から周期タイマーの再ロード値を
+// 返す: divisor(下位3bit) << shift(上位4bit)。
+@(private)
+apu_noise_period :: proc(nr43: u8) -> int {
+	divisor := apu_noise_divisors[nr43 & 0x07]
+	shift := uint(nr43 >> 4)
+	return divisor << shift
+}
+
+// apu_tick_noise は ch4 の周期タイマーを1 T-cycle進める。15bit LFSRは
+// XOR(bit0,bit1)をbit14に挿入して右シフトする。NR43 bit3=1(7bitモード)なら同じ結果を
+// bit6にも書き込む(T5-4)。
+@(private)
+apu_tick_noise :: proc(apu: ^Apu) {
+	ch := &apu.noise
+	if !ch.enabled {
+		return
+	}
+	ch.timer -= 1
+	if ch.timer <= 0 {
+		ch.timer += apu_noise_period(apu.nr43)
+		feedback := (ch.lfsr & 1) ~ ((ch.lfsr >> 1) & 1)
+		ch.lfsr = (ch.lfsr >> 1) | (feedback << 14)
+		if apu.nr43 & 0x08 != 0 {
+			ch.lfsr = (ch.lfsr &~ u16(0x0040)) | (feedback << 6)
+		}
+	}
+}
+
+// apu_trigger_noise はch4のNR44トリガー(bit7=1)時の初期化: 周期タイマー・エンベロープを
+// リロードし、LFSRを全bit1(0x7FFF)にリセットする(T5-4)。
+@(private)
+apu_trigger_noise :: proc(apu: ^Apu) {
+	ch := &apu.noise
+	ch.envelope.volume = ch.envelope.initial_volume
+	ch.envelope.timer = ch.envelope.period
+	ch.timer = apu_noise_period(apu.nr43)
+	ch.lfsr = 0x7FFF
+	ch.enabled = ch.dac_enabled
+}
+
 // apu_clock_frame_sequencer は512Hzのフレームシーケンサを1step進める。
 // length は step 0,2,4,6 / エンベロープは step 7 / スイープは step 2,6。
 @(private)
@@ -538,6 +586,7 @@ apu_tick :: proc(apu: ^Apu, t_cycles: int) {
 		apu_tick_pulse(&apu.pulse1)
 		apu_tick_pulse(&apu.pulse2)
 		apu_tick_wave(apu)
+		apu_tick_noise(apu)
 	}
 }
 
@@ -737,6 +786,9 @@ apu_write_register :: proc(apu: ^Apu, addr: u16, value: u8) {
 		apu.noise.length_counter = 64 - int(value & 0x3F)
 	case NR42_ADDR:
 		apu.nr42 = value
+		apu.noise.envelope.initial_volume = int(value >> 4)
+		apu.noise.envelope.direction = value & 0x08 != 0 ? .Increase : .Decrease
+		apu.noise.envelope.period = int(value & 0x07)
 		apu.noise.dac_enabled = value & 0xF8 != 0
 		if !apu.noise.dac_enabled {
 			apu.noise.enabled = false
@@ -744,8 +796,21 @@ apu_write_register :: proc(apu: ^Apu, addr: u16, value: u8) {
 	case NR43_ADDR:
 		apu.nr43 = value
 	case NR44_ADDR:
+		trigger := value & 0x80 != 0
+		new_length_enabled := value & 0x40 != 0
 		apu.nr44 = value & 0x7F
-		apu.noise.length_enabled = value & 0x40 != 0
+		apu_apply_length_and_trigger(
+			&apu.noise.length_counter,
+			&apu.noise.length_enabled,
+			&apu.noise.enabled,
+			apu,
+			new_length_enabled,
+			trigger,
+			64,
+		)
+		if trigger {
+			apu_trigger_noise(apu)
+		}
 
 	case NR50_ADDR:
 		apu.nr50 = value
