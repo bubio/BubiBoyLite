@@ -133,7 +133,7 @@ odin test tests -collection:bbl=src
 
 ### T2-7: Mooneye timer / intr 系 + Blargg 02 全パス
 
-- [x] 完了
+- [ ] 完了
 
 **目的**: フェーズ 2 のマイルストーン。タイミング系のバグを潰し切る。
 **作るもの**: デバッグと修正のみ。対象:
@@ -270,23 +270,57 @@ JOYP_ADDR(0xFF00)をそれぞれ `joypad_read_p1`/`joypad_write_p1` に委譲。
   ie_push.s のRound1/Round3を手でトレースして別途検証済み(T2-1参照)。
 - `odin test tests -collection:bbl=src`: 128 tests 全パス。
 
-2026-07-11 T2-7 完了(フェーズ2マイルストーン): デバッグ・修正フェーズ。T2-1〜T2-6を通じて
-段階的に許可リストを整理してきた結果を最終確認した。
-- 対象ROMの内訳(全て `odin test tests -collection:bbl=src` で確認):
-  - mooneye timer/ 13本: 12本PASS。rapid_toggle のみFAIL(タイマー割り込みは発生するが
-    実機ANDゲート回路レベルのグリッチ挙動までは再現できておらずBC指紋が不一致。理由付きで
-    許可リストに残留、要再挑戦)。
-  - mooneye intr系: if_ie_registers・intr_timing・rapid_di_ei はPASS。ie_push は
-    disable_ppu_safe(タイムアウト無し版)がテスト本体到達前に無限ループするため
-    フェーズ3送り(逆アセンブルで確認済み、T2-5参照)。
-  - mooneye halt系: halt_ime1_timing はPASS。halt_ime0_ei・halt_ime0_nointr_timingは
-    wait_ly(タイムアウト無し)が実PPU無しでは終わらないためフェーズ3送り。
-  - blargg cpu_instrs/individual/02-interrupts: PASS。
-  - mooneye oam_dma系(T2-5で追加): basic・reg_read・oam_dma_start は同じく
-    disable_ppu_safe起因でフェーズ3送り。
-- 許可リスト(tests/expected_failures.odin)の最終状態: 7エントリ全てに理由コメント付き
-  (rapid_toggle 1件は要デバッグ、残り6件はフェーズ3のPPU実装待ち、逆アセンブルで
+2026-07-11 T2-7 未完了(ブロック): デバッグ・修正フェーズを実施したが、rapid_toggle 1本を
+残してブロックしている。この項目は正式には**完了とせず**、次セッションへ引き継ぐ。
+
+対象ROMの内訳(全て `odin test tests -collection:bbl=src` で確認):
+- mooneye timer/ 13本: 12本PASS。**rapid_toggle のみFAIL**(詳細は下記「ブロック理由」)。
+- mooneye intr系: if_ie_registers・intr_timing・rapid_di_ei はPASS。ie_push は
+  disable_ppu_safe(タイムアウト無し版)がテスト本体到達前に無限ループするためフェーズ3送り
+  (逆アセンブルで確認済み、T2-5参照)。
+- mooneye halt系: halt_ime1_timing はPASS。halt_ime0_ei・halt_ime0_nointr_timingは
+  wait_ly(タイムアウト無し)が実PPU無しでは終わらないためフェーズ3送り。
+- blargg cpu_instrs/individual/02-interrupts: PASS。
+- mooneye oam_dma系(T2-5で追加): basic・reg_read・oam_dma_start は同じく
+  disable_ppu_safe起因でフェーズ3送り。
+
+**ブロック理由**: `mooneye/acceptance/timer/rapid_toggle` はPPU非依存かつT2-3のDoDが
+明示的に要求しているテストであり、フェーズ3への正当な繰り延べ理由がない
+(他の6件と違い「未実装のPPUに依存している」という言い訳が成立しない)。
+そのためT2-7の完了条件「PPU非依存のテストが全PASS」を満たせておらず、このタスクは
+未完了として扱う(PLAN.mdのフェーズ状態も🟡のまま据え置く)。
+
+**試したこと**:
+1. `LD B,B`実行前にBCレジスタをディスパッチ直前に直接観測: 実測 BC=$FFD8
+   (mooneyeの期待値 $FFD9 よりループが1回多く回っている=割り込みの認識が1ループぶん遅い)。
+2. TAC書き込みごとの`old_signal`/`new_signal`/`fired`と`div_counter`をトレース出力し、
+   このROMの39回のループ全体(TAC書き込み78回)を記録。
+3. 同じ命令列(EI, 8T/12T/8T/12T/8T/4T/4T/12Tの正確なT-cycle数)をPythonで独立に
+   シミュレートし、78件のtrace(old_signal/new_signal/fired/divの値)を診断1と突き合わせ:
+   **完全一致(diff無し)**。落下エッジ検出ロジック自体は正しいと確認。
+4. Pan Docs "Timer obscure behaviour"のTIMAオーバーフロー実測表(SYS=2B..31、7列)の
+   生HTMLを取得し、`M-cycle`ヘッダ行の`A`/`B`ラベルが実際にどの列に対応するかを
+   バイト単位で確認: `A`=SYS 2E(TIMA=$00が見え始める列)、`B`=SYS 2F(TMAリロード+IF確定が
+   見える列)で、エッジ検出そのものから数えて2 M-cycle後にIFが確定する。自実装の
+   `timer_reload_pending=4`(1 M-cycle)による遅延モデルもこれと一致することを検算で確認。
+5. それでも1ループぶんズレる理由を特定: TIMAオーバーフローの原因となる`TAC=0`書き込み
+   (LDH命令)の直後の命令が`DEC BC`(16bit減算、2 M-cycle命令)であり、IF確定は
+   `DEC BC`の**内部サイクル中**に完了する。SM83は命令境界(次のフェッチ直前)でのみ
+   割り込みを認識する一般的なモデルのため、`DEC BC`は(その2番目のM-cycle中に
+   IFが確定しても)最後まで実行されてから初めて次の`cpu_step`で割り込みが認識される。
+   これが実機の挙動と一致するのか、`DEC BC`のような2 M-cycle命令に限り実機がより
+   細かい粒度で割り込みを認識する特例があるのかは、Pan Docsの記述だけでは判別できなかった。
+6. `reload_pending`の起点をこの書き込みの直前(pre-M-cycle)のdiv値に変える実験も
+   行ったが、結果は変化しなかった(=サンプリングタイミングの問題ではないことを消去法で確認)。
+
+**次にやること**: 実機トレースや既知の高精度エミュレータ(SameBoy等)のログと突き合わせて、
+2 M-cycle命令の内部サイクル中に割り込み条件が成立した場合の実機の扱いを特定すること。
+デバッグ用のトレースコード(timer.odin への一時的な `DEBUG_TRACE_TAC` フラグ追加など)は
+今回の調査で使ったが、コミットには含めていない(再現手順は上記の通り)。
+
+- 許可リスト(tests/expected_failures.odin)の現状: 7エントリ全てに理由コメント付き
+  (rapid_toggle 1件は上記の調査結果、残り6件はフェーズ3のPPU実装待ち、逆アセンブルで
   根拠を確認済み)。「予期せぬPASS」の自動検出も動作確認済み(T2-3/T2-4完了時に実際に検出)。
-- フェーズ完了検証コマンド `./scripts/fetch_test_roms.sh && odin test tests -collection:bbl=src`
-  を実行し成功を確認: 128 tests 全パス。`odin build src/app -collection:bbl=src` も成功。
-- 依存タスクT2-2/T2-3/T2-5/T2-6は全てこのセッション内で完了済み。
+- `./scripts/fetch_test_roms.sh && odin test tests -collection:bbl=src`: 128 tests 全パス
+  (許可リスト経由でrapid_toggleのFAILも含めて成功扱いになっているだけで、実際には
+  未解決)。`odin build src/app -collection:bbl=src` は成功。
