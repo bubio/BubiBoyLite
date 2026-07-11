@@ -69,7 +69,7 @@ odin test tests -collection:bbl=src
 
 ### T0-3: CLI オプションのパース
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: BluePrint の全オプションを受理し、値を `Options` 構造体に格納する（動作の実装は各フェーズで）。
 **作るもの**: `src/app/cli.odin` に追加:
@@ -201,3 +201,4 @@ grep "mise install" README.md
 
 2026-07-11 T0-1 完了: odin build src/app -collection:bbl=src -out:bbl && ./bbl => "BubiBoyLite" 出力, odin test tests -collection:bbl=src => 1 test passed
 2026-07-11 T0-2 完了: ./bbl -v => "bbl 0.1.0" exit=0, ./bbl -h に --scale/--fullscreen 記載を確認
+2026-07-11 T0-3 完了: scale 12→8 丸め確認、--shader bogus/2重ROM指定で exit=1、odin test tests -collection:bbl=src 8 tests 全パス (cli_test.odin 7本追加)
