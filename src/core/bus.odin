@@ -49,6 +49,14 @@ bus_load_rom :: proc(bus: ^Bus, data: []u8) -> bool {
 	return true
 }
 
+// bus_power_on はブート ROM 完了直後の IO レジスタ状態を直接セットする(T3-8、
+// CLAUDE.md「実 BIOS ROM の読み込みには対応しない」方針)。現時点では PPU レジスタのみ
+// (ppu.odin の ppu_power_on)。Timer/Joypad はゼロ値のままで実用上問題ないため対象外
+// (T2-3/T2-4で確認済み、テスト ROM は自前で初期化するか値を仮定しない)。
+bus_power_on :: proc(bus: ^Bus) {
+	ppu_power_on(&bus.ppu)
+}
+
 // bus_tick は t_cycles ぶん時間を進める。CPU の全メモリアクセスごとに呼ばれる。
 // Timer(timer.odin、T2-3)、PPU(ppu.odin、T3-2)、OAM DMA(T2-5)を駆動する。APU の駆動はフェーズ5以降。
 // t_cycles は常に4の倍数(1 M-cycle単位)で渡される想定(architecture.md のタイミングモデル)。

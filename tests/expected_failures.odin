@@ -37,6 +37,21 @@ package tests
 // timer/tim00_div_trigger、timer/tim01_div_trigger、timer/tim10_div_trigger、
 // timer/tim11_div_trigger。一方 halt_ime0_ei・halt_ime0_nointr_timing・oam_dma/reg_read は
 // T3-2後もまだ通らない(前者2つはTIMEOUT、reg_readはFAIL)。個別の原因はT3-8等で再調査する。
+//
+// T3-8で halt_ime0_ei・halt_ime0_nointr_timing の原因を特定し解消した(許可リストから除外済み)。
+// 原因: これらのROMはLCDをROM側で明示的に有効化せず、DMGブートROM完了直後の既定状態で
+// 既にLCDC=0x91(画面ON)であることを前提にVBlank割り込みを待っていた。本プロジェクトは実BIOSを
+// 読み込まない方針(CLAUDE.md)のため起動直後のレジスタ状態を直接セットする必要があるが、
+// T3-1時点ではCPUレジスタのみ実装しIOレジスタは全てゼロ初期化のままだった(LCDC=0x00=画面OFF)。
+// そのためLYが一度も進まずVBlank割り込みが永遠に来ずHALTしたまま止まっていた
+// (トレースで確認: pc=0x0160でhalted=true, LCDC=0x00のまま12M T-cycle経過)。
+// `ppu_power_on`(ppu.odin)を追加しDMG post-boot register state(Pan Docs "Power Up Sequence"、
+// BubiBoy Bus.fs postBootIoの実測値: LCDC=0x91, STAT=0x80, BGP=0xFC, OBP0=OBP1=0xFF)を
+// `bus_power_on`経由でemulator_load_rom/rom_runnerの両方から呼ぶようにした結果、両ROMともPASSに
+// 転じた。dmg-acid2は自ROM内でLCDC等を明示的に再設定するため、この変更でacid2のハッシュは
+// 変化しないことを確認済み(同一の期待値のまま再テストしてPASS)。
+// oam_dma/reg_read はこの変更後も引き続きFAIL(disable_ppu_safe待ちは解消したが、DMA転送中の
+// レジスタ読み出し値が期待と異なる。フェーズ4以降で再調査)。
 
 expected_failures := [?]string {
 	// 未解決(T2-7で深く調査したが解決できず。PPU非依存でありフェーズ3送りにできる
@@ -62,12 +77,8 @@ expected_failures := [?]string {
 	// docs/dev/phases/phase-02-timing.md の T2-7 検証ログを参照。次セッションでの
 	// 再挑戦時はそこから始めること。
 	"mooneye/acceptance/timer/rapid_toggle",
-	// T3-2でPPUのモードタイミングが実装されLYが実際に進むようになったが、この2件はまだ
-	// TIMEOUTのまま(wait_lyが期待するタイミング/値に到達しない。個別の原因はT3-8等で再調査)。
-	"mooneye/acceptance/halt_ime0_ei",
-	"mooneye/acceptance/halt_ime0_nointr_timing",
 	// oam_dma/reg_read はdisable_ppu_safe待ちは解消したが、DMA転送中のレジスタ読み出し値が
-	// 期待と異なりFAILのまま(T3-2完了時点で判明。個別の原因はT3-8等で再調査)。
+	// 期待と異なりFAILのまま(T3-2完了時点で判明、T3-8でも未解決。フェーズ4以降で再調査)。
 	"mooneye/acceptance/oam_dma/reg_read",
 }
 

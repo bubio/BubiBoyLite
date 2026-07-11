@@ -19,6 +19,7 @@ emulator_load_rom :: proc(emu: ^Emulator, rom_data: []u8) -> bool {
 	if !bus_load_rom(&emu.bus, rom_data) {
 		return false
 	}
+	bus_power_on(&emu.bus)
 	cpu_reset(&emu.cpu, .DMG)
 	return true
 }

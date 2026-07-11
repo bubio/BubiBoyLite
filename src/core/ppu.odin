@@ -166,6 +166,33 @@ ppu_update_lyc_equal :: proc(p: ^Ppu) {
 	p.lyc_equal = p.ly == p.lyc
 }
 
+// ppu_power_on は実 BIOS を読み込まない方針(CLAUDE.md/architecture.md)のもと、
+// DMG ブート ROM 完了直後の PPU レジスタ状態を直接セットする(T3-8で判明: この初期値を
+// 入れないと、LCDをROM側で明示的に有効化しない一部のテストROM、例えば
+// mooneye/acceptance/halt_ime0_ei が VBlank 割り込みを永遠に待ち続けてしまう)。
+// 値は Pan Docs "Power Up Sequence" および BubiBoy Bus.fs の postBootIo で実測値として
+// 採用されている DMG の post-boot register state: LCDC=0x91(画面ON・BG/OBJ有効・
+// タイルデータ0x8000・BGマップ0x9800)、STAT=0x80(割り込み許可ビットはすべて0)、
+// BGP=0xFC、OBP0=OBP1=0xFF。SCY/SCX/LYC/WY/WXは0。
+ppu_power_on :: proc(p: ^Ppu) {
+	p.lcdc = 0x91
+	p.stat_enable = 0
+	p.scy = 0
+	p.scx = 0
+	p.lyc = 0
+	p.bgp = 0xFC
+	p.obp0 = 0xFF
+	p.obp1 = 0xFF
+	p.wy = 0
+	p.wx = 0
+	p.ly = 0
+	p.dot = 0
+	p.mode = .OamScan
+	p.window_line = 0
+	p.stat_irq_line = false
+	ppu_update_lyc_equal(p)
+}
+
 // --- モードタイミング(T3-2) ---
 // 参照: ~/dev/_Emu/BubiBoy/src/BubiBoy.Core/Lcd.fs(tick/modeFor)、Pan Docs "Rendering"/"STAT modes"。
 //

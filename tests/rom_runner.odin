@@ -38,6 +38,7 @@ run_blargg_rom :: proc(path: string) -> Rom_Result {
 		fmt.eprintfln("rom_runner: ROM のロードに失敗: %s", path)
 		return .Fail
 	}
+	core.bus_power_on(&bus)
 	core.cpu_reset(&cpu, .DMG)
 
 	for bus.cycles < ROM_TIMEOUT_TCYCLES {
@@ -87,6 +88,7 @@ run_mooneye_rom :: proc(path: string) -> Rom_Result {
 		fmt.eprintfln("rom_runner: ROM のロードに失敗: %s", path)
 		return .Fail
 	}
+	core.bus_power_on(&bus)
 	core.cpu_reset(&cpu, .DMG)
 	cpu.debug_break_on_ld_b_b = true
 
