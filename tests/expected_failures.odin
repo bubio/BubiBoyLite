@@ -80,6 +80,10 @@ expected_failures := [?]string {
 	// oam_dma/reg_read はdisable_ppu_safe待ちは解消したが、DMA転送中のレジスタ読み出し値が
 	// 期待と異なりFAILのまま(T3-2完了時点で判明、T3-8でも未解決。フェーズ4以降で再調査)。
 	"mooneye/acceptance/oam_dma/reg_read",
+	// T5-7: dmg_sound 09/10/12(ch3動作中のwave RAMアクセス制限)は、T5-3の時点では
+	// 未実装なので許可リスト入りを想定していたが、実際にT5-7でROMを取得して実行したところ
+	// 3本ともPASSした(wave RAMアクセスを常時無制限に許可する簡易実装のままで、この3本の
+	// 検査内容には抵触しなかった)。よってここには載せない(削除済み)。
 }
 
 is_expected_failure :: proc(name: string) -> bool {

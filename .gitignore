@@ -1,5 +1,6 @@
 bbl
 bbl.exe
+tests.bin
 *.o
 *.obj
 *.exe

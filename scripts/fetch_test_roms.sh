@@ -65,6 +65,23 @@ fetch "cpu_instrs/cpu_instrs.gb" "$BLARGG_DIR/cpu_instrs/cpu_instrs.gb"
 # instr_timing（フェーズ1でパスさせる対象。DIV の最小実装が必要）
 fetch "instr_timing/instr_timing.gb" "$BLARGG_DIR/instr_timing/instr_timing.gb"
 
+# --- dmg_sound 個別ROM (T5-7) ---
+# 01-08/11 はフェーズ5でパスさせる対象。09/10/12(wave RAMアクセス制限系)はT5-3の判断を
+# 踏襲し許可リスト残留(phase-05-apu.md T5-7参照)。
+mkdir -p "$BLARGG_DIR/dmg_sound/rom_singles"
+fetch "dmg_sound/rom_singles/01-registers.gb" "$BLARGG_DIR/dmg_sound/rom_singles/01-registers.gb"
+fetch "dmg_sound/rom_singles/02-len ctr.gb" "$BLARGG_DIR/dmg_sound/rom_singles/02-len ctr.gb"
+fetch "dmg_sound/rom_singles/03-trigger.gb" "$BLARGG_DIR/dmg_sound/rom_singles/03-trigger.gb"
+fetch "dmg_sound/rom_singles/04-sweep.gb" "$BLARGG_DIR/dmg_sound/rom_singles/04-sweep.gb"
+fetch "dmg_sound/rom_singles/05-sweep details.gb" "$BLARGG_DIR/dmg_sound/rom_singles/05-sweep details.gb"
+fetch "dmg_sound/rom_singles/06-overflow on trigger.gb" "$BLARGG_DIR/dmg_sound/rom_singles/06-overflow on trigger.gb"
+fetch "dmg_sound/rom_singles/07-len sweep period sync.gb" "$BLARGG_DIR/dmg_sound/rom_singles/07-len sweep period sync.gb"
+fetch "dmg_sound/rom_singles/08-len ctr during power.gb" "$BLARGG_DIR/dmg_sound/rom_singles/08-len ctr during power.gb"
+fetch "dmg_sound/rom_singles/09-wave read while on.gb" "$BLARGG_DIR/dmg_sound/rom_singles/09-wave read while on.gb"
+fetch "dmg_sound/rom_singles/10-wave trigger while on.gb" "$BLARGG_DIR/dmg_sound/rom_singles/10-wave trigger while on.gb"
+fetch "dmg_sound/rom_singles/11-regs after power.gb" "$BLARGG_DIR/dmg_sound/rom_singles/11-regs after power.gb"
+fetch "dmg_sound/rom_singles/12-wave write while on.gb" "$BLARGG_DIR/dmg_sound/rom_singles/12-wave write while on.gb"
+
 # --- Mooneye acceptance (T2-6) ---
 # testing.md: 「~/dev/_Emu/BubiBoy/tests/BubiBoy.TestRoms/roms/mooneye/ からコピー。
 # 無ければ Gekkio の mooneye-test-suite リリースから」が原則の取得順。

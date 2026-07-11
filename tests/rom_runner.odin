@@ -75,6 +75,76 @@ run_blargg_rom :: proc(path: string, timeout_tcycles: u64 = ROM_TIMEOUT_TCYCLES)
 	return .Timeout
 }
 
+// run_blargg_rom_mem_result は Blargg dmg_sound の個別 ROM 用(T5-7)。これらは結果を
+// シリアルではなく**メモリ 0xA000 に書く**変種のため、シリアルの "Passed"/"Failed" に加えて
+// 0xA000 判定も並行して見る: 0xA001-3 が signature($DE,$B0,$61)なら 0xA000 が有効な結果コード
+// (readme.txt: 実行中は $80、終了後は最終結果コード。0=PASS、それ以外はFAIL)。
+// これらのROMはMBC1+RAM(0x0147=0x03)のカートリッジなので外部RAM書き込みが$A000に反映される
+// (advisor助言: RAM無しカートリッジではこの方式は機能しない点に注意)。
+run_blargg_rom_mem_result :: proc(path: string, timeout_tcycles: u64 = ROM_TIMEOUT_TCYCLES) -> Rom_Result {
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil {
+		fmt.eprintfln("rom_runner: ROM を読み込めません: %s (%v)", path, err)
+		return .Fail
+	}
+
+	cpu: core.Cpu
+	bus: core.Bus
+	defer core.bus_destroy(&bus)
+	defer delete(bus.cart.rom)
+	defer delete(bus.serial_log)
+
+	if !core.bus_load_rom(&bus, data) {
+		fmt.eprintfln("rom_runner: ROM のロードに失敗: %s (%v)", path, bus.cart_load_error)
+		return .Fail
+	}
+	core.bus_power_on(&bus)
+	core.cpu_reset(&cpu, .DMG)
+
+	for bus.cycles < timeout_tcycles {
+		core.cpu_step(&cpu, &bus)
+
+		log_str := core.serial_get_log(&bus)
+		if strings.contains(log_str, "Passed") {
+			return .Pass
+		}
+		if strings.contains(log_str, "Failed") {
+			fmt.eprintfln(
+				"rom_runner: FAIL(serial): %s\n--- serial log ---\n%s\n------------------",
+				path,
+				log_str,
+			)
+			return .Fail
+		}
+
+		if core.bus_read(&bus, 0xA001) == 0xDE &&
+		   core.bus_read(&bus, 0xA002) == 0xB0 &&
+		   core.bus_read(&bus, 0xA003) == 0x61 {
+			status := core.bus_read(&bus, 0xA000)
+			if status != 0x80 { 	// 0x80=実行中。それ以外は最終結果コード
+				if status == 0x00 {
+					return .Pass
+				}
+				fmt.eprintfln(
+					"rom_runner: FAIL(0xA000=%02X): %s\n--- serial log ---\n%s\n------------------",
+					status,
+					path,
+					log_str,
+				)
+				return .Fail
+			}
+		}
+	}
+
+	fmt.eprintfln(
+		"rom_runner: TIMEOUT: %s (%d T-cycle 経過)\n--- serial log ---\n%s\n------------------",
+		path,
+		bus.cycles,
+		core.serial_get_log(&bus),
+	)
+	return .Timeout
+}
+
 // run_mooneye_rom は ROM-only カートリッジをロードして実行し、Mooneye 方式
 // (LD B,B + レジスタ指紋)で判定する(T2-6、testing.md「Mooneye 方式」)。
 // cpu.debug_break_on_ld_b_b を立てて実行し、0x40(LD B,B) が実行されたら停止する:

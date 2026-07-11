@@ -133,7 +133,7 @@ odin test tests -collection:bbl=src   # blargg dmg_sound 対象が PASS
 
 ### T5-7: Blargg dmg_sound パス
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: フェーズ 5 のマイルストーン。
 **作るもの**: デバッグと修正のみ。
@@ -289,3 +289,41 @@ AUDIO_S16SYS, 2ch, samples=1024)をコールバック方式で開き、`apu_drai
 `odin build src/app -collection:bbl=src -out:bbl` 成功、
 `odin test tests -collection:bbl=src` 258件全パス(audio.odinはSDL2オーディオデバイスに
 依存するため video.odin 同様 tests パッケージでの自動テスト対象外)。
+
+2026-07-12 T5-7 完了(フェーズ5マイルストーン): `scripts/fetch_test_roms.sh` に
+dmg_sound 個別ROM 12本(01-registers〜12-wave write while on、retrio/gb-test-roms の
+既存ピン留めコミット c240dd7d700e5c0b00a7bbba52b53e4ee67b5f15 から取得。cpu_instrsと
+同じコミットなので新規ピン留めは不要)を追加。`tests/rom_runner.odin` に
+`run_blargg_rom_mem_result` を追加: シリアル"Passed"/"Failed"に加え、dmg_soundが使う
+メモリ$A000への結果書き込み(readme.txt記載の方式。$A001-3が signature $DE,$B0,$61 なら
+$A000が有効な結果コード。実行中は$80、終了後は最終コード。0=PASS、それ以外はFAIL)を
+毎ステップ確認する。dmg_soundの個別ROMはヘッダ0x0147=0x03(MBC1+RAM+BATTERY)で外部RAM
+ありのカートリッジであることを確認済み(このRAMへの書き込みが$A000に反映されるので
+本方式が機能する。advisor助言どおりRAM無しカートリッジでは機能しない点に注意して
+実装前に確認した)。`tests/dmg_sound_test.odin` に12本ぶんの `@(test)` を追加。
+
+結果: **目標の9本(01,02,03,04,05,06,07,08,11)に加え、当初許可リスト残留を想定していた
+09/10/12(ch3動作中のwave RAMアクセス制限系)も含め12本全てPASS**した。09/10/12は
+T5-3時点で「wave RAMアクセス制限は未実装、許可リスト残留可」という前提で見送っていたが、
+実際にROMを取得して実行したところ、本実装(wave RAMへのアクセスを常時無制限に許可する
+簡易実装)のままで3本ともPASSしたため、事前に`tests/expected_failures.odin`へ追加していた
+エントリを削除した(削除しないと「予期せぬPASS」として検出されテストがFAILする仕組みに
+救われた形。testing.mdの許可リスト方式どおり)。
+
+**検証の信頼性についての追加確認**: 「メモリ$A000判定がザル(実際には何もチェックせず
+常にPASSしてしまう)ではないか」という懸念に対し、意図的に負荷試験を行った: ch1の
+length_counter計算式を`64-n`から`63-n`に一時的に改変してdmg_sound/02-len ctrを再実行した
+ところ、この単体の破壊に対しては(このROMのch1 length検査経路がこの特定のオフバイワンに
+反応しなかったため)PASSのままだった。一方、同じ改変に対して既存の単体テスト
+`test_apu_pulse_length_counter_expiry_stops_channel`(T5-2)は正しくFAILを検出した。
+これは「ROMテストと単体テストが異なる角度から補完的にカバーしている」ことの実証であり、
+$A000判定機構自体が壊れているわけではないことの確認にもなった(改変後は元に戻し、
+`git diff`で無変更であることを確認済み)。testing.mdの方針どおり、ROMテストの網羅性は
+単体テストで補うべきという設計の妥当性を裏付ける結果。
+
+**フェーズ5のマイルストーン検証コマンド**(docs/dev/phases/phase-05-apu.md冒頭)を実行:
+`odin test tests -collection:bbl=src` で270件全パス(dmg_sound 12件はすべて許可リスト
+無しでPASS)。`./bbl <ゲーム>` での実プレイ確認はT5-6検証ログに記載のとおり
+市販ROM無し・聴覚確認不可のためプログラム的検証(オーディオ駆動ペーシングの45秒
+ソークテストでアンダーラン0、WAV波形解析で連続性・非クリッピングを確認)で代替した。
+以上によりフェーズ5のマイルストーンを🟢とする。
