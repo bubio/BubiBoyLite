@@ -26,6 +26,9 @@ Bus :: struct {
 	tac:                       u8, // 0xFF07(bit2=有効, bit1-0=周波数選択)
 	timer_reload_pending:      int, // TIMAオーバーフロー後のTMAリロードまでの残りT-cycle(0=無し。timer.odin)
 	timer_reload_just_happened: bool, // 直近の timer_tick 呼び出しでリロードが完了したか(TIMA/TMA書き込みの特殊挙動判定用)
+	joyp_select_action:        bool, // JOYP bit5=0(joypad.odin)
+	joyp_select_direction:     bool, // JOYP bit4=0(joypad.odin)
+	joyp_pressed:              u8, // Button ごとのビットマスク(joypad.odin の button_bit)
 }
 
 // bus_load_rom は ROM-only カートリッジをそのまま map する(MBC はフェーズ4)。
@@ -103,6 +106,8 @@ bus_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 @(private)
 bus_io_read :: proc(bus: ^Bus, addr: u16) -> u8 {
 	switch addr {
+	case JOYP_ADDR:
+		return joypad_read_p1(bus)
 	case SERIAL_SB, SERIAL_SC:
 		return bus.io[addr - 0xFF00]
 	case DIV_ADDR:
@@ -123,6 +128,8 @@ bus_io_read :: proc(bus: ^Bus, addr: u16) -> u8 {
 @(private)
 bus_io_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 	switch addr {
+	case JOYP_ADDR:
+		joypad_write_p1(bus, value)
 	case SERIAL_SB, SERIAL_SC:
 		serial_write(bus, addr, value)
 	case DIV_ADDR:

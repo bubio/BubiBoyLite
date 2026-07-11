@@ -81,7 +81,7 @@ odin test tests -collection:bbl=src
 
 ### T2-4: ジョイパッドレジスタ
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: 0xFF00 (JOYP) と入力状態の保持、ジョイパッド割り込みを実装する。
 **作るもの**: `src/core/joypad.odin`:
@@ -228,3 +228,14 @@ cpu_step 先頭で `ime && pending!=0` を判定するよう変更。ie_push(moo
   グリッチ挙動までは再現できておらず(タイマー割り込みは発生するがBC指紋が不一致)、
   理由コメント付きで許可リストに残しT2-7で再挑戦する。
 - `odin test tests -collection:bbl=src`: 115 tests 全パス。
+
+2026-07-11 T2-4 完了: `src/core/joypad.odin` を新規作成。`Button` enum(Right/Left/Up/Down/
+A/B/Select/Start)、`joypad_set_button`、JOYP(0xFF00)の負論理エンコーディング
+(bit5=0でアクション、bit4=0で方向、両方選択時はAND合成)、選択中のボタンが0→1(押下)へ
+変化した際のIF bit4リクエストを実装。Bus に `joyp_select_action`/`joyp_select_direction`
+(bool、trueが選択中)/`joyp_pressed`(ボタンごとのビットマスク)を追加し、bus_io_read/write の
+JOYP_ADDR(0xFF00)をそれぞれ `joypad_read_p1`/`joypad_write_p1` に委譲。
+単体テスト `tests/joypad_test.odin` を新規作成(非選択時の全1読み出し、アクション/方向
+それぞれの反映、両方選択時のAND合成、選択ビットの読み戻し、押下時の割り込み、
+非選択グループでは割り込みが起きないこと、離す操作では割り込みが起きないことの8件)。
+`odin test tests -collection:bbl=src`: 123 tests 全パス。
