@@ -18,12 +18,14 @@ Console_Mode :: enum {
 }
 
 Cpu :: struct {
-	a, f, b, c, d, e, h, l: u8,
-	sp, pc:                 u16,
-	ime:                    bool, // Interrupt Master Enable
-	halted:                 bool,
-	stopped:                bool, // STOP 実行済み(簡易フラグ、正式対応はフェーズ6)
-	illegal_opcode_hit:     bool, // 未定義オペコードを実行した(T1-6)
+	a, f, b, c, d, e, h, l:  u8,
+	sp, pc:                  u16,
+	ime:                     bool, // Interrupt Master Enable
+	halted:                  bool,
+	stopped:                 bool, // STOP 実行済み(簡易フラグ、正式対応はフェーズ6)
+	illegal_opcode_hit:      bool, // 未定義オペコードを実行した(T1-6)
+	debug_break_on_ld_b_b:   bool, // Mooneye 判定用: 0x40(LD B,B)実行で ld_b_b_hit を立てる(T2-6)
+	ld_b_b_hit:              bool, // debug_break_on_ld_b_b 有効時、0x40 を実行したフレームで true になる
 }
 
 // --- 16bit レジスタペアアクセス ---
@@ -121,6 +123,7 @@ cpu_reset :: proc(cpu: ^Cpu, mode: Console_Mode) {
 	cpu.halted = false
 	cpu.stopped = false
 	cpu.illegal_opcode_hit = false
+	cpu.ld_b_b_hit = false
 }
 
 @(private)
@@ -407,6 +410,11 @@ cpu_step :: proc(cpu: ^Cpu, bus: ^Bus) -> int {
 
 	opcode := cpu_read8(cpu, bus, cpu.pc)
 	cpu.pc += 1
+	if cpu.debug_break_on_ld_b_b && opcode == 0x40 {
+		// Mooneye 判定フック(T2-6): LD B,B(0x40)は実行してからフラグを立てる。
+		// レジスタ指紋は 0x40 実行の副作用を受けないので呼び出し側はこの直後に検査してよい。
+		cpu.ld_b_b_hit = true
+	}
 	cpu_execute(cpu, bus, opcode)
 
 	return int(bus.cycles - start)

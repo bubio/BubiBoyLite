@@ -115,7 +115,7 @@ odin test tests -collection:bbl=src
 
 ### T2-6: Mooneye 判定の rom_runner 対応
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: Mooneye 方式（LD B,B + レジスタ指紋）の判定を rom_runner に追加する。
 **作るもの**:
@@ -161,3 +161,28 @@ cpu_step 先頭で `ime && pending!=0` を判定するよう変更。ie_push(moo
 実機挙動を事前に確認し、ベクタ決定を「PC上位バイトPUSH直後・下位バイトPUSH前」に行うよう実装
 (上位バイト書き込みがIEを潰すとキャンセルされPC=0x0000、下位バイト書き込みでの書き換えは手遅れで
 通常どおり進む)。`odin test tests -collection:bbl=src`: 86 tests 全パス(新規 tests/interrupt_test.odin 6件含む)。
+
+2026-07-11 T2-6 完了(T2-2〜T2-5より先行して実施): T2-1直後にMooneyeハーネスを整備することで、
+以降のT2-2/T2-3/T2-5のDoD(Mooneye ROMがPASSすること)を「odin test実行時に実際にPASS/FAILが
+判定される」状態で検証できるようにした(先にT2-3等を完了扱いにするとMooneyeテストが存在せず
+検証不能になるため)。
+- `Cpu` に `debug_break_on_ld_b_b`/`ld_b_b_hit` を追加、cpu_step の0x40実行時にフックする形で実装。
+- `tests/rom_runner.odin` に `run_mooneye_rom`(LD B,B検出→レジスタ指紋判定)を追加。
+- `scripts/fetch_test_roms.sh` にMooneye取得を追加: `~/dev/_Emu/BubiBoy/tests/BubiBoy.TestRoms/roms/mooneye/`
+  からのローカルコピーを優先し、無ければ取得する。**当初想定していた「Gekkioのリリース」は
+  2026-07時点で存在しない**(Gekkio/mooneye-test-suiteはGitHub Releaseでビルド済みROMを配布して
+  いない。ソースからのアセンブルが必要)。そのためフォールバック先を`c-sp/game-boy-test-roms`
+  のタグ付きリリース(v7.0、ビルド済みmooneye-test-suiteを同梱するMIT系サードパーティ集約リポジトリ、
+  多くのGBエミュレータプロジェクトが同様の目的で参照している)に変更した。ローカルコピー元に
+  無かった11本(ie_push, rapid_toggle, tim*_div_trigger×4, oam_dma/basic, oam_dma/reg_read,
+  oam_dma_start)をこの経路で取得し、timer/全13本を含む計24本のROM取得を確認。
+- `tests/mooneye_test.odin` 新規作成: timer/13本 + intr系5本(ie_push, if_ie_registers, intr_timing,
+  rapid_di_ei, ei_timing) + halt系3本 + oam_dma系3本 = 24本の@(test)を追加。
+- `tests/expected_failures.odin` に初期許可リストを投入。実行してみたところ、T2-1のディスパッチと
+  T1-9のタイマー仮実装だけで if_ie_registers・intr_timing・tim00_div_trigger・tim01・
+  tim11_div_trigger が既にPASSしたため、この5本は許可リストから即座に除外した(「予期せぬPASS」
+  検出の動作確認も兼ねる)。halt_ime0_ei・halt_ime0_nointr_timing・oam_dma_startは`wait_ly`
+  (タイムアウト無し)や実際のVBlank割り込み発火に依存しており、フェーズ2にはPPUが無いため
+  原理的にパスしない。理由コメント付きでフェーズ3送りとして許可リストに残す。
+- `odin test tests -collection:bbl=src`: 110 tests 全パス(24本のMooneyeテストのうち19本が許可
+  リスト経由でFAIL/TIMEOUTのまま成功扱い、5本が実PASS)。
