@@ -79,8 +79,10 @@ test_tima_counts_up_when_tac_enabled_and_reloads_on_overflow :: proc(t: ^testing
 	core.bus_write(&bus, 0xFF06, 0x10) // TMA
 	core.bus_write(&bus, 0xFF07, 0x05) // TAC: enable, 262144Hz(周期16T)
 	core.bus_write(&bus, 0xFF05, 0xFF) // TIMA: 次の1目盛りでオーバーフロー
-	core.bus_tick(&bus, 16)
-	testing.expect(t, core.bus_read(&bus, 0xFF05) == 0x10, "オーバーフローでTMAがリロードされる")
+	core.bus_tick(&bus, 16) // 落下エッジでオーバーフロー: この時点ではまだTIMA=0x00(リロード遅延中)
+	testing.expect(t, core.bus_read(&bus, 0xFF05) == 0x00, "オーバーフロー直後は4 T-cycleの間TIMA=0x00")
+	core.bus_tick(&bus, 4) // リロード遅延の4 T-cycle経過
+	testing.expect(t, core.bus_read(&bus, 0xFF05) == 0x10, "4 T-cycle後にTMAがリロードされる")
 }
 
 @(test)
@@ -97,8 +99,10 @@ test_tima_overflow_sets_if_timer_bit :: proc(t: ^testing.T) {
 	core.bus_write(&bus, 0xFF0F, 0x00) // IF クリア
 	core.bus_write(&bus, 0xFF07, 0x05) // TAC 有効、周期16T
 	core.bus_write(&bus, 0xFF05, 0xFF)
-	core.bus_tick(&bus, 16)
-	testing.expect(t, core.bus_read(&bus, 0xFF0F) & 0x04 != 0, "TIMAオーバーフローでIF bit2がセットされる")
+	core.bus_tick(&bus, 16) // 落下エッジでオーバーフロー
+	testing.expect(t, core.bus_read(&bus, 0xFF0F) & 0x04 == 0, "リロード完了までIF bit2はまだセットされない")
+	core.bus_tick(&bus, 4) // リロード遅延の4 T-cycle経過
+	testing.expect(t, core.bus_read(&bus, 0xFF0F) & 0x04 != 0, "リロード完了時にIF bit2がセットされる")
 }
 
 @(test)

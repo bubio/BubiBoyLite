@@ -57,7 +57,7 @@ Mooneye acceptance の timer/ と割り込み系テスト、Blargg 02-interrupts
 
 ### T2-3: DIV / TIMA タイマー
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: 0xFF04-0xFF07 を落下エッジ方式で実装し、タイマー割り込み (IF bit2) を正確に出す。
 **作るもの**: `src/core/timer.odin`:
@@ -205,4 +205,26 @@ cpu_step 先頭で `ime && pending!=0` を判定するよう変更。ie_push(moo
   PC足踏み、IME=trueでのHALT起床、IME=falseでの起床(ハンドラに飛ばない)の5件)。
 - 副産物として blargg `cpu_instrs/individual/02-interrupts`、mooneye `halt_ime1_timing`・
   `ei_timing`・`rapid_di_ei` が実PASSするようになったため許可リストから除外。
+- `odin test tests -collection:bbl=src`: 115 tests 全パス。
+
+2026-07-11 T2-3 完了: `src/core/timer.odin` を新規作成し、T1-9のフリーラン仮実装(bus.odin内)を
+落下エッジ検出方式に置き換えた。
+- `bus.div_counter`(内部16bitカウンタ、DIVはその上位8bit)、`timer_signal`(TAC enable と
+  選択ビットのAND)を1 T-cycle刻みで評価し、1→0への変化でTIMAをインクリメントする
+  (`timer_tick`は`bus_tick`から呼ばれ、tを4サイクルまとめてでなく1ずつループする)。
+- TIMAオーバーフローは`timer_reload_pending`(4→0のカウントダウン)で4 T-cycleの遅延を再現。
+  0になった瞬間にTMAをリロードしIF bit2をセットする。この間の追加の落下エッジは無視。
+- DIV書き込み(`timer_write_div`)は内部カウンタを0にし、その瞬間に選択ビットが1→0に
+  落ちるならTIMAも余分に進める。TAC書き込み(`timer_write_tac`)も同様に落下エッジ判定する。
+- TIMA/TMA書き込みとリロード完了が同一T-cycleに重なるケース(BubiBoy Bus.fsの
+  `TimerReloadMarkerIndex`相当、`bus.timer_reload_just_happened`として移植)も実装:
+  リロード完了直後のTIMA書き込みは無視され、TMA書き込みは新しい値がそのままTIMAにも
+  反映される(mooneye tima_write_reloading/tma_write_reloading 対応)。
+- 既存の単体テスト`test_tima_counts_up_when_tac_enabled_and_reloads_on_overflow`・
+  `test_tima_overflow_sets_if_timer_bit`をこのフェーズの新しい4 T-cycle遅延仕様に合わせて更新。
+- mooneye timer/ 13本中12本(tim00/01/10/11、tim00/01/10/11_div_trigger、div_write、
+  tima_reload、tima_write_reloading、tma_write_reloading)が実PASSし許可リストから除外。
+  `rapid_toggle`のみ、TACの高速トグル(秒間数万回)に対する実機ANDゲート回路レベルの
+  グリッチ挙動までは再現できておらず(タイマー割り込みは発生するがBC指紋が不一致)、
+  理由コメント付きで許可リストに残しT2-7で再挑戦する。
 - `odin test tests -collection:bbl=src`: 115 tests 全パス。
