@@ -63,6 +63,45 @@ test_cpu_read_write_ticks_bus :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_div_increments_and_resets_on_write :: proc(t: ^testing.T) {
+	bus: core.Bus
+	core.bus_tick(&bus, 252)
+	testing.expect(t, core.bus_read(&bus, 0xFF04) == 0, "DIVは256T-cycle未満ではまだ0")
+	core.bus_tick(&bus, 4)
+	testing.expect(t, core.bus_read(&bus, 0xFF04) == 1, "256T-cycleでDIVが1増える")
+	core.bus_write(&bus, 0xFF04, 0x99) // 値によらずDIVは0にリセットされる
+	testing.expect(t, core.bus_read(&bus, 0xFF04) == 0)
+}
+
+@(test)
+test_tima_counts_up_when_tac_enabled_and_reloads_on_overflow :: proc(t: ^testing.T) {
+	bus: core.Bus
+	core.bus_write(&bus, 0xFF06, 0x10) // TMA
+	core.bus_write(&bus, 0xFF07, 0x05) // TAC: enable, 262144Hz(周期16T)
+	core.bus_write(&bus, 0xFF05, 0xFF) // TIMA: 次の1目盛りでオーバーフロー
+	core.bus_tick(&bus, 16)
+	testing.expect(t, core.bus_read(&bus, 0xFF05) == 0x10, "オーバーフローでTMAがリロードされる")
+}
+
+@(test)
+test_tima_does_not_count_when_tac_disabled :: proc(t: ^testing.T) {
+	bus: core.Bus
+	core.bus_write(&bus, 0xFF07, 0x01) // TAC: 有効bit(bit2)なし
+	core.bus_tick(&bus, 1000)
+	testing.expect(t, core.bus_read(&bus, 0xFF05) == 0, "TAC無効時はTIMAが増えない")
+}
+
+@(test)
+test_tima_overflow_sets_if_timer_bit :: proc(t: ^testing.T) {
+	bus: core.Bus
+	core.bus_write(&bus, 0xFF0F, 0x00) // IF クリア
+	core.bus_write(&bus, 0xFF07, 0x05) // TAC 有効、周期16T
+	core.bus_write(&bus, 0xFF05, 0xFF)
+	core.bus_tick(&bus, 16)
+	testing.expect(t, core.bus_read(&bus, 0xFF0F) & 0x04 != 0, "TIMAオーバーフローでIF bit2がセットされる")
+}
+
+@(test)
 test_bus_load_rom :: proc(t: ^testing.T) {
 	bus: core.Bus
 	data := make([]u8, 32768)

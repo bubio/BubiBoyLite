@@ -5,14 +5,12 @@ package tests
 // 成功扱いになる。フェーズが進んで通るようになったらエントリを削除すること
 // (削除を忘れると blargg_test.odin が「予期せぬ PASS」として検出し FAIL する)。
 //
-// 初期状態(T1-8 時点)は cpu_instrs 個別 11 本 + instr_timing の 12 本全部。
-// T1-9 でデバッグして 02-interrupts (フェーズ2で割り込み実装後にパス予定) を除く
-// 11 本を外す。cpu_instrs 統合版(cpu_instrs.gb)は MBC1 が必要なためフェーズ4まで
-// 別途許可リストに残す(現時点では @(test) 化していないためここには含めない)。
-expected_failures := [?]string {
-	"cpu_instrs/individual/02-interrupts",
-	"instr_timing/instr_timing",
-}
+// T1-9 完了時点で cpu_instrs 個別 11 本中 10 本(02-interrupts を除く)+ instr_timing
+// が PASS。02-interrupts はフェーズ2で IME/IF/IE の実際の割り込みディスパッチを
+// 実装した後にパス予定のため、この許可リストに残す。cpu_instrs 統合版
+// (cpu_instrs.gb)は MBC1 が必要なためフェーズ4まで別途許可リストに残す
+// (現時点では @(test) 化していないためここには含めない)。
+expected_failures := [?]string{"cpu_instrs/individual/02-interrupts"}
 
 is_expected_failure :: proc(name: string) -> bool {
 	for entry in expected_failures {
