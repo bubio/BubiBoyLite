@@ -20,7 +20,7 @@ odin test tests -collection:bbl=src   # cpu_instrs 統合版 + mooneye emulator-
 
 ### T4-1: カートリッジヘッダ解析
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: ROM ヘッダから MBC 種別・ROM/RAM サイズ・バッテリー有無・CGB フラグを判定する。
 **作るもの**: `src/core/cartridge.odin`:
@@ -150,3 +150,11 @@ odin test tests -collection:bbl=src
 ## 検証ログ
 
 （タスク完了ごとに 1 行追記）
+
+2026-07-11 T4-1 完了: src/core/cartridge.odin 新規作成(Cartridge_Info/cartridge_parse_header)。
+tests/cartridge_test.odin に16件の単体テストを追加(ROM only/MBC1/MBC2/MBC3+RTC/MBC5の分類、
+ROM/RAMサイズコード変換、MBC2内蔵RAMの0x0149非依存、未対応種別(MBC6/HuC1)・未対応サイズ
+コード・ファイルサイズ不整合・ヘッダ短小のエラー、タイトル文字列、CGBフラグ)。
+`odin test tests -collection:bbl=src` 164 tests 全パス(既存148 + 新規16)。
+`odin build src/app -collection:bbl=src` もクリーン。bus.odin へのMBC配線はT4-2で行う
+(このタスクはヘッダ解析のみで、既存のbus_load_rom(ROM-onlyそのままmap)は未変更)。
