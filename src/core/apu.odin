@@ -440,6 +440,48 @@ apu_tick_pulse :: proc(ch: ^Pulse_Channel) {
 	}
 }
 
+// --- ch3: 波形メモリ(T5-3) ---
+
+// apu_wave_period は ch3 の周期タイマーの再ロード値を返す((2048-freq)*2 T-cycle、
+// 矩形波chの半分。32サンプルを1周期で再生するため)。
+@(private)
+apu_wave_period :: proc(frequency: int) -> int {
+	return (2048 - frequency) * 2
+}
+
+// apu_wave_current_nibble は wave.position(0-31)が指す4bitサンプルを返す。FF30-FF3Fの
+// 16バイトは32サンプルで、各バイトは上位ニブルが先(position偶数=上位、奇数=下位、T5-3)。
+apu_wave_current_nibble :: proc(apu: ^Apu) -> u8 {
+	byte_val := apu.wave_ram[apu.wave.position / 2]
+	if apu.wave.position % 2 == 0 {
+		return byte_val >> 4
+	}
+	return byte_val & 0x0F
+}
+
+// apu_tick_wave は ch3 の周期タイマーを1 T-cycle進める(T5-3)。
+@(private)
+apu_tick_wave :: proc(apu: ^Apu) {
+	ch := &apu.wave
+	if !ch.enabled {
+		return
+	}
+	ch.timer -= 1
+	if ch.timer <= 0 {
+		ch.timer += apu_wave_period(ch.frequency)
+		ch.position = (ch.position + 1) & 0x1F
+	}
+}
+
+// apu_trigger_wave はch3のNR34トリガー(bit7=1)時の初期化: 周期タイマーとposition(0番地から
+// 再生開始)をリセットし、DAC onならch有効にする(T5-3)。
+@(private)
+apu_trigger_wave :: proc(apu: ^Apu) {
+	apu.wave.timer = apu_wave_period(apu.wave.frequency)
+	apu.wave.position = 0
+	apu.wave.enabled = apu.wave.dac_enabled
+}
+
 // apu_clock_frame_sequencer は512Hzのフレームシーケンサを1step進める。
 // length は step 0,2,4,6 / エンベロープは step 7 / スイープは step 2,6。
 @(private)
@@ -495,6 +537,7 @@ apu_tick :: proc(apu: ^Apu, t_cycles: int) {
 
 		apu_tick_pulse(&apu.pulse1)
 		apu_tick_pulse(&apu.pulse2)
+		apu_tick_wave(apu)
 	}
 }
 
@@ -672,9 +715,22 @@ apu_write_register :: proc(apu: ^Apu, addr: u16, value: u8) {
 		apu.nr33 = value
 		apu.wave.frequency = (apu.wave.frequency & 0x700) | int(value)
 	case NR34_ADDR:
+		trigger := value & 0x80 != 0
+		new_length_enabled := value & 0x40 != 0
 		apu.nr34 = value & 0x7F
 		apu.wave.frequency = (apu.wave.frequency & 0x0FF) | (int(value & 0x07) << 8)
-		apu.wave.length_enabled = value & 0x40 != 0
+		apu_apply_length_and_trigger(
+			&apu.wave.length_counter,
+			&apu.wave.length_enabled,
+			&apu.wave.enabled,
+			apu,
+			new_length_enabled,
+			trigger,
+			256,
+		)
+		if trigger {
+			apu_trigger_wave(apu)
+		}
 
 	case NR41_ADDR:
 		apu.nr41 = value

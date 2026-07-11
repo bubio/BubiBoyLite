@@ -60,7 +60,7 @@ odin test tests -collection:bbl=src   # blargg dmg_sound 対象が PASS
 
 ### T5-3: 波形メモリチャンネル (ch3)
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: wave RAM を再生する ch3 を実装する。
 **作るもの**: apu.odin:
@@ -186,3 +186,15 @@ tests/apu_pulse_test.odin 新規10件(トリガーでのDAC有効/無効、DAC o
 オーバーフロー、周期スイープでの周波数更新、negate→positive切替での即停止)。
 `odin build src/app -collection:bbl=src -out:bbl` 成功、
 `odin test tests -collection:bbl=src` 241件全パス(新規10件含む)。
+
+2026-07-12 T5-3 完了: apu.odin に ch3(波形メモリ)を実装。周期 `(2048-freq)*2` T-cycleで
+position(0-31)を進める。`apu_wave_current_nibble(apu)`(公開関数)でFF30-FF3Fの16バイトを
+32サンプル・上位ニブル先で読む。音量(NR32 bit6-5)は output_level(0-3)として保持し実際の
+シフト適用はミキサー(T5-5)に委ねる。length は256-n(他chと異なる)。DACはNR30 bit7。
+トリガーはNRx4共通のapu_apply_length_and_trigger(T5-2で実装済み)をそのまま流用し、
+周期タイマー・positionのリセットのみch3固有。tests/apu_wave_test.odin 新規6件(ニブル順、
+音量デコード、length=256-n、DAC有無でのトリガー、トリガーでのposition初期化、DAC offでの
+即停止)。ch3再生中のwave RAMアクセス制限(DMG)はT5-3では未実装(T5-7で09/10/12を許可
+リスト残留、理由コメント付きで対応予定、フェーズドキュメントの「落とし穴」どおり)。
+`odin build src/app -collection:bbl=src -out:bbl` 成功、
+`odin test tests -collection:bbl=src` 247件全パス(新規6件含む)。
