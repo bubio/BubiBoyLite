@@ -39,7 +39,7 @@ odin test tests -collection:bbl=src   # cgb_acid2 が PASS
 
 ### T6-2: VRAM バンクと BG 属性マップ
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: VRAM を 2 バンク化し、バンク 1 の BG 属性を PPU に反映する。
 **作るもの**:
@@ -177,3 +177,17 @@ Dmg モード・A=0x01 を確認。`odin test tests -collection:bbl=src` 273 tes
 dmg-acid2ハッシュ含めリグレッションなし)。CGB固有ハードウェアレジスタ(VBK/SVBK/KEY1/HDMA/
 BCPS/OCPS)の初期値はレジスタ自体がまだ存在しないため、それぞれの実装タスク(T6-2/3/4/6/7)で
 合わせて設定する方針とした(このタスクではCPUレジスタとモード判定のみ)。
+
+2026-07-12 T6-2 完了: bus.odin の `vram` を `[2][8192]u8` に2バンク化し、VBK(FF4F、bit0のみ有効・
+読み出しは0xFE|bank)を実装(DMGモードでは書き込み無視・バンク0固定、読み出しは他の未実装
+レジスタ同様0xFF)。ppu.odin に `tile_map_pixel`(Bg_Pixel構造体を返す)を新設し、CGBモードでは
+「バンク1のタイルマップと同アドレス」から属性バイトを読んでY/Xフリップ・タイルデータバンク選択
+(bit3)・パレット番号(bit2-0)・BG優先度(bit7)に反映するようにした(BG/ウィンドウ両方の呼び出し
+箇所を置き換え)。ついでにOAMスプライトのタイルデータ読み出しも属性bit3(VRAMバンク)に対応
+させた(CGBのVRAMバンキングとして自然な範囲、パレット解決とOAM順優先度自体はT6-4/T6-5)。
+LCDC bit0=0の「BG白一色化」早期returnはCGBモードでは通らないようガード(CGBではbit0はマスター
+プライオリティの意味になり、BGは白くならず描画され続ける。Pan Docs "LCDC.0"。実際の優先度
+反映はT6-5)。単体テスト5件追加(tests/ppu_cgb_vram_test.odin): VBKでバンク0/1が別データになる
+こと、DMGモードでVBK書き込みが無視されること、BG属性のY/Xフリップとタイルデータバンク選択が
+ピクセルに反映されること。`odin test tests -collection:bbl=src` 278 tests 全パス(既存273+新規5、
+dmg-acid2ハッシュ含めリグレッションなし)。

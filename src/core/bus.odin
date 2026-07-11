@@ -10,13 +10,16 @@ TMA_ADDR :: 0xFF06
 TAC_ADDR :: 0xFF07
 IF_ADDR :: 0xFF0F
 DMA_ADDR :: 0xFF46
+VBK_ADDR :: 0xFF4F // T6-2: [CGB] VRAM バンク切替(bit0 のみ有効)
 
 OAM_SIZE :: 160
+VRAM_BANK_SIZE :: 8192
 
 Bus :: struct {
 	mode:                      Gb_Mode, // T6-1: ヘッダのCGBフラグから決まる実行モード(emulator_load_romが設定)
 	cart:                      Cartridge, // ヘッダ情報・ROM(借用)・外部RAM(所有)・MBC状態(T4-2、cartridge.odin/mbc.odin)
-	vram:                      [8192]u8,
+	vram:                      [2][VRAM_BANK_SIZE]u8, // T6-2: バンク0=DMG互換、バンク1=CGB属性/追加タイルデータ
+	vram_bank:                 u8, // FF4F(VBK) bit0。DMGモードでは常に0固定(書き込み無視)
 	wram:                      [8192]u8,
 	oam:                       [160]u8,
 	hram:                      [127]u8,
@@ -118,6 +121,12 @@ dma_tick_one_mcycle :: proc(bus: ^Bus) {
 	}
 }
 
+// bus_vram_read_bank は指定バンクの VRAM を直接読む(PPU の BG/ウィンドウ属性バイト読み取り、
+// HDMA のソース読み取りで使う。T6-2)。CPU バス経由ではないので dma_active 等の制限を受けない。
+bus_vram_read_bank :: proc(bus: ^Bus, bank: u8, addr: u16) -> u8 {
+	return bus.vram[bank & 1][addr - 0x8000]
+}
+
 // bus_read は CPU からの読み出し経路。OAM DMA 中は HRAM(FF80-FFFE)以外を読むと
 // 0xFF になる(実バス競合の簡易モデル、T2-5)。DMA 自身の内部読み出しは
 // この制限を受けない bus_read_raw を直接使う。
@@ -134,7 +143,7 @@ bus_read_raw :: proc(bus: ^Bus, addr: u16) -> u8 {
 	case addr <= 0x7FFF:
 		return mbc_read(&bus.cart, addr)
 	case addr <= 0x9FFF:
-		return bus.vram[addr - 0x8000]
+		return bus.vram[bus.vram_bank][addr - 0x8000]
 	case addr <= 0xBFFF:
 		return mbc_read(&bus.cart, addr)
 	case addr <= 0xDFFF:
@@ -159,7 +168,7 @@ bus_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 	case addr <= 0x7FFF:
 		mbc_write(&bus.cart, addr, value) // MBC バンク切替レジスタ(T4-2)
 	case addr <= 0x9FFF:
-		bus.vram[addr - 0x8000] = value
+		bus.vram[bus.vram_bank][addr - 0x8000] = value
 	case addr <= 0xBFFF:
 		mbc_write(&bus.cart, addr, value) // 外部RAM(T4-2)
 	case addr <= 0xDFFF:
@@ -207,6 +216,13 @@ bus_io_read :: proc(bus: ^Bus, addr: u16) -> u8 {
 		return bus.io[DMA_ADDR - 0xFF00]
 	case LCDC_ADDR, STAT_ADDR, SCY_ADDR, SCX_ADDR, LY_ADDR, LYC_ADDR, BGP_ADDR, OBP0_ADDR, OBP1_ADDR, WY_ADDR, WX_ADDR:
 		return ppu_read(bus, addr)
+	case VBK_ADDR:
+		// CGB 専用レジスタ。DMG モードでは他の未実装レジスタと同じく 0xFF を返す
+		// (BubiBoy Bus.fs の isCgb ガード方式に倣う)。
+		if bus.mode != .Cgb {
+			return 0xFF
+		}
+		return 0xFE | bus.vram_bank
 	case:
 		return 0xFF
 	}
@@ -237,6 +253,11 @@ bus_io_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 		bus.dma_start_delay = 2 // 1 M-cycleの遅延後、2M-cycle目から新しい転送が始まる
 	case LCDC_ADDR, STAT_ADDR, SCY_ADDR, SCX_ADDR, LY_ADDR, LYC_ADDR, BGP_ADDR, OBP0_ADDR, OBP1_ADDR, WY_ADDR, WX_ADDR:
 		ppu_write(bus, addr, value)
+	case VBK_ADDR:
+		// 落とし穴(phase-06): DMG モードでは VBK 書き込みを無視しバンク0固定のままにする。
+		if bus.mode == .Cgb {
+			bus.vram_bank = value & 0x01
+		}
 	case:
 		bus.io[addr - 0xFF00] = value
 	}

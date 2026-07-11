@@ -39,7 +39,15 @@ STAT_WRITABLE_MASK :: 0x78 // bit6-3のみ書き込みが反映される
 OAM_ATTR_BG_PRIORITY :: 0x80
 OAM_ATTR_Y_FLIP :: 0x40
 OAM_ATTR_X_FLIP :: 0x20
-OAM_ATTR_PALETTE :: 0x10
+OAM_ATTR_PALETTE :: 0x10 // DMG: OBP0/OBP1選択。CGBでもそのまま存在するが未使用(CGBパレットはbit2-0)
+
+// CGB 属性ビット定義(T6-2)。BG/ウィンドウはタイルマップと同アドレスのバンク1、
+// OAM はOAM自体のattrバイト(bit3=VRAMバンク, bit2-0=パレット番号)で共通のレイアウト。
+CGB_ATTR_BG_PRIORITY :: 0x80 // BG属性のみ: BGをOBJより前面にする(T6-5の優先度表で使用)
+CGB_ATTR_Y_FLIP :: 0x40
+CGB_ATTR_X_FLIP :: 0x20
+CGB_ATTR_BANK :: 0x08 // タイルデータの読み出し元VRAMバンク(0/1)
+CGB_ATTR_PALETTE_MASK :: 0x07
 
 // Ppu_Mode は STAT bit1-0 と同じ数値でエンコードする(u8(mode) がそのままビット値になる)。
 Ppu_Mode :: enum u8 {
@@ -79,6 +87,11 @@ Ppu :: struct {
 	// core が外界に公開する映像出力(architecture.md)
 	framebuffer:    [SCREEN_WIDTH * SCREEN_HEIGHT]u32, // ARGB(0xAARRGGBB)、行優先(T3-3)
 	bg_color_index: [SCREEN_WIDTH]u8, // 直近描画したラインのパレット適用前カラー番号(スプライト優先度判定用、T3-5)
+
+	// T6-2: CGB の BG/ウィンドウ属性(バンク1のタイルマップと同アドレスから読む)。
+	// DMGモードでは常にpalette=0・priority=falseのまま(属性バイトを読まない)。
+	bg_cgb_palette:  [SCREEN_WIDTH]u8, // 属性bit2-0(パレット番号0-7)
+	bg_cgb_priority: [SCREEN_WIDTH]bool, // 属性bit7(BG-to-OBJ優先。T6-5の優先度表で使用)
 }
 
 // ppu_read は FF40-FF45/FF47-FF4B の読み出しを扱う(FF46=DMAはbus.odinが別途処理)。
@@ -337,31 +350,68 @@ bg_tile_data_addr :: proc(lcdc: u8, tile_index: u8, row_in_tile: int) -> u16 {
 	return u16(0x9000 + signed_index * 16 + row_in_tile * 2)
 }
 
-// bg_tile_pixel_color_number は VRAM 上の2bppタイルデータ1行から指定列の
+// bg_tile_pixel_color_number は VRAM バンク0上の2bppタイルデータ1行から指定列の
 // カラー番号(0-3、パレット適用前)を取り出す。bit7が左端ピクセル。
+// DMGモード(バンク0固定)およびCGBのバンク0選択タイル向け(T3-3、T6-2で bank 引数を追加)。
 @(private)
 bg_tile_pixel_color_number :: proc(bus: ^Bus, tile_addr: u16, col_in_tile: int) -> u8 {
-	low := bus.vram[tile_addr - 0x8000]
-	high := bus.vram[tile_addr + 1 - 0x8000]
+	return tile_pixel_color_number(bus, 0, tile_addr, col_in_tile)
+}
+
+// tile_pixel_color_number は bg_tile_pixel_color_number の任意バンク版(T6-2)。
+// CGB の BG/ウィンドウ/OBJ いずれも属性bit3(またはOAM属性bit3)でバンク0/1を選ぶ。
+@(private)
+tile_pixel_color_number :: proc(bus: ^Bus, bank: u8, tile_addr: u16, col_in_tile: int) -> u8 {
+	low := bus_vram_read_bank(bus, bank, tile_addr)
+	high := bus_vram_read_bank(bus, bank, tile_addr + 1)
 	shift := uint(7 - col_in_tile)
 	low_bit := (low >> shift) & 0x01
 	high_bit := (high >> shift) & 0x01
 	return low_bit | (high_bit << 1)
 }
 
-// tile_map_color_number はタイルマップ(BG/ウィンドウ共通の形式)上の座標
-// (source_x, source_y)が指すタイルのカラー番号(パレット適用前、0-3)を返す。
+// Bg_Pixel はタイルマップ1ピクセル分の解決結果(T6-2)。DMGモードでは palette=0・
+// priority=false 固定(属性バイトはCGBモードのときだけバンク1から読む)。
+@(private = "file")
+Bg_Pixel :: struct {
+	color_number: u8, // 0-3、パレット適用前
+	palette:      u8, // CGB属性bit2-0(BGパレット番号)。DMGでは常に0
+	priority:     bool, // CGB属性bit7(BG-to-OBJ優先)。DMGでは常にfalse
+}
+
+// tile_map_pixel はタイルマップ(BG/ウィンドウ共通の形式)上の座標(source_x, source_y)が
+// 指すタイルのピクセルを解決する(T6-2)。CGBモードでは「バンク1のタイルマップと同アドレス」
+// (落とし穴)から属性バイトを読み、Y/Xフリップとタイルデータバンク選択に反映する。
 @(private)
-tile_map_color_number :: proc(bus: ^Bus, map_base: u16, lcdc: u8, source_x, source_y: int) -> u8 {
+tile_map_pixel :: proc(bus: ^Bus, map_base: u16, lcdc: u8, source_x, source_y: int) -> Bg_Pixel {
 	tile_col := source_x / 8
 	tile_row := source_y / 8
 	tile_map_addr := map_base + u16(tile_row * 32 + tile_col)
-	tile_index := bus.vram[tile_map_addr - 0x8000]
+	tile_index := bus_vram_read_bank(bus, 0, tile_map_addr)
+
+	attr: u8 = 0
+	if bus.mode == .Cgb {
+		attr = bus_vram_read_bank(bus, 1, tile_map_addr)
+	}
 
 	row_in_tile := source_y % 8
 	col_in_tile := source_x % 8
+	if attr & CGB_ATTR_Y_FLIP != 0 {
+		row_in_tile = 7 - row_in_tile
+	}
+	if attr & CGB_ATTR_X_FLIP != 0 {
+		col_in_tile = 7 - col_in_tile
+	}
+
+	tile_bank: u8 = 0
+	if attr & CGB_ATTR_BANK != 0 {
+		tile_bank = 1
+	}
+
 	tile_addr := bg_tile_data_addr(lcdc, tile_index, row_in_tile)
-	return bg_tile_pixel_color_number(bus, tile_addr, col_in_tile)
+	color_number := tile_pixel_color_number(bus, tile_bank, tile_addr, col_in_tile)
+
+	return Bg_Pixel{color_number = color_number, palette = attr & CGB_ATTR_PALETTE_MASK, priority = attr & CGB_ATTR_BG_PRIORITY != 0}
 }
 
 // ppu_render_scanline は1ライン分をframebufferに描く(T3-3: BG、T3-4: ウィンドウ、
@@ -370,6 +420,9 @@ tile_map_color_number :: proc(bus: ^Bus, map_base: u16, lcdc: u8, source_x, sour
 // 有効/無効を兼ねる。このときも bg_color_index は0にする。T3-5のスプライト優先度
 // 判定でBG不透明扱いされないようにするため)。スプライトはbit0とは独立にbit1で
 // 制御されるため、bit0=0でも(bit1が有効なら)描画され続ける。
+// T6-5の落とし穴: CGBモードではLCDC bit0の意味が変わり「BG/ウィンドウのマスタープライオリティ」
+// になる(0でもBG/ウィンドウは通常どおり描画され続け、OBJが常にBGより前面になるだけ。
+// Pan Docs "LCDC.0")。そのためこの白一色化・早期returnはDMGモード限定で行う。
 @(private)
 ppu_render_scanline :: proc(bus: ^Bus) {
 	p := &bus.ppu
@@ -378,10 +431,12 @@ ppu_render_scanline :: proc(bus: ^Bus) {
 	}
 	line_start := int(p.ly) * SCREEN_WIDTH
 
-	if p.lcdc & LCDC_BIT_BG_ENABLE == 0 {
+	if bus.mode != .Cgb && p.lcdc & LCDC_BIT_BG_ENABLE == 0 {
 		for x in 0 ..< SCREEN_WIDTH {
 			p.framebuffer[line_start + x] = DMG_SHADE_0
 			p.bg_color_index[x] = 0
+			p.bg_cgb_palette[x] = 0
+			p.bg_cgb_priority[x] = false
 		}
 		// 落とし穴: LCDC bit0=0はBG/ウィンドウのみを白くする。スプライトはbit1が
 		// 有効なら(DMGでは)独立して表示され続ける(Pan Docs "LCDC.0")。
@@ -407,19 +462,22 @@ ppu_render_scanline :: proc(bus: ^Bus) {
 	win_visible_this_line := win_enabled && int(p.ly) >= int(p.wy) && wx_minus7 < SCREEN_WIDTH
 
 	for x in 0 ..< SCREEN_WIDTH {
-		color_number: u8
+		pixel: Bg_Pixel
 		if win_visible_this_line && x >= wx_minus7 {
 			// ウィンドウの行はLYではなく window_line(実際に描いたラインだけ+1)で数える。
-			color_number = tile_map_color_number(bus, win_map_base, p.lcdc, x - wx_minus7, p.window_line)
+			pixel = tile_map_pixel(bus, win_map_base, p.lcdc, x - wx_minus7, p.window_line)
 		} else {
 			source_x := (x + int(p.scx)) & 0xFF // 256x256マップ内でラップアラウンド
 			source_y := (int(p.ly) + int(p.scy)) & 0xFF
-			color_number = tile_map_color_number(bus, bg_map_base, p.lcdc, source_x, source_y)
+			pixel = tile_map_pixel(bus, bg_map_base, p.lcdc, source_x, source_y)
 		}
 
 		// ウィンドウ画素もスプライト優先度判定では「BG扱い」なので同じバッファに記録する。
-		p.bg_color_index[x] = color_number
-		shade := (p.bgp >> (color_number * 2)) & 0x03
+		p.bg_color_index[x] = pixel.color_number
+		p.bg_cgb_palette[x] = pixel.palette
+		p.bg_cgb_priority[x] = pixel.priority
+		// T6-4でCGBモードはパレットRAM由来の色に置き換える。それまではBGP(グレー)で暫定描画する。
+		shade := (p.bgp >> (pixel.color_number * 2)) & 0x03
 		p.framebuffer[line_start + x] = dmg_shade(shade)
 	}
 
@@ -528,6 +586,13 @@ ppu_render_sprites :: proc(bus: ^Bus, line_start: int) {
 		row_in_tile := y_in_sprite % 8
 		tile_addr := u16(0x8000 + int(tile_index + tile_offset) * 16 + row_in_tile * 2)
 
+		// T6-2: CGBのOAM属性bit3はタイルデータの読み出し元VRAMバンクを選ぶ(DMGモードでは
+		// この属性ビット自体を無視してバンク0固定)。
+		sprite_tile_bank: u8 = 0
+		if bus.mode == .Cgb && s.attr & CGB_ATTR_BANK != 0 {
+			sprite_tile_bank = 1
+		}
+
 		for col in 0 ..< 8 {
 			x := s.x + col
 			if x < 0 || x >= SCREEN_WIDTH || pixel_owned[x] {
@@ -538,7 +603,7 @@ ppu_render_sprites :: proc(bus: ^Bus, line_start: int) {
 			if s.attr & OAM_ATTR_X_FLIP != 0 {
 				source_col = 7 - col
 			}
-			color_number := bg_tile_pixel_color_number(bus, tile_addr, source_col)
+			color_number := tile_pixel_color_number(bus, sprite_tile_bank, tile_addr, source_col)
 			if color_number == 0 {
 				continue // スプライトのカラー0は透明(ピクセルの所有権も取らない)
 			}
