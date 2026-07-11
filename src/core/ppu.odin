@@ -124,9 +124,18 @@ ppu_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 	p := &bus.ppu
 	switch addr {
 	case LCDC_ADDR:
+		was_enabled := p.lcdc & LCDC_BIT_LCD_ENABLE != 0
 		p.lcdc = value
+		now_enabled := p.lcdc & LCDC_BIT_LCD_ENABLE != 0
+		if !was_enabled && now_enabled {
+			ppu_enable(p)
+		} else if was_enabled && !now_enabled {
+			ppu_disable(p)
+		}
+		ppu_update_stat_irq(bus)
 	case STAT_ADDR:
 		p.stat_enable = value & STAT_WRITABLE_MASK
+		ppu_update_stat_irq(bus)
 	case SCY_ADDR:
 		p.scy = value
 	case SCX_ADDR:
@@ -136,6 +145,7 @@ ppu_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 	case LYC_ADDR:
 		p.lyc = value
 		ppu_update_lyc_equal(p)
+		ppu_update_stat_irq(bus)
 	case BGP_ADDR:
 		p.bgp = value
 	case OBP0_ADDR:
@@ -154,4 +164,136 @@ ppu_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 @(private)
 ppu_update_lyc_equal :: proc(p: ^Ppu) {
 	p.lyc_equal = p.ly == p.lyc
+}
+
+// --- モードタイミング(T3-2) ---
+// 参照: ~/dev/_Emu/BubiBoy/src/BubiBoy.Core/Lcd.fs(tick/modeFor)、Pan Docs "Rendering"/"STAT modes"。
+//
+// 1ライン=456 T-cycle。モード2(OAM scan)=80、モード3(描画)=172固定(可変長は実装しない)、
+// 残りモード0(HBlank)。LY0-143が可視、144でVBlank割り込み+モード1、LY153の後LY=0へ。
+// LCDC bit7=0(LCD off)中はLY=0・モード0固定でtickしない。
+
+CYCLES_PER_LINE :: 456
+MODE2_DOTS :: 80 // OAM scan
+MODE3_DOTS :: 172 // 描画(固定長。可変長のペナルティは実装しない)
+LINES_PER_FRAME :: 154
+VBLANK_START_LINE :: 144
+
+@(private)
+ppu_mode_for :: proc(ly: u8, dot: int) -> Ppu_Mode {
+	if ly >= VBLANK_START_LINE {
+		return .VBlank
+	}
+	if dot < MODE2_DOTS {
+		return .OamScan
+	}
+	if dot < MODE2_DOTS + MODE3_DOTS {
+		return .Draw
+	}
+	return .HBlank
+}
+
+// ppu_stat_condition_line は STAT blocking 用の「現在成立している割り込み条件の OR」を返す:
+// bit6(LYC==LY)、bit5(モード2)、bit4(モード1/VBlank)、bit3(モード0/HBlank)。
+// モード3(描画中)には対応する STAT 割り込み源が無い。
+@(private)
+ppu_stat_condition_line :: proc(p: ^Ppu) -> bool {
+	if p.lyc_equal && p.stat_enable & STAT_BIT_LYC_INT != 0 {
+		return true
+	}
+	switch p.mode {
+	case .OamScan:
+		return p.stat_enable & STAT_BIT_OAM_INT != 0
+	case .VBlank:
+		return p.stat_enable & STAT_BIT_VBLANK_INT != 0
+	case .HBlank:
+		return p.stat_enable & STAT_BIT_HBLANK_INT != 0
+	case .Draw:
+		return false
+	}
+	return false
+}
+
+// ppu_update_stat_irq は STAT blocking(立ち上がりエッジでのみ発火)を実装する。
+// STAT/LYC/LCDC への書き込み後と、ppu_tick でのモード/LY変化後の両方で呼ぶ。
+@(private)
+ppu_update_stat_irq :: proc(bus: ^Bus) {
+	p := &bus.ppu
+	line := ppu_stat_condition_line(p)
+	if line && !p.stat_irq_line {
+		interrupt_request(bus, .Stat)
+	}
+	p.stat_irq_line = line
+}
+
+// ppu_enable は LCDC bit7 が 0→1 になったときの初期化(ラインの先頭から再開)。
+@(private)
+ppu_enable :: proc(p: ^Ppu) {
+	p.ly = 0
+	p.dot = 0
+	p.mode = .OamScan
+	p.window_line = 0
+	ppu_update_lyc_equal(p)
+}
+
+// ppu_disable は LCDC bit7 が 1→0 になったときの状態固定(LY=0・モード0)。
+@(private)
+ppu_disable :: proc(p: ^Ppu) {
+	p.ly = 0
+	p.dot = 0
+	p.mode = .HBlank
+	ppu_update_lyc_equal(p)
+}
+
+// ppu_tick は t_cycles ぶん PPU の状態を進める。bus_tick から呼ばれる想定
+// (architecture.md のタイミングモデル: 1 T-cycle刻みで評価する。LY/モード遷移の
+// エッジをまたぐ変化を見落とさないため timer.odin と同様に1サイクルずつ進める)。
+// LCDC bit7=0の間は完全に停止する(落とし穴: 何もtickしない)。
+ppu_tick :: proc(bus: ^Bus, t_cycles: int) {
+	p := &bus.ppu
+	if p.lcdc & LCDC_BIT_LCD_ENABLE == 0 {
+		return
+	}
+
+	for _ in 0 ..< t_cycles {
+		prev_mode := p.mode
+		p.dot += 1
+		if p.dot >= CYCLES_PER_LINE {
+			p.dot = 0
+			p.ly += 1
+			if int(p.ly) >= LINES_PER_FRAME {
+				p.ly = 0
+				p.window_line = 0
+			}
+			ppu_update_lyc_equal(p)
+		}
+		p.mode = ppu_mode_for(p.ly, p.dot)
+
+		if prev_mode != .VBlank && p.mode == .VBlank {
+			interrupt_request(bus, .VBlank)
+		}
+		if prev_mode == .Draw && p.mode == .HBlank {
+			ppu_render_scanline(bus)
+		}
+
+		// STAT blocking: 条件の OR が変化しうるのは LYC 一致・モードが変わった瞬間だけだが、
+		// 判定自体は毎 T-cycle 行っても安価なので一律ここで評価する(取りこぼし防止)。
+		ppu_update_stat_irq(bus)
+	}
+}
+
+// ppu_render_scanline は1ライン分をframebufferに描く。BG(T3-3)/ウィンドウ(T3-4)/
+// スプライト(T3-5)の実装はここに追加される。T3-2時点ではモード配線の確認のみが目的のため、
+// 仮に最も明るい階調で塗りつぶす(T3-3で本実装に置き換える)。
+@(private)
+ppu_render_scanline :: proc(bus: ^Bus) {
+	p := &bus.ppu
+	if int(p.ly) >= SCREEN_HEIGHT {
+		return
+	}
+	line_start := int(p.ly) * SCREEN_WIDTH
+	for x in 0 ..< SCREEN_WIDTH {
+		p.framebuffer[line_start + x] = DMG_SHADE_0
+		p.bg_color_index[x] = 0
+	}
 }

@@ -30,8 +30,13 @@ package tests
 // T3-1でレジスタを正式実装した結果、LCDC=0x91(画面ON)・LY=0(PPU未稼働で変化しない)という
 // 正しい初期値が読めるようになったため、本来の仕様どおりLY到達を待って無限ループするように
 // なった(トレースで確認済み: PC が 0x4A4F-0x4A53 のポーリングループで停止し続ける)。
-// T3-2でppu_tickをbus_tickに接続しLYが実際に進むようになれば解消する見込み。T3-2完了後に
-// 再検証してこの4件を許可リストから外すこと。
+// T3-2(モードタイミング・STAT blocking実装)完了時点で ppu_tick を bus_tick に接続し LY が
+// 実際に進むようになったため、上記の disable_ppu_safe 待ちが解消し以下が PASS するようになった
+// (許可リストから除外済み): mooneye/acceptance/interrupts/ie_push、
+// mooneye/acceptance/oam_dma/basic、mooneye/acceptance/oam_dma_start、
+// timer/tim00_div_trigger、timer/tim01_div_trigger、timer/tim10_div_trigger、
+// timer/tim11_div_trigger。一方 halt_ime0_ei・halt_ime0_nointr_timing・oam_dma/reg_read は
+// T3-2後もまだ通らない(前者2つはTIMEOUT、reg_readはFAIL)。個別の原因はT3-8等で再調査する。
 
 expected_failures := [?]string {
 	// 未解決(T2-7で深く調査したが解決できず。PPU非依存でありフェーズ3送りにできる
@@ -57,16 +62,13 @@ expected_failures := [?]string {
 	// docs/dev/phases/phase-02-timing.md の T2-7 検証ログを参照。次セッションでの
 	// 再挑戦時はそこから始めること。
 	"mooneye/acceptance/timer/rapid_toggle",
-	"mooneye/acceptance/timer/tim00_div_trigger", // T3-1で新規: disable_ppu_safeがLY待ちで無限ループ(上記注記、T3-2待ち)
-	"mooneye/acceptance/timer/tim01_div_trigger", // T3-1で新規: 同上
-	"mooneye/acceptance/timer/tim10_div_trigger", // T3-1で新規: 同上
-	"mooneye/acceptance/timer/tim11_div_trigger", // T3-1で新規: 同上
-	"mooneye/acceptance/interrupts/ie_push", // フェーズ3送り: disable_ppu_safeがLY待ちで無限ループ(下記注記)
-	"mooneye/acceptance/halt_ime0_ei", // フェーズ3送り: wait_ly $00 が実PPU無しでは終わらない
-	"mooneye/acceptance/halt_ime0_nointr_timing", // フェーズ3送り: wait_ly 10 が実PPU無しでは終わらない
-	"mooneye/acceptance/oam_dma/basic", // フェーズ3送り: disable_ppu_safeがLY待ちで無限ループ(下記注記)
-	"mooneye/acceptance/oam_dma/reg_read", // フェーズ3送り: disable_ppu_safeがLY待ちで無限ループ(下記注記)
-	"mooneye/acceptance/oam_dma_start", // フェーズ3送り: disable_ppu_safeがLY待ちで無限ループ(下記注記)
+	// T3-2でPPUのモードタイミングが実装されLYが実際に進むようになったが、この2件はまだ
+	// TIMEOUTのまま(wait_lyが期待するタイミング/値に到達しない。個別の原因はT3-8等で再調査)。
+	"mooneye/acceptance/halt_ime0_ei",
+	"mooneye/acceptance/halt_ime0_nointr_timing",
+	// oam_dma/reg_read はdisable_ppu_safe待ちは解消したが、DMA転送中のレジスタ読み出し値が
+	// 期待と異なりFAILのまま(T3-2完了時点で判明。個別の原因はT3-8等で再調査)。
+	"mooneye/acceptance/oam_dma/reg_read",
 }
 
 is_expected_failure :: proc(name: string) -> bool {

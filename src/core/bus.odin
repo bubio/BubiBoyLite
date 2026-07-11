@@ -50,11 +50,12 @@ bus_load_rom :: proc(bus: ^Bus, data: []u8) -> bool {
 }
 
 // bus_tick は t_cycles ぶん時間を進める。CPU の全メモリアクセスごとに呼ばれる。
-// Timer(timer.odin、T2-3)と OAM DMA(T2-5)を駆動する。PPU/APU の駆動はフェーズ3/5以降。
+// Timer(timer.odin、T2-3)、PPU(ppu.odin、T3-2)、OAM DMA(T2-5)を駆動する。APU の駆動はフェーズ5以降。
 // t_cycles は常に4の倍数(1 M-cycle単位)で渡される想定(architecture.md のタイミングモデル)。
 bus_tick :: proc(bus: ^Bus, t_cycles: int) {
 	bus.cycles += u64(t_cycles)
 	timer_tick(bus, t_cycles)
+	ppu_tick(bus, t_cycles)
 	for _ in 0 ..< t_cycles / 4 {
 		dma_tick_one_mcycle(bus)
 	}
