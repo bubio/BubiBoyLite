@@ -62,7 +62,7 @@ odin test tests -collection:bbl=src
 
 ### T1-3: 8bit ロード・算術・論理命令
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: LD r,r' / LD r,n / LD r,(HL) 系、ADD/ADC/SUB/SBC/AND/OR/XOR/CP/INC/DEC を実装する。
 **作るもの**: `src/core/cpu.odin` に `cpu_step(cpu, bus) -> int`（実行 T-cycle 数を返す）とオペコードディスパッチ（`switch opcode`）。
@@ -193,3 +193,4 @@ odin test tests -collection:bbl=src                    # ROM なし → skip 扱
 
 2026-07-11 T1-1 完了: odin test tests -collection:bbl=src 全パス(13 tests)
 2026-07-11 T1-2 完了: odin test tests -collection:bbl=src 全パス(21 tests)
+2026-07-11 T1-3 完了: odin test tests -collection:bbl=src 全パス(31 tests)
