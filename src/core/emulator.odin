@@ -25,6 +25,14 @@ emulator_load_rom :: proc(emu: ^Emulator, rom_data: []u8) -> bool {
 	return true
 }
 
+// emulator_set_wall_clock は MBC3 RTC(T4-4)へ現在時刻(UNIX秒)を供給する。
+// core は時計を直接読まない方針(architecture.md「エラー処理」と同じ「core は外界に依存しない」
+// 原則、テスト容易性のため)なので、壁時計の取得は app 側の責務になる。RTC を持たない
+// カートリッジでは何もしない(mbc_sync_wall_clock 内でガードする)。
+emulator_set_wall_clock :: proc(emu: ^Emulator, unix_seconds: i64) {
+	mbc_sync_wall_clock(&emu.bus.cart, unix_seconds)
+}
+
 // emulator_step は1命令ぶんCPUを実行する(architecture.md「実行」)。戻り値は消費したT-cycle数。
 emulator_step :: proc(emu: ^Emulator) -> int {
 	return cpu_step(&emu.cpu, &emu.bus)

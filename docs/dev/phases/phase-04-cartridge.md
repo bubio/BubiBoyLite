@@ -74,7 +74,7 @@ odin test tests -collection:bbl=src   # cpu_instrs 統合版 + mooneye emulator-
 
 ### T4-4: MBC3 + RTC
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: MBC3 とリアルタイムクロックを実装する（ポケモン金銀等が必要とする）。
 **作るもの**: mbc.odin:
@@ -194,4 +194,23 @@ mooneye emulator-only/mbc2/ の bits_ramg・bits_romb・bits_unused・ram・rom_
 rom_2Mb 全7本を手元で個別実行しPASSを確認済み(正式な@(test)化とfetch_test_roms.shへの追加は
 T4-7で行う。tests/roms/は.gitignore対象のためこの時点では未コミット)。
 `odin test tests -collection:bbl=src` 178 tests 全パス(既存172 + 新規6)、16.0秒。
+`odin build src/app -collection:bbl=src`もクリーン。
+
+2026-07-11 T4-4 完了: mbc.odinにMbc3_State(ram_enabled/rom_bank/ram_or_rtc_select/
+rtc:[5]u8/latched_rtc:[5]u8/latch_prepared/rtc_base_unix:i64)を追加しMbc_State unionに
+組み込んだ(mbc3_read/mbc3_write)。2000-3FFF ROMバンク7bit(0→1)、4000-5FFF
+0x00-0x03=RAMバンク/0x08-0x0C=RTCレジスタ選択(S/M/H/DL/DH)、6000-7FFFはBubiBoy
+latchMbc3Rtcと同じ状態機械で「0x00書き込み後にprepared=trueな状態で0x01」の遷移のみ
+ラッチが発生する。CPUからのRTC読み出しは常にlatched_rtc(ラッチ済みスナップショット)を見る
+設計とし、ライブレジスタ(rtc)は emulator_set_wall_clock(emulator.odinに新規追加、
+mbc_sync_wall_clock経由でMbc3_Stateへディスパッチ)で供給されるUNIX秒により進行する
+「基準UNIX時刻+経過秒」方式(rtc_base_unix、0は未同期センチネル、初回供給は基準点を打つ
+だけで加算しない)。DH bit6(停止)中はrtc_base_unixだけ更新しレジスタを進めない(復帰時の
+一気読み進み防止)。RTC永続化(.rtc)はフェーズ7送り(このタスクではインメモリのみ)。
+tests/mbc3_test.odin新規作成(6件: ROMバンク0→1読み替え、RAMバンク独立性、
+ラッチの0→1遷移限定、RTCレジスタ選択の読み書きラウンドトリップ、wall_clock供給での
+時刻進行(1時間1分1秒境界)、停止ビットでの進行停止)。Mooneye emulator-only にはMBC3の
+自動テストROMが存在しない(mbc3-tester/mealybug-tearoom mbc3_rtcは目視確認用ROMのため
+対象外、phase-04記載のT4-7対象にもmbc3は含まれない)ため、単体テストのみで検証した。
+`odin test tests -collection:bbl=src` 184 tests 全パス(既存178 + 新規6)、17.2秒。
 `odin build src/app -collection:bbl=src`もクリーン。
