@@ -1,10 +1,43 @@
 package core
 
-// エミュレータ全体の統合。フェーズ 0 では骨格とテストパターン描画のみ。
-// SDL2 に一切依存しない（architecture.md「core と app の分離」）。
+// エミュレータ全体の統合。SDL2 に一切依存しない（architecture.md「core と app の分離」）。
+// フェーズ0で追加したテストパターン描画(framebuffer)に加え、T3-6でCpu/Busを組み込み
+// emulator_step/emulator_run_frameを実装した(ROM実行時の実映像はbus.ppu.framebufferに
+// 出る。architecture.md「実行」/「core が外界に公開するインターフェイス」)。
 
 Emulator :: struct {
-	framebuffer: [SCREEN_WIDTH * SCREEN_HEIGHT]u32, // ARGB (0xAARRGGBB)、行優先
+	framebuffer: [SCREEN_WIDTH * SCREEN_HEIGHT]u32, // ARGB (0xAARRGGBB)、行優先。ROM未ロード時のテストパターン専用
+	cpu:         Cpu,
+	bus:         Bus,
+}
+
+// emulator_load_rom は ROM-only カートリッジ(MBCはフェーズ4)をロードし、CPUを
+// ブートROM完了直後の状態(references.md「ブート後レジスタ初期値」)にリセットする。
+// rom_data の所有権は呼び出し側に残る(bus.rom はスライスをそのまま参照するだけなので、
+// Emulator が使われている間は呼び出し側が rom_data を解放しないこと)。
+emulator_load_rom :: proc(emu: ^Emulator, rom_data: []u8) -> bool {
+	if !bus_load_rom(&emu.bus, rom_data) {
+		return false
+	}
+	cpu_reset(&emu.cpu, .DMG)
+	return true
+}
+
+// emulator_step は1命令ぶんCPUを実行する(architecture.md「実行」)。戻り値は消費したT-cycle数。
+emulator_step :: proc(emu: ^Emulator) -> int {
+	return cpu_step(&emu.cpu, &emu.bus)
+}
+
+// emulator_run_frame は1フレーム(70224 T-cycle)ぶん実行する(architecture.md「実行」)。
+// cpu_stepは命令単位でしか止まれず1フレームちょうどでは終わらない(オーバーシュートする)ため、
+// 累計サイクル数(emu.bus.cycles)を基準に「フレーム開始時点+70224に達するまで」ループする。
+// 余剰分は自然に次フレームへ持ち越されるので、毎フレーム0から数え直す方式(誤差が蓄積して
+// ドリフトする)は採らない。
+emulator_run_frame :: proc(emu: ^Emulator) {
+	frame_end := emu.bus.cycles + CYCLES_PER_FRAME
+	for emu.bus.cycles < frame_end {
+		cpu_step(&emu.cpu, &emu.bus)
+	}
 }
 
 // emulator_render_test_pattern は横グラデーション + 縦グラデーション + 四隅マーカーを

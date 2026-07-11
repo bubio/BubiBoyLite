@@ -162,5 +162,38 @@ fetch_mooneye "acceptance/oam_dma/basic.gb"
 fetch_mooneye "acceptance/oam_dma/reg_read.gb"
 fetch_mooneye "acceptance/oam_dma_start.gb"
 
+# --- dmg-acid2 (T3-6/T3-8) ---
+# testing.md: mattcurrie/dmg-acid2 リリースから取得する。ROM本体はリリースタグ(v1.0)の
+# 添付アセット(不変URL)、参照PNG画像は目視比較用にコミットハッシュ固定でraw取得する
+# (2026-07時点のmasterのHEAD。リリースタグにはPNGが含まれないためcommit固定が必要)。
+ACID2_DIR="$ROMS_DIR/acid2"
+mkdir -p "$ACID2_DIR"
+ACID2_COMMIT="8a98ce731f96dde032ffb22ec36dc985d78fdb18"
+ACID2_ROM_URL="https://github.com/mattcurrie/dmg-acid2/releases/download/v1.0/dmg-acid2.gb"
+ACID2_REFERENCE_PNG_URL="https://raw.githubusercontent.com/mattcurrie/dmg-acid2/$ACID2_COMMIT/img/reference-dmg.png"
+
+fetch_direct() {
+	# fetch_direct <url> <local-path>
+	url="$1"
+	local_path="$2"
+
+	if [ -f "$local_path" ]; then
+		echo "fetch_test_roms.sh: 取得済み、スキップ: $local_path"
+		return 0
+	fi
+
+	echo "fetch_test_roms.sh: 取得中: $url"
+	tmp_path="$local_path.tmp"
+	if ! curl -fsSL --retry 3 --retry-delay 2 -o "$tmp_path" "$url"; then
+		rm -f "$tmp_path"
+		echo "fetch_test_roms.sh: 取得失敗: $url" >&2
+		return 1
+	fi
+	mv "$tmp_path" "$local_path"
+}
+
+fetch_direct "$ACID2_ROM_URL" "$ACID2_DIR/dmg-acid2.gb"
+fetch_direct "$ACID2_REFERENCE_PNG_URL" "$ACID2_DIR/reference-dmg.png"
+
 echo "fetch_test_roms.sh: 完了。配置先: $ROMS_DIR"
 exit 0

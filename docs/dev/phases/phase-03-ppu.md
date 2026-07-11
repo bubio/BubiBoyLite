@@ -108,7 +108,7 @@ odin test tests -collection:bbl=src      # dmg_acid2 テストが PASS
 
 ### T3-6: SDL2 画面統合と暫定ペーシング
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: エミュレータのフレームバッファを SDL2 で表示し、実機速度で回す（暫定: 壁時計 60fps。オーディオ駆動はフェーズ 5 で置換）。
 **作るもの**: `src/app/main.odin` / `video.odin`:
@@ -227,3 +227,19 @@ LY-WYの直接代用にならず、実際に描画したライン数だけを反
 X座標の小さい方が勝つ)、10個制限(11番目以降はOAM順で描画されない、画面外Xも枠を消費)、
 8x16のtile indexマスク(奇数indexでも偶数に丸められる)、BG優先度ビット(所有権とは独立)。
 `odin test tests -collection:bbl=src` で全147本PASS。`odin build src/app -collection:bbl=src` もビルド成功。
+
+2026-07-11 T3-6 完了: src/core/emulator.odin の Emulator に cpu: Cpu / bus: Bus を追加し、
+emulator_load_rom(ROM-onlyロード+cpu_reset)・emulator_step・emulator_run_frame(累計サイクル
+基準でフレーム境界の余剰を次フレームへ持ち越す方式、ドリフト防止)を実装。
+src/app/main.odin に run_rom_window を追加: ROM読み込み→emulator_run_frame→
+emu.bus.ppu.framebuffer を video_present、Esc/クローズで終了。暫定ペーシングは
+SDL_GetPerformanceCounter基準でフレーム所要時間(70224/4194304秒)を待ち、SDL_Delayの粗い
+分解能による誤差蓄積を毎フレーム補正(TODOコメントでフェーズ5のオーディオ駆動置換を明記)。
+scripts/fetch_test_roms.sh に dmg-acid2 ROM(mattcurrie/dmg-acid2 v1.0リリースアセット)と
+参照PNG(同リポジトリのimg/reference-dmg.png、コミット8a98ce7固定)の取得を追加。
+視覚検証: 実際に `bbl tests/roms/acid2/dmg-acid2.gb` をGUI起動し、macOSの`screencapture`で
+ウィンドウをスクリーンショットしてReadツールで画像として確認。参照PNG(img/reference-dmg.png)
+と目視比較し、顔の輪郭・目の三日月装飾・鼻(ダイヤ形)・口・"HELLO WORLD!"/"dmg-acid2 by Matt
+Currie"のテキストが一致することを確認した(崩れなし)。スクリーンショットは一時ディレクトリに
+保存し、リポジトリには含めていない。
+`odin test tests -collection:bbl=src` で全147本PASS(既存回帰なし)。`odin build src/app -collection:bbl=src` ビルド成功。
