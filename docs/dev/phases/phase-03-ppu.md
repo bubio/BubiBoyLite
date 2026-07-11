@@ -20,7 +20,7 @@ odin test tests -collection:bbl=src      # dmg_acid2 テストが PASS
 
 ### T3-1: LCD レジスタ群
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: PPU のレジスタと VRAM/OAM アクセスの土台を作る。
 **作るもの**: `src/core/ppu.odin`:
@@ -167,3 +167,13 @@ odin test tests -collection:bbl=src
 ## 検証ログ
 
 （タスク完了ごとに 1 行追記）
+
+2026-07-11 T3-1 完了: `src/core/ppu.odin` を新規作成し LCDC/STAT/SCY/SCX/LY/LYC/BGP/OBP0/OBP1/WY/WX を実装。
+bus.odin の IO 分岐(bus_io_read/bus_io_write)から接続。STAT は bit7 常時1・書き込みは bit6-3 のみ反映、
+bit2(LYC==LY)/bit1-0(モード)はPPU管理値から合成、LY 書き込みは無視。
+`odin test tests -collection:bbl=src` で新規 tests/ppu_test.odin 4本を含む全133本PASS。
+`odin build src/app -collection:bbl=src` もビルド成功を確認。
+副作用として mooneye timer/tim00_div_trigger・tim01_div_trigger・tim10_div_trigger・tim11_div_trigger の
+4本が新たに expected_failures.odin 行き(理由はファイル内コメント参照。disable_ppu_safe が LY=$90 到達待ちで
+無限ループするようになったため。以前はLCDC/LY未実装で固定0xFFを返しており偶然ポーリングを素通りしていた)。
+T3-2でppu_tickを接続しLYが進むようになった時点で再検証し許可リストから外すこと。

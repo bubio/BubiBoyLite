@@ -37,6 +37,7 @@ Bus :: struct {
 	dma_index:                 int, // 転送済みバイト数(0..159)
 	dma_start_delay:           int, // (再)開始までの残りM-cycle数(0=保留無し)。開始には1 M-cycleの遅延がある
 	dma_pending_source:        u16, // dma_start_delay が0になった時点で dma_source に反映される転送元
+	ppu:                       Ppu, // LCD レジスタ・モードタイミング・フレームバッファ(ppu.odin、T3-1)
 }
 
 // bus_load_rom は ROM-only カートリッジをそのまま map する(MBC はフェーズ4)。
@@ -175,6 +176,8 @@ bus_io_read :: proc(bus: ^Bus, addr: u16) -> u8 {
 	case DMA_ADDR:
 		// 転送状態に関わらず、直近に書き込まれた値をそのまま返す(mooneye oam_dma/reg_read)。
 		return bus.io[DMA_ADDR - 0xFF00]
+	case LCDC_ADDR, STAT_ADDR, SCY_ADDR, SCX_ADDR, LY_ADDR, LYC_ADDR, BGP_ADDR, OBP0_ADDR, OBP1_ADDR, WY_ADDR, WX_ADDR:
+		return ppu_read(bus, addr)
 	case:
 		return 0xFF
 	}
@@ -199,6 +202,8 @@ bus_io_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 		bus.io[DMA_ADDR - 0xFF00] = value // 読み戻し用(mooneye oam_dma/reg_read)
 		bus.dma_pending_source = u16(value) << 8
 		bus.dma_start_delay = 2 // 1 M-cycleの遅延後、2M-cycle目から新しい転送が始まる
+	case LCDC_ADDR, STAT_ADDR, SCY_ADDR, SCX_ADDR, LY_ADDR, LYC_ADDR, BGP_ADDR, OBP0_ADDR, OBP1_ADDR, WY_ADDR, WX_ADDR:
+		ppu_write(bus, addr, value)
 	case:
 		bus.io[addr - 0xFF00] = value
 	}

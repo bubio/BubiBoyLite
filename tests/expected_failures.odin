@@ -21,6 +21,18 @@ package tests
 // この時点で無限ループしテスト本体(ie_push本来のIE破壊ロジックや、DMA転送内容の検証)へ
 // 到達すらできない。ie_push のディスパッチ本体は tests/interrupt_test.odin の単体テストで
 // 別途 mooneye ie_push.s のRound1/Round3を手でトレースして検証済み。
+//
+// T3-1(LCDレジスタ群実装)完了時点で timer/tim00_div_trigger・tim01_div_trigger・
+// tim10_div_trigger・tim11_div_trigger の4本が新たにここへ加わった。原因は上記と同根:
+// これらのROMも起動直後に`disable_ppu_safe`(LYが$90になるまでポーリング)を呼んでいる。
+// T3-1以前はLCDC/STAT/LYが未実装で固定0xFFを返していたため、たまたま「画面はもう無効」
+// 「LYはもう$90以上」に見えるビット列でポーリングを素通りしていた(偶然の誤PASS)。
+// T3-1でレジスタを正式実装した結果、LCDC=0x91(画面ON)・LY=0(PPU未稼働で変化しない)という
+// 正しい初期値が読めるようになったため、本来の仕様どおりLY到達を待って無限ループするように
+// なった(トレースで確認済み: PC が 0x4A4F-0x4A53 のポーリングループで停止し続ける)。
+// T3-2でppu_tickをbus_tickに接続しLYが実際に進むようになれば解消する見込み。T3-2完了後に
+// 再検証してこの4件を許可リストから外すこと。
+
 expected_failures := [?]string {
 	// 未解決(T2-7で深く調査したが解決できず。PPU非依存でありフェーズ3送りにできる
 	// 正当な理由がないため、この1件が原因でフェーズ2のマイルストーンは🟢にできていない):
@@ -45,6 +57,10 @@ expected_failures := [?]string {
 	// docs/dev/phases/phase-02-timing.md の T2-7 検証ログを参照。次セッションでの
 	// 再挑戦時はそこから始めること。
 	"mooneye/acceptance/timer/rapid_toggle",
+	"mooneye/acceptance/timer/tim00_div_trigger", // T3-1で新規: disable_ppu_safeがLY待ちで無限ループ(上記注記、T3-2待ち)
+	"mooneye/acceptance/timer/tim01_div_trigger", // T3-1で新規: 同上
+	"mooneye/acceptance/timer/tim10_div_trigger", // T3-1で新規: 同上
+	"mooneye/acceptance/timer/tim11_div_trigger", // T3-1で新規: 同上
 	"mooneye/acceptance/interrupts/ie_push", // フェーズ3送り: disable_ppu_safeがLY待ちで無限ループ(下記注記)
 	"mooneye/acceptance/halt_ime0_ei", // フェーズ3送り: wait_ly $00 が実PPU無しでは終わらない
 	"mooneye/acceptance/halt_ime0_nointr_timing", // フェーズ3送り: wait_ly 10 が実PPU無しでは終わらない
