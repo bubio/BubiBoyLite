@@ -322,10 +322,26 @@ bg_tile_pixel_color_number :: proc(bus: ^Bus, tile_addr: u16, col_in_tile: int) 
 	return low_bit | (high_bit << 1)
 }
 
-// ppu_render_scanline は1ライン分をframebufferに描く(T3-3: BGのみ。ウィンドウは
-// T3-4、スプライトはT3-5でここに追加する)。
-// LCDC bit0=0のときBGは白一色になる(このときも bg_color_index は0にする。
-// T3-5のスプライト優先度判定でBG不透明扱いされないようにするため)。
+// tile_map_color_number はタイルマップ(BG/ウィンドウ共通の形式)上の座標
+// (source_x, source_y)が指すタイルのカラー番号(パレット適用前、0-3)を返す。
+@(private)
+tile_map_color_number :: proc(bus: ^Bus, map_base: u16, lcdc: u8, source_x, source_y: int) -> u8 {
+	tile_col := source_x / 8
+	tile_row := source_y / 8
+	tile_map_addr := map_base + u16(tile_row * 32 + tile_col)
+	tile_index := bus.vram[tile_map_addr - 0x8000]
+
+	row_in_tile := source_y % 8
+	col_in_tile := source_x % 8
+	tile_addr := bg_tile_data_addr(lcdc, tile_index, row_in_tile)
+	return bg_tile_pixel_color_number(bus, tile_addr, col_in_tile)
+}
+
+// ppu_render_scanline は1ライン分をframebufferに描く(T3-3: BG、T3-4: ウィンドウ。
+// スプライトはT3-5でここに追加する)。
+// LCDC bit0=0のときBG・ウィンドウとも白一色になる(DMGではbit0がBG&ウィンドウ全体の
+// 有効/無効を兼ねる。このときも bg_color_index は0にする。T3-5のスプライト優先度
+// 判定でBG不透明扱いされないようにするため)。
 @(private)
 ppu_render_scanline :: proc(bus: ^Bus) {
 	p := &bus.ppu
@@ -347,22 +363,36 @@ ppu_render_scanline :: proc(bus: ^Bus) {
 		bg_map_base = 0x9C00
 	}
 
+	win_map_base: u16 = 0x9800
+	if p.lcdc & LCDC_BIT_WIN_MAP != 0 {
+		win_map_base = 0x9C00
+	}
+
+	// ウィンドウがこのラインで実際に描画されるか(T3-4: 内部ラインカウンタを
+	// LYで代用するとdmg-acid2が落ちる落とし穴。LY>=WYの間だけ、かつ実際に
+	// 少なくとも1ピクセル描画するラインだけで window_line を進める)。
+	win_enabled := p.lcdc & LCDC_BIT_WIN_ENABLE != 0
+	wx_minus7 := int(p.wx) - 7 // WX=7が画面左端(落とし穴)
+	win_visible_this_line := win_enabled && int(p.ly) >= int(p.wy) && wx_minus7 < SCREEN_WIDTH
+
 	for x in 0 ..< SCREEN_WIDTH {
-		source_x := (x + int(p.scx)) & 0xFF // 256x256マップ内でラップアラウンド
-		source_y := (int(p.ly) + int(p.scy)) & 0xFF
+		color_number: u8
+		if win_visible_this_line && x >= wx_minus7 {
+			// ウィンドウの行はLYではなく window_line(実際に描いたラインだけ+1)で数える。
+			color_number = tile_map_color_number(bus, win_map_base, p.lcdc, x - wx_minus7, p.window_line)
+		} else {
+			source_x := (x + int(p.scx)) & 0xFF // 256x256マップ内でラップアラウンド
+			source_y := (int(p.ly) + int(p.scy)) & 0xFF
+			color_number = tile_map_color_number(bus, bg_map_base, p.lcdc, source_x, source_y)
+		}
 
-		tile_col := source_x / 8
-		tile_row := source_y / 8
-		tile_map_addr := bg_map_base + u16(tile_row * 32 + tile_col)
-		tile_index := bus.vram[tile_map_addr - 0x8000]
-
-		row_in_tile := source_y % 8
-		col_in_tile := source_x % 8
-		tile_addr := bg_tile_data_addr(p.lcdc, tile_index, row_in_tile)
-		color_number := bg_tile_pixel_color_number(bus, tile_addr, col_in_tile)
-
+		// ウィンドウ画素もスプライト優先度判定では「BG扱い」なので同じバッファに記録する。
 		p.bg_color_index[x] = color_number
 		shade := (p.bgp >> (color_number * 2)) & 0x03
 		p.framebuffer[line_start + x] = dmg_shade(shade)
+	}
+
+	if win_visible_this_line {
+		p.window_line += 1
 	}
 }

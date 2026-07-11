@@ -75,7 +75,7 @@ odin test tests -collection:bbl=src      # dmg_acid2 テストが PASS
 
 ### T3-4: ウィンドウ描画
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: ウィンドウレイヤを実装する。
 **作るもの**: ppu.odin:
@@ -198,3 +198,16 @@ T3-5のスプライト優先度判定用)。パレット適用前カラー番号
 新規単体テスト4本(tests/ppu_bg_test.odin): unsignedタイルモード、SCXの256境界ラップ(tile_col31→0)、
 signedタイルモード(基点0x9000、インデックス0xFFで0x8FF0)、BG無効時の白塗り。
 `odin test tests -collection:bbl=src` で全140本PASS。`odin build src/app -collection:bbl=src` もビルド成功。
+
+2026-07-11 T3-4 完了: ppu_render_scanline にウィンドウ描画を追加。LCDC bit5有効時、
+LY>=WYかつx>=WX-7の領域でBGの代わりにウィンドウ(タイルマップLCDC bit6)を描画。
+ウィンドウ内部ラインカウンタ(window_line)を導入: フレーム開始時0リセット(LY153後の
+ラップ、およびLCDC bit7の0→1再有効化時)、ウィンドウを実際に描画したライン(有効かつ
+LY>=WYかつ画面内に1ピクセル以上表示される)だけで+1。ウィンドウ画素もbg_color_indexへ
+書き込む(T3-5のスプライト優先度判定でBG扱いにするため)。LCDC bit0=0のときはBG同様
+ウィンドウも白(DMGの仕様どおりbit0がBG&ウィンドウ全体を無効化)。
+新規単体テスト2本(tests/ppu_window_test.odin): WY/WX境界でのBG↔ウィンドウ切り替わり、
+および「ウィンドウを一時的に無効化してから再度有効化」した際に内部カウンタが
+LY-WYの直接代用にならず、実際に描画したライン数だけを反映することを確認するテスト
+(落とし穴の直接的な再現・検出)。
+`odin test tests -collection:bbl=src` で全142本PASS。`odin build src/app -collection:bbl=src` もビルド成功。
