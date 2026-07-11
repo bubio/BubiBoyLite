@@ -56,7 +56,7 @@ odin test tests -collection:bbl=src      # dmg_acid2 テストが PASS
 
 ### T3-3: BG スキャンライン描画
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: 背景 1 ラインをフレームバッファに描く。
 **作るもの**: ppu.odin の `ppu_render_scanline`:
@@ -190,3 +190,11 @@ interrupts/ie_push・oam_dma/basic・oam_dma_start・timer/tim00_div_trigger・t
 tim10_div_trigger・tim11_div_trigger の計7本がPASSするようになり expected_failures.odin から除外。
 halt_ime0_ei・halt_ime0_nointr_timing(TIMEOUT)・oam_dma/reg_read(FAIL)はT3-2後も未解決のため許可リストに残す
 (理由は tests/expected_failures.odin のコメント参照、T3-8等で再調査予定)。
+
+2026-07-11 T3-3 完了: ppu_render_scanline にBG描画を実装(タイルマップLCDC bit3で0x9800/0x9C00選択、
+タイルデータLCDC bit4でunsigned 0x8000起点/signed 0x9000起点、SCX/SCYの256x256ラップアラウンド、
+2bppデコード、BGPパレット変換、DMG_SHADE_0-3への変換)。LCDC bit0=0時はBG白一色(bg_color_indexも0、
+T3-5のスプライト優先度判定用)。パレット適用前カラー番号をbg_color_indexに保持。
+新規単体テスト4本(tests/ppu_bg_test.odin): unsignedタイルモード、SCXの256境界ラップ(tile_col31→0)、
+signedタイルモード(基点0x9000、インデックス0xFFで0x8FF0)、BG無効時の白塗り。
+`odin test tests -collection:bbl=src` で全140本PASS。`odin build src/app -collection:bbl=src` もビルド成功。

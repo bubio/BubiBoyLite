@@ -282,9 +282,50 @@ ppu_tick :: proc(bus: ^Bus, t_cycles: int) {
 	}
 }
 
-// ppu_render_scanline は1ライン分をframebufferに描く。BG(T3-3)/ウィンドウ(T3-4)/
-// スプライト(T3-5)の実装はここに追加される。T3-2時点ではモード配線の確認のみが目的のため、
-// 仮に最も明るい階調で塗りつぶす(T3-3で本実装に置き換える)。
+// dmg_shade は BGP/OBPn から取り出した2bitシェード番号(0-3)を DMG 4階調の
+// ARGB カラーへ変換する(T3-3、素直なグレー表現。BluePrint/phase-03指定)。
+@(private)
+dmg_shade :: proc(shade: u8) -> u32 {
+	switch shade & 0x03 {
+	case 0:
+		return DMG_SHADE_0
+	case 1:
+		return DMG_SHADE_1
+	case 2:
+		return DMG_SHADE_2
+	case:
+		return DMG_SHADE_3
+	}
+}
+
+// bg_tile_data_addr はタイルインデックスからタイルデータの先頭アドレスを求める
+// (T3-3)。LCDC bit4=1: 0x8000 起点の unsigned index。bit4=0: 0x9000 起点の
+// signed index(落とし穴: 基点は0x9000、i8キャストで計算する)。
+@(private)
+bg_tile_data_addr :: proc(lcdc: u8, tile_index: u8, row_in_tile: int) -> u16 {
+	if lcdc & LCDC_BIT_BG_WIN_TILES != 0 {
+		return u16(0x8000 + int(tile_index) * 16 + row_in_tile * 2)
+	}
+	signed_index := int(i8(tile_index))
+	return u16(0x9000 + signed_index * 16 + row_in_tile * 2)
+}
+
+// bg_tile_pixel_color_number は VRAM 上の2bppタイルデータ1行から指定列の
+// カラー番号(0-3、パレット適用前)を取り出す。bit7が左端ピクセル。
+@(private)
+bg_tile_pixel_color_number :: proc(bus: ^Bus, tile_addr: u16, col_in_tile: int) -> u8 {
+	low := bus.vram[tile_addr - 0x8000]
+	high := bus.vram[tile_addr + 1 - 0x8000]
+	shift := uint(7 - col_in_tile)
+	low_bit := (low >> shift) & 0x01
+	high_bit := (high >> shift) & 0x01
+	return low_bit | (high_bit << 1)
+}
+
+// ppu_render_scanline は1ライン分をframebufferに描く(T3-3: BGのみ。ウィンドウは
+// T3-4、スプライトはT3-5でここに追加する)。
+// LCDC bit0=0のときBGは白一色になる(このときも bg_color_index は0にする。
+// T3-5のスプライト優先度判定でBG不透明扱いされないようにするため)。
 @(private)
 ppu_render_scanline :: proc(bus: ^Bus) {
 	p := &bus.ppu
@@ -292,8 +333,36 @@ ppu_render_scanline :: proc(bus: ^Bus) {
 		return
 	}
 	line_start := int(p.ly) * SCREEN_WIDTH
+
+	if p.lcdc & LCDC_BIT_BG_ENABLE == 0 {
+		for x in 0 ..< SCREEN_WIDTH {
+			p.framebuffer[line_start + x] = DMG_SHADE_0
+			p.bg_color_index[x] = 0
+		}
+		return
+	}
+
+	bg_map_base: u16 = 0x9800
+	if p.lcdc & LCDC_BIT_BG_MAP != 0 {
+		bg_map_base = 0x9C00
+	}
+
 	for x in 0 ..< SCREEN_WIDTH {
-		p.framebuffer[line_start + x] = DMG_SHADE_0
-		p.bg_color_index[x] = 0
+		source_x := (x + int(p.scx)) & 0xFF // 256x256マップ内でラップアラウンド
+		source_y := (int(p.ly) + int(p.scy)) & 0xFF
+
+		tile_col := source_x / 8
+		tile_row := source_y / 8
+		tile_map_addr := bg_map_base + u16(tile_row * 32 + tile_col)
+		tile_index := bus.vram[tile_map_addr - 0x8000]
+
+		row_in_tile := source_y % 8
+		col_in_tile := source_x % 8
+		tile_addr := bg_tile_data_addr(p.lcdc, tile_index, row_in_tile)
+		color_number := bg_tile_pixel_color_number(bus, tile_addr, col_in_tile)
+
+		p.bg_color_index[x] = color_number
+		shade := (p.bgp >> (color_number * 2)) & 0x03
+		p.framebuffer[line_start + x] = dmg_shade(shade)
 	}
 }
