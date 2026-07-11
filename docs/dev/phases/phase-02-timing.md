@@ -40,7 +40,7 @@ Mooneye acceptance の timer/ と割り込み系テスト、Blargg 02-interrupts
 
 ### T2-2: HALT・EI 遅延・HALT バグ
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: HALT の起床条件と有名なエッジケース 2 つを正確にする。
 **作るもの**: cpu.odin 変更:
@@ -186,3 +186,23 @@ cpu_step 先頭で `ime && pending!=0` を判定するよう変更。ie_push(moo
   原理的にパスしない。理由コメント付きでフェーズ3送りとして許可リストに残す。
 - `odin test tests -collection:bbl=src`: 110 tests 全パス(24本のMooneyeテストのうち19本が許可
   リスト経由でFAIL/TIMEOUTのまま成功扱い、5本が実PASS)。
+
+2026-07-11 T2-2 完了: HALT起床条件・EIの1命令遅延・HALTバグを実装。
+- `Cpu` に `halt_bug: bool`、`ime_delay: int` を追加。
+- EI遅延は `ime_delay=2` を起点とするカウントダウン方式: cpu_stepの先頭で`ime_delay>0`なら
+  毎回1減算し、0になった瞬間に`ime=true`を反映する。DIは`ime_delay=0`にキャンセルする。
+  この設計は実装前にmooneye `rapid_di_ei.s`のソース(4パターン: ei;di;ei;di→割込み無し、
+  ei;di;nop;nop→割込み無し、ei;nop;di→割込み有り、ei;nop;nop;di→割込み有り)を読み、
+  手でトレースして4パターン全てが一致することを確認してから実装した。
+- HALTバグは`cpu.halt_bug`フラグで実装: `!ime && pending!=0`でHALT実行時にセットし、
+  cpu_step側で次の1回だけPCをインクリメントしないことで「次の命令の先頭バイトが2回読まれる」
+  を再現する。
+- 特例として「EI直後にHALTが続く場合はIME有効化を前倒しする」挙動をmooneye `halt_ime0_ei.s`の
+  コメント("If EI is before HALT, the HALT instruction is expected to perform its normal IME=1
+  behaviour")から把握し、HALTの実行(case 0x76)内で`ime_delay>0`なら即座に`ime=true`へ
+  解決してから起床判定するようにした。
+- 単体テスト `tests/cpu_halt_ei_test.odin` を新規作成(EI遅延、EI;DIキャンセル、HALTバグでの
+  PC足踏み、IME=trueでのHALT起床、IME=falseでの起床(ハンドラに飛ばない)の5件)。
+- 副産物として blargg `cpu_instrs/individual/02-interrupts`、mooneye `halt_ime1_timing`・
+  `ei_timing`・`rapid_di_ei` が実PASSするようになったため許可リストから除外。
+- `odin test tests -collection:bbl=src`: 115 tests 全パス。

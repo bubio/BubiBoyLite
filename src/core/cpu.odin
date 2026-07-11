@@ -18,14 +18,16 @@ Console_Mode :: enum {
 }
 
 Cpu :: struct {
-	a, f, b, c, d, e, h, l:  u8,
-	sp, pc:                  u16,
-	ime:                     bool, // Interrupt Master Enable
-	halted:                  bool,
-	stopped:                 bool, // STOP 実行済み(簡易フラグ、正式対応はフェーズ6)
-	illegal_opcode_hit:      bool, // 未定義オペコードを実行した(T1-6)
-	debug_break_on_ld_b_b:   bool, // Mooneye 判定用: 0x40(LD B,B)実行で ld_b_b_hit を立てる(T2-6)
-	ld_b_b_hit:              bool, // debug_break_on_ld_b_b 有効時、0x40 を実行したフレームで true になる
+	a, f, b, c, d, e, h, l: u8,
+	sp, pc:                 u16,
+	ime:                    bool, // Interrupt Master Enable
+	halted:                 bool,
+	halt_bug:               bool, // HALT バグ(T2-2): 次の1回だけ PC を進めずにフェッチする
+	ime_delay:              int, // EI の1命令遅延(T2-2): >0 の間は cpu_step の先頭で毎回1減算し、0になった瞬間 ime=true
+	stopped:                bool, // STOP 実行済み(簡易フラグ、正式対応はフェーズ6)
+	illegal_opcode_hit:     bool, // 未定義オペコードを実行した(T1-6)
+	debug_break_on_ld_b_b:  bool, // Mooneye 判定用: 0x40(LD B,B)実行で ld_b_b_hit を立てる(T2-6)
+	ld_b_b_hit:             bool, // debug_break_on_ld_b_b 有効時、0x40 を実行したフレームで true になる
 }
 
 // --- 16bit レジスタペアアクセス ---
@@ -121,6 +123,8 @@ cpu_reset :: proc(cpu: ^Cpu, mode: Console_Mode) {
 	cpu.pc = 0x0100
 	cpu.ime = false
 	cpu.halted = false
+	cpu.halt_bug = false
+	cpu.ime_delay = 0
 	cpu.stopped = false
 	cpu.illegal_opcode_hit = false
 	cpu.ld_b_b_hit = false
@@ -393,14 +397,32 @@ cpu_daa :: proc(cpu: ^Cpu) {
 // 実測は bus.cycles の差分で行うため、各オペコードの実装が正しく
 // cpu_read8/cpu_write8/bus_tick を呼べば自動的に命令表どおりのサイクル数になる。
 //
-// 先頭で割り込みディスパッチを判定する(T2-1)。HALT の起床条件・EI の 1 命令遅延・
-// HALT バグは T2-2 で追加する。
+// 割り込みディスパッチ(T2-1)、HALT の起床条件・EI の1命令遅延・HALT バグ(T2-2)を扱う。
+//
+// EI 遅延の実装(ime_delay、T2-2): EI 実行時に ime_delay=2 をセットする。cpu_step の
+// 先頭で ime_delay>0 なら毎回1減算し、0 になった瞬間(つまり EI の**次の次**の cpu_step
+// の先頭)に ime=true を反映する。これにより「EI の次の1命令の実行中は割り込みが
+// 入らない」を実現する。DI は ime_delay を 0 にキャンセルする(EI;DI 連続で割り込みが
+// 一切発生しなくなる。mooneye rapid_di_ei.s で実機挙動を確認済み)。
 cpu_step :: proc(cpu: ^Cpu, bus: ^Bus) -> int {
 	start := bus.cycles
 
+	if cpu.ime_delay > 0 {
+		cpu.ime_delay -= 1
+		if cpu.ime_delay == 0 {
+			cpu.ime = true
+		}
+	}
+
 	if cpu.halted {
-		bus_tick(bus, 4)
-		return int(bus.cycles - start)
+		if interrupt_pending(bus) != 0 {
+			// IME が false でも起床する。起床後はハンドラに飛ばず通常の命令実行に進む
+			// (この cpu_step 内で、下の ime チェックが false なのでそのままフォールスルーする)。
+			cpu.halted = false
+		} else {
+			bus_tick(bus, 4)
+			return int(bus.cycles - start)
+		}
 	}
 
 	if cpu.ime && interrupt_pending(bus) != 0 {
@@ -409,7 +431,13 @@ cpu_step :: proc(cpu: ^Cpu, bus: ^Bus) -> int {
 	}
 
 	opcode := cpu_read8(cpu, bus, cpu.pc)
-	cpu.pc += 1
+	if cpu.halt_bug {
+		// HALT バグ(T2-2): PC を進めない。次の cpu_step でも同じアドレスから
+		// フェッチされるため、結果的にこのバイトが2回読まれたのと同じ効果になる。
+		cpu.halt_bug = false
+	} else {
+		cpu.pc += 1
+	}
 	if cpu.debug_break_on_ld_b_b && opcode == 0x40 {
 		// Mooneye 判定フック(T2-6): LD B,B(0x40)は実行してからフラグを立てる。
 		// レジスタ指紋は 0x40 実行の副作用を受けないので呼び出し側はこの直後に検査してよい。
@@ -616,7 +644,21 @@ cpu_execute :: proc(cpu: ^Cpu, bus: ^Bus, opcode: u8) {
 
 	// --- 制御系 ---
 	case 0x76:
-		cpu.halted = true
+		// HALT(T2-2)。
+		// 特例: EI の直後に HALT が続く場合、予約されていた IME 有効化はここで前倒しして
+		// 反映する(mooneye halt_ime0_ei/halt_ime1_timing で実機挙動を確認済み。EI;HALT は
+		// 「HALT が既に IME=1 として振る舞う」)。
+		if cpu.ime_delay > 0 {
+			cpu.ime = true
+			cpu.ime_delay = 0
+		}
+		if !cpu.ime && interrupt_pending(bus) != 0 {
+			// HALT バグ: 実際には停止せず、次の命令の先頭バイトが2回読まれる
+			// (cpu_step 側で PC を進めないことで再現する)。
+			cpu.halt_bug = true
+		} else {
+			cpu.halted = true
+		}
 	case 0x10:
 		// STOP: 2バイト命令。パディングバイトを読み飛ばす。
 		// ダブルスピード切替の正式対応はフェーズ6。今は簡易ログのみ。
@@ -624,9 +666,11 @@ cpu_execute :: proc(cpu: ^Cpu, bus: ^Bus, opcode: u8) {
 		fmt.eprintfln("cpu: STOP at pc=0x%04X (未対応、無視)", cpu.pc - 2)
 	case 0xF3:
 		cpu.ime = false
+		cpu.ime_delay = 0 // 予約されていた EI の遅延発動もキャンセルする
 	case 0xFB:
-		// EI の 1 命令遅延はフェーズ2で正確化(architecture.md 参照)。
-		cpu.ime = true
+		// EI の 1 命令遅延(T2-2): cpu_step 先頭の ime_delay カウントダウンにより、
+		// この命令の次の命令の実行中はまだ割り込みが入らず、そのさらに次から有効になる。
+		cpu.ime_delay = 2
 
 	// --- アキュムレータ回転(非CB版は常に Z=0) ---
 	case 0x07: // RLCA
