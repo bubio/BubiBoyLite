@@ -130,7 +130,7 @@ odin test tests -collection:bbl=src
 
 ### T1-7: シリアル出力キャプチャ
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: Blargg テストの結果判定経路（シリアルポート）を作る。
 **作るもの**: `src/core/serial.odin`:
@@ -197,3 +197,4 @@ odin test tests -collection:bbl=src                    # ROM なし → skip 扱
 2026-07-11 T1-4 完了: odin test tests -collection:bbl=src 全パス(43 tests)、./scripts/build_macos.sh --test も成功
 2026-07-11 T1-5 完了: odin test tests -collection:bbl=src 全パス(52 tests)
 2026-07-11 T1-6 完了: cpu_daa 実装、odin test tests -collection:bbl=src 全パス(60 tests, DAA 6ケース + 全256/CB256オペコード網羅テスト追加)、odin build src/app -collection:bbl=src も成功
+2026-07-11 T1-7 完了: src/core/serial.odin 新規作成(SB/SC経由のキャプチャ、bus_io_read/write から接続)、odin test tests -collection:bbl=src 全パス(64 tests)

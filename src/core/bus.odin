@@ -4,14 +4,15 @@ package core
 // bus_tick は今後 Timer/PPU/APU/DMA を駆動する唯一の場所になる(architecture.md「タイミングモデル」)。
 
 Bus :: struct {
-	rom:    []u8, // ROM-only カートリッジ(32KiB)。MBC はフェーズ4
-	vram:   [8192]u8,
-	wram:   [8192]u8,
-	oam:    [160]u8,
-	hram:   [127]u8,
-	io:     [128]u8, // FF00-FF7F の生バックストア(個別実装されたレジスタ以外は読み出し時 0xFF)
-	ie:     u8, // FFFF
-	cycles: u64, // 累計 T-cycle
+	rom:        []u8, // ROM-only カートリッジ(32KiB)。MBC はフェーズ4
+	vram:       [8192]u8,
+	wram:       [8192]u8,
+	oam:        [160]u8,
+	hram:       [127]u8,
+	io:         [128]u8, // FF00-FF7F の生バックストア(個別実装されたレジスタ以外は読み出し時 0xFF)
+	ie:         u8, // FFFF
+	cycles:     u64, // 累計 T-cycle
+	serial_log: [dynamic]u8, // シリアル出力キャプチャ(T1-7、serial.odin)
 }
 
 // bus_load_rom は ROM-only カートリッジをそのまま map する(MBC はフェーズ4)。
@@ -84,15 +85,25 @@ bus_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 
 // bus_io_read/write は FF00-FF7F を扱う。個別実装のあるレジスタ以外は
 // read で常に 0xFF を返す(未実装 IO レジスタの規約)。
-// SB/SC(シリアル)などの個別ハンドリングは T1-7 で追加する。
+// SB/SC(シリアル)は serial.odin にハンドリングを委譲する(T1-7)。
 @(private)
 bus_io_read :: proc(bus: ^Bus, addr: u16) -> u8 {
-	return 0xFF
+	switch addr {
+	case SERIAL_SB, SERIAL_SC:
+		return bus.io[addr - 0xFF00]
+	case:
+		return 0xFF
+	}
 }
 
 @(private)
 bus_io_write :: proc(bus: ^Bus, addr: u16, value: u8) {
-	bus.io[addr - 0xFF00] = value
+	switch addr {
+	case SERIAL_SB, SERIAL_SC:
+		serial_write(bus, addr, value)
+	case:
+		bus.io[addr - 0xFF00] = value
+	}
 }
 
 // --- CPU 側のメモリアクセス経路 ---
