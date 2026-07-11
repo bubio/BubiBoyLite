@@ -206,3 +206,4 @@ grep "mise install" README.md
 2026-07-11 T0-5 完了: ./bbl --scale 2 をバックグラウンド起動し 3 秒後も生存 (SIGTERM で正常終了、エラー出力なし) を確認。目視でのグラデーション・四隅マーカー確認はユーザーに依頼
 2026-07-11 T0-6 完了: DISPLAY= ./bbl --headless => "headless: nothing to do" exit=0
 2026-07-11 T0-7 完了: head -1 LICENSE => "MIT License"、grep "mise install" README.md ヒット確認
+2026-07-11 T0-8: workflow 作成済み（.github/workflows/ci.yml, scripts/fetch_test_roms.sh）。python yaml.safe_load と actionlint で構文検証 OK（exit=0）。scripts/fetch_test_roms.sh はローカルで実行し exit=0 を確認。GitHub リモート未設定のため CI 実行（グリーン確認）は保留。チェックボックスは未付与
