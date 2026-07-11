@@ -286,3 +286,16 @@ mbc1/mbc2/mbc5の27本含め全てPASS。`odin build src/app -collection:bbl=src
   自作ホームブリューROM(RGBDSでアセンブル、MBC1/MBC5+RAM+BATTERY、バンク切替と
   RAM書き込みをCPU実行で確認)の2本による代替検証で済ませた。虚偽の「動作確認した」
   という記載を避けるため、この制約をここに明記する。
+
+2026-07-11 T4-7 追加検証: fetch_test_roms.shの新規27エントリはローカルに既に配置済みの
+ROMに対して「スキップ」経路しか通っておらず、パス文字列の誤り(取得できないのにテストが
+黙ってスキップしてしまうfalse green)を見逃す恐れがあったため、代表として
+emulator-only/mbc1/bits_bank2.gb・mbc2/ram.gb・mbc5/rom_64Mb.gbの3本を削除して
+`sh scripts/fetch_test_roms.sh`を再実行し、フォールバックzipから正しく再取得されることを
+確認した。さらにmbc2/ram.gbを再度削除した状態で対応テスト(mooneye_mbc2_ram)を単体実行し
+「ROM未取得のためスキップ」ログとともに成功(=スキップ)することを確認したうえで再取得し、
+今度はスキップ文言が出ずに実行時間67ms(スキップ時の約300倍)でPASSすることを確認した。
+これによりfetch_test_roms.shのパス文字列とmooneye_test.odinのテストが指すパス文字列が
+一致していること、およびemulator-only/プレフィックスに対してもzip展開経路が機能することを
+実証した。`odin test tests -collection:bbl=src` 225 tests 再度全パス、`git status`も
+クリーン(tests/roms/は.gitignore対象のため差分無し)。
