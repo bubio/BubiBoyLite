@@ -356,6 +356,36 @@ alu_dec8 :: proc(cpu: ^Cpu, v: u8) -> u8 {
 	return result
 }
 
+// cpu_daa は直前の ADD/ADC/SUB/SBC の結果を BCD (2桁10進数) に補正する。
+// N フラグで加算後/減算後を区別する標準アルゴリズム
+// (~/dev/_Emu/BubiBoy/src/BubiBoy.Core/Cpu.fs の decimalAdjust を移植)。
+// 減算時は H/C が立っていなくても補正量の判定にキャリー情報のみを使う
+// (減算後は A の値域から下位/上位桁の補正要否を直接判定できないため)。
+@(private)
+cpu_daa :: proc(cpu: ^Cpu) {
+	n := cpu_flag_n(cpu)
+	h := cpu_flag_h(cpu)
+	c := cpu_flag_c(cpu)
+	correction: u8 = 0
+	set_c := c
+
+	if h || (!n && (cpu.a & 0x0F) > 0x09) {
+		correction |= 0x06
+	}
+	if c || (!n && cpu.a > 0x99) {
+		correction |= 0x60
+		set_c = true
+	}
+
+	if n {
+		cpu.a -= correction
+	} else {
+		cpu.a += correction
+	}
+
+	cpu_set_flags(cpu, cpu.a == 0, n, false, set_c)
+}
+
 // cpu_step は 1 命令(または割り込み処理、フェーズ2)を実行し、
 // 消費した T-cycle 数を返す。実測は bus.cycles の差分で行うため、
 // 各オペコードの実装が正しく cpu_read8/cpu_write8/bus_tick を呼べば
@@ -568,6 +598,50 @@ cpu_execute :: proc(cpu: ^Cpu, bus: ^Bus, opcode: u8) {
 		cb_opcode := cpu_read8(cpu, bus, cpu.pc)
 		cpu.pc += 1
 		cpu_execute_cb(cpu, bus, cb_opcode)
+
+	// --- 制御系 ---
+	case 0x76:
+		cpu.halted = true
+	case 0x10:
+		// STOP: 2バイト命令。パディングバイトを読み飛ばす。
+		// ダブルスピード切替の正式対応はフェーズ6。今は簡易ログのみ。
+		cpu.pc += 1
+		fmt.eprintfln("cpu: STOP at pc=0x%04X (未対応、無視)", cpu.pc - 2)
+	case 0xF3:
+		cpu.ime = false
+	case 0xFB:
+		// EI の 1 命令遅延はフェーズ2で正確化(architecture.md 参照)。
+		cpu.ime = true
+
+	// --- アキュムレータ回転(非CB版は常に Z=0) ---
+	case 0x07: // RLCA
+		cpu.a = cb_rotate_shift(cpu, 0, cpu.a)
+		cpu.f &= ~u8(FLAG_Z)
+	case 0x0F: // RRCA
+		cpu.a = cb_rotate_shift(cpu, 1, cpu.a)
+		cpu.f &= ~u8(FLAG_Z)
+	case 0x17: // RLA
+		cpu.a = cb_rotate_shift(cpu, 2, cpu.a)
+		cpu.f &= ~u8(FLAG_Z)
+	case 0x1F: // RRA
+		cpu.a = cb_rotate_shift(cpu, 3, cpu.a)
+		cpu.f &= ~u8(FLAG_Z)
+
+	// --- DAA・フラグ操作系 ---
+	case 0x27:
+		cpu_daa(cpu)
+	case 0x2F: // CPL
+		cpu.a = ~cpu.a
+		cpu.f = (cpu.f & (FLAG_Z | FLAG_C)) | FLAG_N | FLAG_H
+	case 0x37: // SCF
+		cpu.f = (cpu.f & FLAG_Z) | FLAG_C
+	case 0x3F: // CCF
+		new_c: u8 = cpu_flag_c(cpu) ? 0 : FLAG_C
+		cpu.f = (cpu.f & FLAG_Z) | new_c
+
+	// --- 未定義オペコード(11個) ---
+	case 0xD3, 0xDB, 0xDD, 0xE3, 0xE4, 0xEB, 0xEC, 0xED, 0xF4, 0xFC, 0xFD:
+		cpu_log_illegal(cpu, opcode)
 
 	case:
 		if opcode >= 0x40 && opcode <= 0x7F {

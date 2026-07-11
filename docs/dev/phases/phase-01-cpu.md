@@ -111,7 +111,7 @@ odin test tests -collection:bbl=src
 
 ### T1-6: 残り命令（DAA・制御系）
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: DAA/CPL/SCF/CCF/NOP/STOP/HALT/DI/EI と未定義オペコードの処理を実装し、命令セットを完成させる。
 **作るもの**:
@@ -196,3 +196,4 @@ odin test tests -collection:bbl=src                    # ROM なし → skip 扱
 2026-07-11 T1-3 完了: odin test tests -collection:bbl=src 全パス(31 tests)
 2026-07-11 T1-4 完了: odin test tests -collection:bbl=src 全パス(43 tests)、./scripts/build_macos.sh --test も成功
 2026-07-11 T1-5 完了: odin test tests -collection:bbl=src 全パス(52 tests)
+2026-07-11 T1-6 完了: cpu_daa 実装、odin test tests -collection:bbl=src 全パス(60 tests, DAA 6ケース + 全256/CB256オペコード網羅テスト追加)、odin build src/app -collection:bbl=src も成功
