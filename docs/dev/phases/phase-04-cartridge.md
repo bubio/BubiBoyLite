@@ -109,7 +109,7 @@ odin test tests -collection:bbl=src   # cpu_instrs 統合版 + mooneye emulator-
 
 ### T4-6: バッテリーセーブ (.sav)
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: 外部 RAM をファイルに永続化する。BluePrint: 保存先は ROM と同じ場所がデフォルト、設定で変更可能（設定はフェーズ 8）。
 **作るもの**:
@@ -226,4 +226,39 @@ mooneye emulator-only/mbc5/ の rom_512kb・rom_1Mb・rom_2Mb・rom_4Mb・rom_8M
 rom_32Mb・rom_64Mb 全8本(64Mbit=8MiB、rom_size_code上限0x08=512バンクを含む)を手元で
 個別実行しPASSを確認済み(正式な@(test)化とfetch_test_roms.shへの追加はT4-7で行う)。
 `odin test tests -collection:bbl=src` 189 tests 全パス(既存184 + 新規5)、16.2秒。
+`odin build src/app -collection:bbl=src`もクリーン。
+
+2026-07-11 T4-6 完了: mbc.odinに mbc_export_ram(cart)->([]u8, ok)/mbc_import_ram(cart, data)->ok
+を追加。バッテリー無しカートリッジはok=false。MBC2は内蔵512バイト(union内のMbc2_State.ram)、
+MBC1/3/5はCartridge.ramをエクスポート/インポート対象にする。MBC3はRAMのみが対象で
+RTCレジスタ(rtc/latched_rtc)は含まない(.rtcへの永続化はフェーズ7 T7-3、落とし穴どおり)。
+サイズ不一致時はimportがfalseを返し、既存RAMは変更しない。
+src/app/saveram.odin新規作成: save_ram_path_for_rom(ROM拡張子を.savに置換)、
+save_ram_write_atomic(BubiBoy SaveRam.fs writeBytesWithBackup方式: 一時ファイル書き込み→
+既存.savを.sav.bakへリネーム→一時ファイルを.savへリネーム。os.rename/os.write_entire_file/
+os.removeを使用)、save_ram_load(存在しなければok=falseを返すのみでエラー扱いしない)。
+src/app/main.odinのrun_rom_windowに統合: 起動時に.savがあればロード(mbc_import_ramがサイズ
+不一致でfalseを返したら警告を出してロードしない、DoDどおり)、フレームループ内で
+emu.bus.cart.ram_dirtyを毎フレーム消費(検査後false化)し、書き込みから60フレーム
+(約1秒)アイドルしたら保存、ウィンドウ終了時にも最終セーブを実行(バッテリー無し
+カートリッジではmbc_export_ramがok=falseを返し何もしない)。
+tests/mbc_saveram_test.odin新規作成(5件、core.mbc_export_ram/mbc_import_ram): MBC1
+ラウンドトリップ、バッテリー無しでのexport失敗、サイズ不一致インポートの拒否と既存RAM
+保持、MBC2内蔵RAMラウンドトリップ、MBC3のRTC除外確認。tests/saveram_test.odin新規作成
+(4件、cli_test.odinと同様にbbl:appを直接importする既存の慣習に従う): パス導出
+(拡張子置換・ディレクトリ名のドット非依存・拡張子無し)、アトミック書き込み→読み込みの
+ラウンドトリップと.bak生成確認、存在しないファイルのロード失敗。
+
+結合確認(市販ROM代替、CLAUDE.mdの指示どおりRGBDSで自作したホームブリューROMを使用):
+RGBDS(rgbasm/rgblink/rgbfix v1.0.1)でMBC1+RAM+BATTERY(type=0x03)とMBC5+RAM+BATTERY
+(type=0x1B)、いずれもRAM 32KiB(4バンク)・ROM 32KiB のミニマルROM(RAM有効化→ROM/RAM
+バンク切替レジスタへの書き込み→RAMバンク0に0x42、バンク1に0x99を書き込む)をアセンブルし、
+実際にCPU実行(emulator_step)させてバンク切替コード経由でRAMへ書かせた。その後
+mbc_export_ram→save_ram_write_atomicで一時ディレクトリへ保存、新しいEmulatorインスタンスへ
+同じROMを再ロードして「終了→再起動」を模擬し、save_ram_load→mbc_import_ramでロード、
+両バンクの値が一致することを確認した(MBC1・MBC5とも一時テストで全項目PASS。テストコードは
+検証専用のためコミットしていない)。市販ゲームでの確認は著作権上できないため未実施 ——
+Mooneye自動テスト(mbc1/mbc2/mbc5、T4-7で正式導入)とこの自作ホームブリューROMでの
+確認のみで、実際の市販タイトルでの動作確認はしていないことをここに明記する。
+`odin test tests -collection:bbl=src` 198 tests 全パス(既存189 + 新規9)、15.9秒。
 `odin build src/app -collection:bbl=src`もクリーン。

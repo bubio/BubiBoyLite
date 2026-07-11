@@ -542,3 +542,55 @@ mbc5_write :: proc(cart: ^Cartridge, state: ^Mbc5_State, addr: u16, value: u8) {
 	// 未使用領域: 無視
 	}
 }
+
+// --- バッテリーセーブ(.sav)向けエクスポート/インポート(T4-6) ---
+// app 側(src/app/saveram.odin)はこれらだけを使い、MBC の内部表現(MBC2 の内蔵RAMが
+// union に埋め込まれている等)を意識しなくてよい。MBC3 は RAM のみを対象とし、
+// RTC は対象外(.rtc への永続化はフェーズ7 T7-3)。バッテリー無しカートリッジは ok=false。
+
+// mbc_export_ram はバッテリーバックアップRAMのコピーを返す(呼び出し側が所有・delete する)。
+mbc_export_ram :: proc(cart: ^Cartridge) -> (data: []u8, ok: bool) {
+	if !cart.info.has_battery {
+		return nil, false
+	}
+
+	switch &state in cart.mbc {
+	case Mbc2_State:
+		out := make([]u8, len(state.ram))
+		copy(out, state.ram[:])
+		return out, true
+	case Mbc_None, Mbc1_State, Mbc3_State, Mbc5_State:
+		if len(cart.ram) == 0 {
+			return nil, false
+		}
+		out := make([]u8, len(cart.ram))
+		copy(out, cart.ram)
+		return out, true
+	}
+	return nil, false
+}
+
+// mbc_import_ram は data をバッテリーバックアップRAMへ書き戻す。サイズが一致しない場合は
+// 何もせず false を返す(呼び出し側で「サイズ不一致なら警告してロードしない」を実装する、
+// T4-6 の完了条件)。
+mbc_import_ram :: proc(cart: ^Cartridge, data: []u8) -> bool {
+	if !cart.info.has_battery {
+		return false
+	}
+
+	switch &state in cart.mbc {
+	case Mbc2_State:
+		if len(data) != len(state.ram) {
+			return false
+		}
+		copy(state.ram[:], data)
+		return true
+	case Mbc_None, Mbc1_State, Mbc3_State, Mbc5_State:
+		if len(cart.ram) == 0 || len(data) != len(cart.ram) {
+			return false
+		}
+		copy(cart.ram, data)
+		return true
+	}
+	return false
+}

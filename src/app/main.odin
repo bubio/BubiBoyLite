@@ -55,6 +55,19 @@ run_rom_window :: proc(opts: Options) {
 		fmt.eprintfln("ROM のロードに失敗しました: %s (%s)", opts.rom_path, message)
 		os.exit(1)
 	}
+	defer core.bus_destroy(&emu.bus)
+
+	// バッテリーセーブ(.sav)のロード(T4-6)。BluePrint: 保存先はROMと同じ場所がデフォルト。
+	save_path := save_ram_path_for_rom(opts.rom_path)
+	if save_data, load_ok := save_ram_load(save_path); load_ok {
+		defer delete(save_data)
+		if !core.mbc_import_ram(&emu.bus.cart, save_data) {
+			fmt.eprintfln(
+				"セーブデータのサイズがカートリッジと一致しないためロードしませんでした: %s",
+				save_path,
+			)
+		}
+	}
 
 	video, video_ok := video_init(opts.scale, opts.fullscreen, opts.shader)
 	if !video_ok {
@@ -71,6 +84,13 @@ run_rom_window :: proc(opts: Options) {
 	frame_seconds := f64(core.CYCLES_PER_FRAME) / f64(core.CPU_HZ)
 	perf_freq := f64(sdl.GetPerformanceFrequency())
 	next_frame_at := sdl.GetPerformanceCounter()
+
+	// バッテリーセーブの保存タイミング(T4-6): RAM書き込みから約1秒(60フレーム相当)
+	// 書き込みが無かったら保存する。emu.bus.cart.ram_dirty はRAMへの実書き込みでのみ
+	// core側が立てる(mbc.odin)ので、毎フレーム消費(false化)して次の書き込みを検出できるようにする。
+	SAVE_IDLE_FRAMES :: 60
+	save_pending := false
+	save_idle_frames := 0
 
 	running := true
 	for running {
@@ -92,6 +112,19 @@ run_rom_window :: proc(opts: Options) {
 		core.emulator_run_frame(&emu)
 		video_present(&video, emu.bus.ppu.framebuffer[:])
 
+		if emu.bus.cart.ram_dirty {
+			save_pending = true
+			save_idle_frames = 0
+			emu.bus.cart.ram_dirty = false // 消費して次の書き込みを検出できるようにする
+		} else if save_pending {
+			save_idle_frames += 1
+			if save_idle_frames >= SAVE_IDLE_FRAMES {
+				save_ram_now(&emu, save_path)
+				save_pending = false
+				save_idle_frames = 0
+			}
+		}
+
 		next_frame_at += u64(frame_seconds * perf_freq)
 		now := sdl.GetPerformanceCounter()
 		if next_frame_at > now {
@@ -101,6 +134,22 @@ run_rom_window :: proc(opts: Options) {
 			// 大幅に遅延している場合は基準時刻を現在時刻へ再同期する(遅延の際限ない蓄積を防ぐ)。
 			next_frame_at = now
 		}
+	}
+
+	// 終了時セーブ(T4-6)。バッテリー無し/外部RAM無しカートリッジでは save_ram_now が
+	// 何もせず戻る(core.mbc_export_ram の ok=false)。
+	save_ram_now(&emu, save_path)
+}
+
+// save_ram_now はカートリッジの外部RAMをエクスポートし、.sav へアトミック書き込みする。
+save_ram_now :: proc(emu: ^core.Emulator, save_path: string) {
+	data, ok := core.mbc_export_ram(&emu.bus.cart)
+	if !ok {
+		return
+	}
+	defer delete(data)
+	if !save_ram_write_atomic(save_path, data) {
+		fmt.eprintfln("セーブの書き込みに失敗しました: %s", save_path)
 	}
 }
 
