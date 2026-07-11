@@ -117,7 +117,7 @@ odin test tests -collection:bbl=src
 
 ### T0-5: SDL2 ウィンドウとテストパターン
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: SDL2 で 160×144 の論理解像度の窓を開き、core のフレームバッファを表示する経路を確立する。
 **作るもの**:
@@ -203,3 +203,4 @@ grep "mise install" README.md
 2026-07-11 T0-2 完了: ./bbl -v => "bbl 0.1.0" exit=0, ./bbl -h に --scale/--fullscreen 記載を確認
 2026-07-11 T0-3 完了: scale 12→8 丸め確認、--shader bogus/2重ROM指定で exit=1、odin test tests -collection:bbl=src 8 tests 全パス (cli_test.odin 7本追加)
 2026-07-11 T0-4 完了: ./scripts/build_macos.sh --test && ./bbl -v => "bbl 0.1.0"、build_linux.sh は sh -n で構文チェック済み（実行環境が macOS のため実ビルドは未検証）、build_win.ps1 は pwsh 未導入のため構文チェック未実施（構造は macos/linux 版と同一）
+2026-07-11 T0-5 完了: ./bbl --scale 2 をバックグラウンド起動し 3 秒後も生存 (SIGTERM で正常終了、エラー出力なし) を確認。目視でのグラデーション・四隅マーカー確認はユーザーに依頼

@@ -2,6 +2,8 @@ package main
 
 import "core:fmt"
 import "core:os"
+import core "bbl:core"
+import sdl "vendor:sdl2"
 
 main :: proc() {
 	args := os.args[1:]
@@ -23,14 +25,36 @@ main :: proc() {
 		os.exit(1)
 	}
 
-	// TODO(T0-5/T0-6): video/headless の実処理に置き換える。今は解析結果の確認用。
-	fmt.printfln(
-		"BubiBoyLite: scale=%d fullscreen=%v shader=%v recent=%v headless=%v rom=%q",
-		opts.scale,
-		opts.fullscreen,
-		opts.shader,
-		opts.recent,
-		opts.headless,
-		opts.rom_path,
-	)
+	run_test_pattern_window(opts)
+}
+
+// run_test_pattern_window は ROM 未指定 & TUI 未実装の間、テストパターンを表示する
+// イベントループ。Esc またはウィンドウクローズで終了する。
+run_test_pattern_window :: proc(opts: Options) {
+	video, video_ok := video_init(opts.scale, opts.fullscreen, opts.shader)
+	if !video_ok {
+		os.exit(1)
+	}
+	defer video_destroy(&video)
+
+	emu: core.Emulator
+	core.emulator_render_test_pattern(&emu)
+
+	running := true
+	for running {
+		event: sdl.Event
+		for sdl.PollEvent(&event) {
+			#partial switch event.type {
+			case .QUIT:
+				running = false
+			case .KEYDOWN:
+				if event.key.keysym.sym == .ESCAPE {
+					running = false
+				}
+			}
+		}
+
+		video_present(&video, emu.framebuffer[:])
+		sdl.Delay(16)
+	}
 }
