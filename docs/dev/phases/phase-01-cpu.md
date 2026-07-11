@@ -22,7 +22,7 @@ odin test tests -collection:bbl=src
 
 ### T1-1: CPU 構造体・レジスタ・フラグ
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: SM83 のレジスタセットとフラグ操作の基盤を作る。
 **作るもの**: `src/core/cpu.odin`:
@@ -190,3 +190,5 @@ odin test tests -collection:bbl=src                    # ROM なし → skip 扱
 ## 検証ログ
 
 （タスク完了ごとに 1 行追記）
+
+2026-07-11 T1-1 完了: odin test tests -collection:bbl=src 全パス(13 tests)
