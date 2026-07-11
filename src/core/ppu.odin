@@ -337,11 +337,12 @@ tile_map_color_number :: proc(bus: ^Bus, map_base: u16, lcdc: u8, source_x, sour
 	return bg_tile_pixel_color_number(bus, tile_addr, col_in_tile)
 }
 
-// ppu_render_scanline は1ライン分をframebufferに描く(T3-3: BG、T3-4: ウィンドウ。
-// スプライトはT3-5でここに追加する)。
+// ppu_render_scanline は1ライン分をframebufferに描く(T3-3: BG、T3-4: ウィンドウ、
+// T3-5: スプライト)。
 // LCDC bit0=0のときBG・ウィンドウとも白一色になる(DMGではbit0がBG&ウィンドウ全体の
 // 有効/無効を兼ねる。このときも bg_color_index は0にする。T3-5のスプライト優先度
-// 判定でBG不透明扱いされないようにするため)。
+// 判定でBG不透明扱いされないようにするため)。スプライトはbit0とは独立にbit1で
+// 制御されるため、bit0=0でも(bit1が有効なら)描画され続ける。
 @(private)
 ppu_render_scanline :: proc(bus: ^Bus) {
 	p := &bus.ppu
@@ -355,6 +356,9 @@ ppu_render_scanline :: proc(bus: ^Bus) {
 			p.framebuffer[line_start + x] = DMG_SHADE_0
 			p.bg_color_index[x] = 0
 		}
+		// 落とし穴: LCDC bit0=0はBG/ウィンドウのみを白くする。スプライトはbit1が
+		// 有効なら(DMGでは)独立して表示され続ける(Pan Docs "LCDC.0")。
+		ppu_render_sprites(bus, line_start)
 		return
 	}
 
@@ -394,5 +398,136 @@ ppu_render_scanline :: proc(bus: ^Bus) {
 
 	if win_visible_this_line {
 		p.window_line += 1
+	}
+
+	ppu_render_sprites(bus, line_start)
+}
+
+// Oam_Sprite は1ラインの描画対象として収集したOAMエントリのスナップショット(T3-5)。
+@(private = "file")
+Oam_Sprite :: struct {
+	oam_index: int, // 0-39(同X時のタイブレーク用。小さいほど優先)
+	x:         int, // 画面X座標(OAMのX-8。画面外もありうる)
+	y:         int, // 画面Y座標(OAMのY-16)
+	tile:      u8,
+	attr:      u8,
+}
+
+// ppu_collect_line_sprites は OAM を先頭(index0)から走査し、このラインに掛かる
+// スプライトを最初の10個まで集める(落とし穴: X座標に関係なくOAM順で先着10個。
+// 画面外Xのスプライトも枠を消費する)。
+@(private)
+ppu_collect_line_sprites :: proc(bus: ^Bus, sprite_height: int, sprites: ^[10]Oam_Sprite) -> int {
+	count := 0
+	ly := int(bus.ppu.ly)
+	for i in 0 ..< 40 {
+		if count >= 10 {
+			break
+		}
+		base := i * 4
+		y := int(bus.oam[base + 0]) - 16
+		y_in_sprite := ly - y
+		if y_in_sprite < 0 || y_in_sprite >= sprite_height {
+			continue
+		}
+		sprites[count] = Oam_Sprite {
+			oam_index = i,
+			x         = int(bus.oam[base + 1]) - 8,
+			y         = y,
+			tile      = bus.oam[base + 2],
+			attr      = bus.oam[base + 3],
+		}
+		count += 1
+	}
+	return count
+}
+
+// ppu_sort_sprites_by_priority は収集済みスプライトを DMG の優先度順
+// (X座標が小さいほど優先、同Xなら OAM 順(indexが小さいほど優先))に並べ替える
+// (挿入ソート、最大10件なので十分高速)。
+@(private)
+ppu_sort_sprites_by_priority :: proc(sprites: ^[10]Oam_Sprite, count: int) {
+	for i in 1 ..< count {
+		cur := sprites[i]
+		j := i - 1
+		for j >= 0 && (sprites[j].x > cur.x || (sprites[j].x == cur.x && sprites[j].oam_index > cur.oam_index)) {
+			sprites[j + 1] = sprites[j]
+			j -= 1
+		}
+		sprites[j + 1] = cur
+	}
+}
+
+// ppu_render_sprites はこのラインのスプライト(8x8/8x16)を優先度込みで描画する(T3-5)。
+// DMGの優先度: X座標が小さいスプライトが勝つ(同Xなら OAM 順)。一度確定したピクセルは
+// 他のスプライトに上書きされない(pixel_owned で管理)。attr bit7=1 なら BG カラー1-3の
+// 上には描かない(ただしピクセルの所有権自体はBG優先度に関係なく確定する)。
+// スプライトのカラー0は常に透明。
+@(private)
+ppu_render_sprites :: proc(bus: ^Bus, line_start: int) {
+	p := &bus.ppu
+	if p.lcdc & LCDC_BIT_OBJ_ENABLE == 0 {
+		return
+	}
+
+	sprite_height := 8
+	if p.lcdc & LCDC_BIT_OBJ_SIZE != 0 {
+		sprite_height = 16
+	}
+
+	sprites: [10]Oam_Sprite
+	count := ppu_collect_line_sprites(bus, sprite_height, &sprites)
+	if count == 0 {
+		return
+	}
+	ppu_sort_sprites_by_priority(&sprites, count)
+
+	pixel_owned: [SCREEN_WIDTH]bool
+
+	for s in sprites[:count] {
+		tile_index := s.tile
+		if sprite_height == 16 {
+			tile_index &= 0xFE // 落とし穴: 8x16では下位bit無視(タイルペアの先頭に丸める)
+		}
+
+		y_in_sprite := int(p.ly) - s.y
+		if s.attr & OAM_ATTR_Y_FLIP != 0 {
+			y_in_sprite = sprite_height - 1 - y_in_sprite
+		}
+		tile_offset: u8 = 0
+		if sprite_height == 16 && y_in_sprite >= 8 {
+			tile_offset = 1
+		}
+		row_in_tile := y_in_sprite % 8
+		tile_addr := u16(0x8000 + int(tile_index + tile_offset) * 16 + row_in_tile * 2)
+
+		for col in 0 ..< 8 {
+			x := s.x + col
+			if x < 0 || x >= SCREEN_WIDTH || pixel_owned[x] {
+				continue
+			}
+
+			source_col := col
+			if s.attr & OAM_ATTR_X_FLIP != 0 {
+				source_col = 7 - col
+			}
+			color_number := bg_tile_pixel_color_number(bus, tile_addr, source_col)
+			if color_number == 0 {
+				continue // スプライトのカラー0は透明(ピクセルの所有権も取らない)
+			}
+
+			pixel_owned[x] = true // X優先度でこのピクセルはこのスプライトが確定(BG優先度とは独立)
+
+			if s.attr & OAM_ATTR_BG_PRIORITY != 0 && p.bg_color_index[x] != 0 {
+				continue // BGカラー1-3の上には描かない
+			}
+
+			palette := p.obp0
+			if s.attr & OAM_ATTR_PALETTE != 0 {
+				palette = p.obp1
+			}
+			shade := (palette >> (color_number * 2)) & 0x03
+			p.framebuffer[line_start + x] = dmg_shade(shade)
+		}
 	}
 }
