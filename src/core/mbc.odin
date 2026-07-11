@@ -4,7 +4,7 @@ package core
 // MBC 状態は Odin の tagged union で表現する(Mbc_State :: union { Mbc_None, Mbc1_State, ... })。
 // bus.odin の 0000-7FFF(ROM)・A000-BFFF(外部RAM)はこのファイルの mbc_read/mbc_write を
 // 経由する(T4-2、~/dev/_Emu/BubiBoy/src/BubiBoy.Core/CartridgeMemory.fs のアルゴリズムを移植)。
-// MBC2/3/5 は T4-3〜T4-5 で union に追加していく。
+// MBC3/5 は T4-4/T4-5 で union に追加していく。
 
 ROM_BANK_SIZE :: 0x4000
 RAM_BANK_SIZE :: 0x2000
@@ -24,9 +24,18 @@ Mbc1_State :: struct {
 	mode:          Mbc1_Mode, // 6000-7FFF
 }
 
+// Mbc2_State: 内蔵 512x4bit RAM を持つ MBC2(T4-3)。RAM 有効化と ROM バンク選択は
+// 0000-3FFF の**同じアドレス帯**でアドレス bit8 により区別される(MBC1 と違う落とし穴)。
+Mbc2_State :: struct {
+	ram_enabled: bool,
+	rom_bank:    u8, // 下位4bit(0は1に読み替え)
+	ram:         [512]u8, // 内蔵RAM。外部の Cartridge.ram は使わない(cartridge_init 参照)
+}
+
 Mbc_State :: union {
 	Mbc_None,
 	Mbc1_State,
+	Mbc2_State,
 }
 
 // mbc_read は ROM(0000-7FFF)・外部 RAM(A000-BFFF)への読み出しを MBC の種類に応じてディスパッチする。
@@ -36,6 +45,8 @@ mbc_read :: proc(cart: ^Cartridge, addr: u16) -> u8 {
 		return mbc_none_read(cart, addr)
 	case Mbc1_State:
 		return mbc1_read(cart, state, addr)
+	case Mbc2_State:
+		return mbc2_read(cart, state, addr)
 	}
 	return 0xFF
 }
@@ -49,6 +60,8 @@ mbc_write :: proc(cart: ^Cartridge, addr: u16, value: u8) {
 	// ROM only はバンク切替レジスタも外部RAMも無いので書き込みは無視
 	case Mbc1_State:
 		mbc1_write(cart, &state, addr, value)
+	case Mbc2_State:
+		mbc2_write(cart, &state, addr, value)
 	}
 }
 
@@ -198,6 +211,59 @@ mbc1_write :: proc(cart: ^Cartridge, state: ^Mbc1_State, addr: u16, value: u8) {
 	case addr >= 0xA000 && addr <= 0xBFFF:
 		if state.ram_enabled {
 			write_ram_bank(cart, mbc1_ram_bank(state^), addr - 0xA000, value)
+		}
+	case:
+	// 未使用領域: 無視
+	}
+}
+
+// --- MBC2 ---
+
+// mbc2_ram_index は A000-BFFF(0x2000バイト)を内蔵512バイトRAMに畳み込む。
+// A000-A1FF が本体、A200-BFFF はエコー(0x200バイト境界で繰り返す、落とし穴)。
+@(private)
+mbc2_ram_index :: proc(addr: u16) -> u16 {
+	return (addr - 0xA000) & 0x01FF
+}
+
+@(private)
+mbc2_read :: proc(cart: ^Cartridge, state: Mbc2_State, addr: u16) -> u8 {
+	switch {
+	case addr <= 0x3FFF:
+		return read_rom_bank(cart, 0, addr)
+	case addr <= 0x7FFF:
+		return read_rom_bank(cart, int(state.rom_bank), addr - 0x4000)
+	case addr >= 0xA000 && addr <= 0xBFFF:
+		if !state.ram_enabled {
+			return 0xFF
+		}
+		// 上位4bitは読むと1(0xF0)。実データは下位4bitのみ(落とし穴、T4-3)。
+		return 0xF0 | (state.ram[mbc2_ram_index(addr)] & 0x0F)
+	case:
+		return 0xFF
+	}
+}
+
+// mbc2_write: 0000-3FFF はアドレス bit8 で RAM 有効化(bit8=0)/ROM バンク選択(bit8=1)を
+// 区別する(MBC1 は別々のアドレス範囲で区別するのに対し、MBC2 は同じ範囲内でbit8により
+// 区別する点が異なる。落とし穴、T4-3)。
+@(private)
+mbc2_write :: proc(cart: ^Cartridge, state: ^Mbc2_State, addr: u16, value: u8) {
+	switch {
+	case addr <= 0x3FFF:
+		if addr & 0x0100 == 0 {
+			state.ram_enabled = value & 0x0F == 0x0A
+		} else {
+			bank := value & 0x0F
+			if bank == 0 {
+				bank = 1
+			}
+			state.rom_bank = bank
+		}
+	case addr >= 0xA000 && addr <= 0xBFFF:
+		if state.ram_enabled {
+			state.ram[mbc2_ram_index(addr)] = value & 0x0F
+			cart.ram_dirty = true // T4-6: 実書き込みでのみ立てる(RAM無効時はここに到達しない)
 		}
 	case:
 	// 未使用領域: 無視

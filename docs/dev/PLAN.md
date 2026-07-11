@@ -19,7 +19,7 @@ BubiBoyLite（実行ファイル名 `bbl`）の開発計画のマスタードキ
 | 1 | CPU・バス | 🟢 2026-07-11 | 9/9 | Blargg cpu_instrs **個別 11 本**全パス + instr_timing パス | [詳細](phases/phase-01-cpu.md) |
 | 2 | 割り込み・タイマー | 🟡 | 6/7 | Mooneye acceptance の timer/ と intr 系テスト全パス | [詳細](phases/phase-02-timing.md) |
 | 3 | PPU (DMG) | 🟢 2026-07-11 | 8/8 | dmg-acid2 のフレームバッファハッシュ一致 + ROM-only ゲームが起動・操作可能 | [詳細](phases/phase-03-ppu.md) |
-| 4 | カートリッジ / MBC | 🟡 | 2/7 | cpu_instrs 統合版パス、Mooneye MBC 系パス、.sav が再起動後も残る | [詳細](phases/phase-04-cartridge.md) |
+| 4 | カートリッジ / MBC | 🟡 | 3/7 | cpu_instrs 統合版パス、Mooneye MBC 系パス、.sav が再起動後も残る | [詳細](phases/phase-04-cartridge.md) |
 | 5 | APU・同期 | ⚪ | 0/7 | Blargg dmg_sound 対象パス、実ゲームで音割れなく実機速度を維持 | [詳細](phases/phase-05-apu.md) |
 | 6 | GBC 機能 | ⚪ | 0/8 | cgb-acid2 ハッシュ一致、GBC 専用ゲームがフルカラーで動作 | [詳細](phases/phase-06-cgb.md) |
 | 7 | セーブステート | ⚪ | 0/5 | save→load で完全再現、MBC3 RTC がプロセス再起動をまたいで進む | [詳細](phases/phase-07-savestate.md) |
