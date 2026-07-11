@@ -82,6 +82,9 @@ run_rom_window :: proc(opts: Options) {
 				if event.key.keysym.sym == .ESCAPE {
 					running = false
 				}
+				input_handle_key_event(&emu, event.key, true)
+			case .KEYUP:
+				input_handle_key_event(&emu, event.key, false)
 			}
 		}
 
