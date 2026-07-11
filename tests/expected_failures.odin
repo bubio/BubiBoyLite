@@ -38,8 +38,12 @@ expected_failures := [?]string {
 	// 割り込みを認識しない通常のSM83モデルでは)最後まで実行されてしまう点にある。これが
 	// 実機の挙動と一致するのか、DEC BCのような2 M-cycle命令に限り実機がM-cycle粒度で割り込みを
 	// 認識する特例があるのかを、Pan Docsの記述だけでは判別できなかった(要: 実機トレース or
-	// 既知の高精度エミュレータとの突き合わせ)。次セッションでの再挑戦時はこの調査結果から
-	// 始めること。
+	// 既知の高精度エミュレータとの突き合わせ)。追加調査で「エッジ→TIMA=$00可視化にもう1
+	// M-cycleコミット遅延が抜けているのでは」という仮説も検討したが、
+	// mooneye/acceptance/timer/tima_reload.s のコメント("no additional 4 cycle delay")と
+	// 同ROMが実際にPASSしていることから棄却済み。詳細な調査ログは
+	// docs/dev/phases/phase-02-timing.md の T2-7 検証ログを参照。次セッションでの
+	// 再挑戦時はそこから始めること。
 	"mooneye/acceptance/timer/rapid_toggle",
 	"mooneye/acceptance/interrupts/ie_push", // フェーズ3送り: disable_ppu_safeがLY待ちで無限ループ(下記注記)
 	"mooneye/acceptance/halt_ime0_ei", // フェーズ3送り: wait_ly $00 が実PPU無しでは終わらない

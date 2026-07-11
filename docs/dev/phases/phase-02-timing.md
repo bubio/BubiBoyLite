@@ -312,9 +312,24 @@ JOYP_ADDR(0xFF00)をそれぞれ `joypad_read_p1`/`joypad_write_p1` に委譲。
    細かい粒度で割り込みを認識する特例があるのかは、Pan Docsの記述だけでは判別できなかった。
 6. `reload_pending`の起点をこの書き込みの直前(pre-M-cycle)のdiv値に変える実験も
    行ったが、結果は変化しなかった(=サンプリングタイミングの問題ではないことを消去法で確認)。
+7. (追加調査、コーディネーターの示唆を受けて実施)「エッジ検出とTIMA=$00が見える瞬間の間に
+   もう1 M-cycleぶんのレジスタコミット遅延が抜けているのでは」という仮説(4のPan Docs表の
+   別解釈から生まれた仮説: エッジ自体はSYS=2Dで発生し、2Eで初めてTIMA=$00が見える=
+   エッジからreload visibleまで実は2 M-cycleではなく3 M-cycleなのでは、というもの)を
+   `mooneye/acceptance/timer/tima_reload.s`のソース(および付属コメント "Apparently the
+   TIMA register contains 00 for **4 cycles** before being reloaded...**there is no
+   additional 4 cycle delay**")を直接確認することで検証・却下した。tima_reloadは
+   まさにこの「オーバーフローからリロードまでの遅延」を精密に検査するテストであり、
+   自実装は既にこれにPASSしている。よって「edgeからtima=$00 visibleまでの間に
+   追加の1 M-cycle遅延がある」という仮説は誤りであり、`timer_reload_pending=4`
+   (1 M-cycleぶん)が唯一かつ正しい遅延であることが再確認された。この仮説は棄却して
+   ELIMINATE済み。
 
 **次にやること**: 実機トレースや既知の高精度エミュレータ(SameBoy等)のログと突き合わせて、
 2 M-cycle命令の内部サイクル中に割り込み条件が成立した場合の実機の扱いを特定すること。
+上記7で判明した通り、タイマー側の遅延モデル自体はtima_reload.sで裏付けが取れている
+(疑うべきはタイマーではなく、CPU側の割り込み認識が命令境界のみで良いのか、
+DEC BCのような2 M-cycle命令の内部サイクル境界でも認識され得るのか、という点に絞られた)。
 デバッグ用のトレースコード(timer.odin への一時的な `DEBUG_TRACE_TAC` フラグ追加など)は
 今回の調査で使ったが、コミットには含めていない(再現手順は上記の通り)。
 
