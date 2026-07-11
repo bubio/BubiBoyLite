@@ -25,7 +25,7 @@ odin test tests -collection:bbl=src   # => 全パス
 
 ### T0-1: リポジトリ初期化とパッケージ骨格
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: git リポジトリ、Odin パッケージ構造、最小のビルドが通る状態を作る。
 **作るもの**:
@@ -198,3 +198,5 @@ grep "mise install" README.md
 ## 検証ログ
 
 （タスク完了ごとに 1 行追記: `YYYY-MM-DD T0-N 完了: <検証結果の要約>`）
+
+2026-07-11 T0-1 完了: odin build src/app -collection:bbl=src -out:bbl && ./bbl => "BubiBoyLite" 出力, odin test tests -collection:bbl=src => 1 test passed

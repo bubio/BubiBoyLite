@@ -1,0 +1,14 @@
+bbl
+bbl.exe
+*.o
+*.obj
+*.exe
+*.dll
+*.dylib
+*.pdb
+tests/roms/
+.DS_Store
+build/
+dist/
+*.sav
+*.state
