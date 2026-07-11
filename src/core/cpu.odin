@@ -198,6 +198,105 @@ r8_set :: proc(cpu: ^Cpu, bus: ^Bus, idx: u8, v: u8) {
 	}
 }
 
+// --- rp16 インデックス(0=BC,1=DE,2=HL,3=SP) ---
+
+@(private)
+rp_get :: proc(cpu: ^Cpu, idx: u8) -> u16 {
+	switch idx {
+	case 0:
+		return cpu_bc(cpu)
+	case 1:
+		return cpu_de(cpu)
+	case 2:
+		return cpu_hl(cpu)
+	case:
+		return cpu.sp
+	}
+}
+
+@(private)
+rp_set :: proc(cpu: ^Cpu, idx: u8, v: u16) {
+	switch idx {
+	case 0:
+		cpu_set_bc(cpu, v)
+	case 1:
+		cpu_set_de(cpu, v)
+	case 2:
+		cpu_set_hl(cpu, v)
+	case:
+		cpu.sp = v
+	}
+}
+
+// --- rp2 インデックス(PUSH/POP 用。0=BC,1=DE,2=HL,3=AF) ---
+
+@(private)
+rp2_get :: proc(cpu: ^Cpu, idx: u8) -> u16 {
+	if idx == 3 {
+		return cpu_af(cpu)
+	}
+	return rp_get(cpu, idx)
+}
+
+@(private)
+rp2_set :: proc(cpu: ^Cpu, idx: u8, v: u16) {
+	if idx == 3 {
+		cpu_set_af(cpu, v) // F の下位4bitマスクは cpu_set_af が担当
+		return
+	}
+	rp_set(cpu, idx, v)
+}
+
+// --- 条件コード(0=NZ,1=Z,2=NC,3=C) ---
+
+@(private)
+cc_test :: proc(cpu: ^Cpu, idx: u8) -> bool {
+	switch idx {
+	case 0:
+		return !cpu_flag_z(cpu)
+	case 1:
+		return cpu_flag_z(cpu)
+	case 2:
+		return !cpu_flag_c(cpu)
+	case:
+		return cpu_flag_c(cpu)
+	}
+}
+
+// --- スタック操作 ---
+
+@(private)
+push16 :: proc(cpu: ^Cpu, bus: ^Bus, v: u16) {
+	cpu.sp -= 1
+	cpu_write8(cpu, bus, cpu.sp, u8(v >> 8))
+	cpu.sp -= 1
+	cpu_write8(cpu, bus, cpu.sp, u8(v))
+}
+
+@(private)
+pop16 :: proc(cpu: ^Cpu, bus: ^Bus) -> u16 {
+	lo := cpu_read8(cpu, bus, cpu.sp)
+	cpu.sp += 1
+	hi := cpu_read8(cpu, bus, cpu.sp)
+	cpu.sp += 1
+	return u16(hi) << 8 | u16(lo)
+}
+
+// sp_add_offset は ADD SP,e8 / LD HL,SP+e8 共通のフラグ計算。
+// Z=0, N=0 固定。H/C は SP の下位バイトに符号なしの e8 を加算した結果の桁上がりで決まる
+// (符号付き 16bit 加算の結果とは別に、下位バイト基準で判定するのが仕様)。
+@(private)
+sp_add_offset :: proc(cpu: ^Cpu, bus: ^Bus) -> u16 {
+	e8 := read_imm8(cpu, bus)
+	offset := i16(i8(e8))
+	sp := cpu.sp
+	e8u := u16(e8)
+	h := (sp & 0xF) + (e8u & 0xF) > 0xF
+	c := (sp & 0xFF) + (e8u & 0xFF) > 0xFF
+	cpu_set_flags(cpu, false, false, h, c)
+	return u16(i32(sp) + i32(offset))
+}
+
 // --- 8bit ALU ヘルパー ---
 // INC/DEC はキャリーフラグを変更しない。ADD/ADC/SUB/SBC/CP はキャリーも更新する。
 
@@ -300,6 +399,169 @@ cpu_execute :: proc(cpu: ^Cpu, bus: ^Bus, opcode: u8) {
 		idx := (opcode >> 3) & 7
 		v := r8_get(cpu, bus, idx)
 		r8_set(cpu, bus, idx, alu_dec8(cpu, v))
+
+	// --- 16bit ロード ---
+	case 0x01, 0x11, 0x21, 0x31:
+		idx := (opcode >> 4) & 3
+		rp_set(cpu, idx, read_imm16(cpu, bus))
+	case 0x02:
+		cpu_write8(cpu, bus, cpu_bc(cpu), cpu.a)
+	case 0x12:
+		cpu_write8(cpu, bus, cpu_de(cpu), cpu.a)
+	case 0x22:
+		hl := cpu_hl(cpu)
+		cpu_write8(cpu, bus, hl, cpu.a)
+		cpu_set_hl(cpu, hl + 1)
+	case 0x32:
+		hl := cpu_hl(cpu)
+		cpu_write8(cpu, bus, hl, cpu.a)
+		cpu_set_hl(cpu, hl - 1)
+	case 0x0A:
+		cpu.a = cpu_read8(cpu, bus, cpu_bc(cpu))
+	case 0x1A:
+		cpu.a = cpu_read8(cpu, bus, cpu_de(cpu))
+	case 0x2A:
+		hl := cpu_hl(cpu)
+		cpu.a = cpu_read8(cpu, bus, hl)
+		cpu_set_hl(cpu, hl + 1)
+	case 0x3A:
+		hl := cpu_hl(cpu)
+		cpu.a = cpu_read8(cpu, bus, hl)
+		cpu_set_hl(cpu, hl - 1)
+	case 0x08:
+		addr := read_imm16(cpu, bus)
+		cpu_write8(cpu, bus, addr, u8(cpu.sp))
+		cpu_write8(cpu, bus, addr + 1, u8(cpu.sp >> 8))
+	case 0xF9:
+		bus_tick(bus, 4) // internal
+		cpu.sp = cpu_hl(cpu)
+
+	// --- 16bit INC/DEC(フラグ無影響、内部+4サイクル) ---
+	case 0x03, 0x13, 0x23, 0x33:
+		idx := (opcode >> 4) & 3
+		rp_set(cpu, idx, rp_get(cpu, idx) + 1)
+		bus_tick(bus, 4)
+	case 0x0B, 0x1B, 0x2B, 0x3B:
+		idx := (opcode >> 4) & 3
+		rp_set(cpu, idx, rp_get(cpu, idx) - 1)
+		bus_tick(bus, 4)
+
+	// --- ADD HL,rr ---
+	case 0x09, 0x19, 0x29, 0x39:
+		idx := (opcode >> 4) & 3
+		hl := cpu_hl(cpu)
+		v := rp_get(cpu, idx)
+		sum := int(hl) + int(v)
+		h := (hl & 0xFFF) + (v & 0xFFF) > 0xFFF
+		cpu_set_flags(cpu, cpu_flag_z(cpu), false, h, sum > 0xFFFF)
+		cpu_set_hl(cpu, u16(sum))
+		bus_tick(bus, 4)
+
+	// --- ADD SP,e8 / LD HL,SP+e8 ---
+	case 0xE8:
+		result := sp_add_offset(cpu, bus)
+		bus_tick(bus, 4)
+		bus_tick(bus, 4)
+		cpu.sp = result
+	case 0xF8:
+		result := sp_add_offset(cpu, bus)
+		bus_tick(bus, 4)
+		cpu_set_hl(cpu, result)
+
+	// --- PUSH/POP ---
+	case 0xC1, 0xD1, 0xE1, 0xF1:
+		idx := (opcode >> 4) & 3
+		rp2_set(cpu, idx, pop16(cpu, bus))
+	case 0xC5, 0xD5, 0xE5, 0xF5:
+		idx := (opcode >> 4) & 3
+		bus_tick(bus, 4) // internal
+		push16(cpu, bus, rp2_get(cpu, idx))
+
+	// --- RET / RETI ---
+	case 0xC0, 0xD0, 0xC8, 0xD8:
+		idx := (opcode >> 3) & 3
+		bus_tick(bus, 4) // 条件チェック用の内部サイクル
+		if cc_test(cpu, idx) {
+			cpu.pc = pop16(cpu, bus)
+			bus_tick(bus, 4)
+		}
+	case 0xC9:
+		cpu.pc = pop16(cpu, bus)
+		bus_tick(bus, 4)
+	case 0xD9:
+		cpu.pc = pop16(cpu, bus)
+		bus_tick(bus, 4)
+		cpu.ime = true
+
+	// --- JP ---
+	case 0xC2, 0xD2, 0xCA, 0xDA:
+		idx := (opcode >> 3) & 3
+		addr := read_imm16(cpu, bus)
+		if cc_test(cpu, idx) {
+			cpu.pc = addr
+			bus_tick(bus, 4)
+		}
+	case 0xC3:
+		addr := read_imm16(cpu, bus)
+		cpu.pc = addr
+		bus_tick(bus, 4)
+	case 0xE9:
+		cpu.pc = cpu_hl(cpu) // メモリアクセスなし、内部サイクルもなし(4=フェッチのみ)
+
+	// --- JR ---
+	case 0x20, 0x30, 0x28, 0x38:
+		idx := (opcode >> 3) & 3
+		e8 := read_imm8(cpu, bus)
+		if cc_test(cpu, idx) {
+			offset := i16(i8(e8))
+			cpu.pc = u16(i32(cpu.pc) + i32(offset))
+			bus_tick(bus, 4)
+		}
+	case 0x18:
+		e8 := read_imm8(cpu, bus)
+		offset := i16(i8(e8))
+		cpu.pc = u16(i32(cpu.pc) + i32(offset))
+		bus_tick(bus, 4)
+
+	// --- CALL ---
+	case 0xC4, 0xD4, 0xCC, 0xDC:
+		idx := (opcode >> 3) & 3
+		addr := read_imm16(cpu, bus)
+		if cc_test(cpu, idx) {
+			bus_tick(bus, 4) // internal
+			push16(cpu, bus, cpu.pc)
+			cpu.pc = addr
+		}
+	case 0xCD:
+		addr := read_imm16(cpu, bus)
+		bus_tick(bus, 4) // internal
+		push16(cpu, bus, cpu.pc)
+		cpu.pc = addr
+
+	// --- RST ---
+	case 0xC7, 0xCF, 0xD7, 0xDF, 0xE7, 0xEF, 0xF7, 0xFF:
+		vector := u16(opcode & 0x38)
+		bus_tick(bus, 4) // internal
+		push16(cpu, bus, cpu.pc)
+		cpu.pc = vector
+
+	// --- LDH / (C) / (a16) 経由の A ロード ---
+	case 0xE0:
+		addr := u16(0xFF00) + u16(read_imm8(cpu, bus))
+		cpu_write8(cpu, bus, addr, cpu.a)
+	case 0xF0:
+		addr := u16(0xFF00) + u16(read_imm8(cpu, bus))
+		cpu.a = cpu_read8(cpu, bus, addr)
+	case 0xE2:
+		cpu_write8(cpu, bus, u16(0xFF00) + u16(cpu.c), cpu.a)
+	case 0xF2:
+		cpu.a = cpu_read8(cpu, bus, u16(0xFF00) + u16(cpu.c))
+	case 0xEA:
+		addr := read_imm16(cpu, bus)
+		cpu_write8(cpu, bus, addr, cpu.a)
+	case 0xFA:
+		addr := read_imm16(cpu, bus)
+		cpu.a = cpu_read8(cpu, bus, addr)
 
 	case:
 		if opcode >= 0x40 && opcode <= 0x7F {
