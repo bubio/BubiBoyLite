@@ -158,7 +158,7 @@ DISPLAY= ./bbl --headless; echo "exit=$?"
 
 ### T0-7: LICENSE と README 雛形
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: MIT ライセンスの確定（BluePrint「ゆるいライセンス」）と最低限の README。
 **作るもの**:
@@ -205,3 +205,4 @@ grep "mise install" README.md
 2026-07-11 T0-4 完了: ./scripts/build_macos.sh --test && ./bbl -v => "bbl 0.1.0"、build_linux.sh は sh -n で構文チェック済み（実行環境が macOS のため実ビルドは未検証）、build_win.ps1 は pwsh 未導入のため構文チェック未実施（構造は macos/linux 版と同一）
 2026-07-11 T0-5 完了: ./bbl --scale 2 をバックグラウンド起動し 3 秒後も生存 (SIGTERM で正常終了、エラー出力なし) を確認。目視でのグラデーション・四隅マーカー確認はユーザーに依頼
 2026-07-11 T0-6 完了: DISPLAY= ./bbl --headless => "headless: nothing to do" exit=0
+2026-07-11 T0-7 完了: head -1 LICENSE => "MIT License"、grep "mise install" README.md ヒット確認
