@@ -162,6 +162,39 @@ fetch_mooneye "acceptance/oam_dma/basic.gb"
 fetch_mooneye "acceptance/oam_dma/reg_read.gb"
 fetch_mooneye "acceptance/oam_dma_start.gb"
 
+# --- emulator-only/mbc1・mbc2・mbc5 (T4-7の対象) ---
+# mbc1/multicart_rom_8Mb.gb はMBC1M(マルチカート)専用ROM向けで、本プロジェクトはMBC1Mを
+# 実装しない(phase-04-cartridge.md T4-7の落とし穴に明記のスコープ外)ため取得しない。
+fetch_mooneye "emulator-only/mbc1/bits_bank1.gb"
+fetch_mooneye "emulator-only/mbc1/bits_bank2.gb"
+fetch_mooneye "emulator-only/mbc1/bits_mode.gb"
+fetch_mooneye "emulator-only/mbc1/bits_ramg.gb"
+fetch_mooneye "emulator-only/mbc1/ram_64kb.gb"
+fetch_mooneye "emulator-only/mbc1/ram_256kb.gb"
+fetch_mooneye "emulator-only/mbc1/rom_512kb.gb"
+fetch_mooneye "emulator-only/mbc1/rom_1Mb.gb"
+fetch_mooneye "emulator-only/mbc1/rom_2Mb.gb"
+fetch_mooneye "emulator-only/mbc1/rom_4Mb.gb"
+fetch_mooneye "emulator-only/mbc1/rom_8Mb.gb"
+fetch_mooneye "emulator-only/mbc1/rom_16Mb.gb"
+
+fetch_mooneye "emulator-only/mbc2/bits_ramg.gb"
+fetch_mooneye "emulator-only/mbc2/bits_romb.gb"
+fetch_mooneye "emulator-only/mbc2/bits_unused.gb"
+fetch_mooneye "emulator-only/mbc2/ram.gb"
+fetch_mooneye "emulator-only/mbc2/rom_512kb.gb"
+fetch_mooneye "emulator-only/mbc2/rom_1Mb.gb"
+fetch_mooneye "emulator-only/mbc2/rom_2Mb.gb"
+
+fetch_mooneye "emulator-only/mbc5/rom_512kb.gb"
+fetch_mooneye "emulator-only/mbc5/rom_1Mb.gb"
+fetch_mooneye "emulator-only/mbc5/rom_2Mb.gb"
+fetch_mooneye "emulator-only/mbc5/rom_4Mb.gb"
+fetch_mooneye "emulator-only/mbc5/rom_8Mb.gb"
+fetch_mooneye "emulator-only/mbc5/rom_16Mb.gb"
+fetch_mooneye "emulator-only/mbc5/rom_32Mb.gb"
+fetch_mooneye "emulator-only/mbc5/rom_64Mb.gb"
+
 # --- dmg-acid2 (T3-6/T3-8) ---
 # testing.md: mattcurrie/dmg-acid2 リリースから取得する。ROM本体はリリースタグ(v1.0)の
 # 添付アセット(不変URL)、参照PNG画像は目視比較用にコミットハッシュ固定でraw取得する
