@@ -563,6 +563,12 @@ cpu_execute :: proc(cpu: ^Cpu, bus: ^Bus, opcode: u8) {
 		addr := read_imm16(cpu, bus)
 		cpu.a = cpu_read8(cpu, bus, addr)
 
+	// --- CB プレフィックス ---
+	case 0xCB:
+		cb_opcode := cpu_read8(cpu, bus, cpu.pc)
+		cpu.pc += 1
+		cpu_execute_cb(cpu, bus, cb_opcode)
+
 	case:
 		if opcode >= 0x40 && opcode <= 0x7F {
 			// --- LD r,r' (0x76 は HALT、T1-6 で実装) ---
@@ -609,4 +615,73 @@ cpu_alu_op :: proc(cpu: ^Cpu, op: u8, v: u8) {
 	case:
 		alu_sub(cpu, v, 0, false) // CP
 	}
+}
+
+// --- CB プレフィックス命令(T1-5) ---
+// レイアウト: bit7-6=グループ(0=回転/シフト,1=BIT,2=RES,3=SET)
+//            bit5-3=サブオペレーション or ビット番号
+//            bit2-0=r8 インデックス(6=(HL))
+// サイクル数は r8_get/r8_set が (HL) の場合に自動で cpu_read8/cpu_write8 を
+// 呼ぶことで、命令表どおりの値が自然に出る(非(HL): 8、(HL) BIT: 12、(HL) 他: 16)。
+
+@(private)
+cpu_execute_cb :: proc(cpu: ^Cpu, bus: ^Bus, opcode: u8) {
+	group := opcode >> 6
+	op := (opcode >> 3) & 7
+	idx := opcode & 7
+
+	switch group {
+	case 0:
+		v := r8_get(cpu, bus, idx)
+		r8_set(cpu, bus, idx, cb_rotate_shift(cpu, op, v))
+	case 1:
+		v := r8_get(cpu, bus, idx)
+		bit := v & (1 << op) != 0
+		cpu.f = (cpu.f & FLAG_C) | FLAG_H | (bit ? 0 : FLAG_Z)
+	case 2:
+		v := r8_get(cpu, bus, idx)
+		r8_set(cpu, bus, idx, v & ~(u8(1) << op))
+	case:
+		v := r8_get(cpu, bus, idx)
+		r8_set(cpu, bus, idx, v | (u8(1) << op))
+	}
+}
+
+// cb_rotate_shift は RLC/RRC/RL/RR/SLA/SRA/SWAP/SRL(op=0..7) を実行し、結果を返す。
+// 通常のフラグ規則で Z を設定する(非CB版の RLCA 等とは異なり Z=0 固定にしない)。
+@(private)
+cb_rotate_shift :: proc(cpu: ^Cpu, op: u8, v: u8) -> u8 {
+	result: u8
+	carry_out: bool
+
+	switch op {
+	case 0: // RLC
+		carry_out = v & 0x80 != 0
+		result = (v << 1) | (carry_out ? 1 : 0)
+	case 1: // RRC
+		carry_out = v & 0x01 != 0
+		result = (v >> 1) | (carry_out ? 0x80 : 0)
+	case 2: // RL
+		carry_out = v & 0x80 != 0
+		result = (v << 1) | (cpu_flag_c(cpu) ? 1 : 0)
+	case 3: // RR
+		carry_out = v & 0x01 != 0
+		result = (v >> 1) | (cpu_flag_c(cpu) ? 0x80 : 0)
+	case 4: // SLA
+		carry_out = v & 0x80 != 0
+		result = v << 1
+	case 5: // SRA (符号ビット保持)
+		carry_out = v & 0x01 != 0
+		result = (v >> 1) | (v & 0x80)
+	case 6: // SWAP
+		result = (v << 4) | (v >> 4)
+		carry_out = false
+	case:
+		// SRL
+		carry_out = v & 0x01 != 0
+		result = v >> 1
+	}
+
+	cpu_set_flags(cpu, result == 0, false, false, carry_out)
+	return result
 }

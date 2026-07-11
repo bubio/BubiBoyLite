@@ -96,7 +96,7 @@ odin test tests -collection:bbl=src
 
 ### T1-5: CB プレフィックス命令
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: RLC/RRC/RL/RR/SLA/SRA/SWAP/SRL/BIT/RES/SET の 256 命令を実装する。
 **作るもの**: `src/core/cpu.odin` に `cpu_step_cb`。CB 命令は下位 3bit がオペランド（B,C,D,E,H,L,(HL),A）、上位でオペレーション、という規則的な構造なのでテーブル/計算でデコードできる。
@@ -195,3 +195,4 @@ odin test tests -collection:bbl=src                    # ROM なし → skip 扱
 2026-07-11 T1-2 完了: odin test tests -collection:bbl=src 全パス(21 tests)
 2026-07-11 T1-3 完了: odin test tests -collection:bbl=src 全パス(31 tests)
 2026-07-11 T1-4 完了: odin test tests -collection:bbl=src 全パス(43 tests)、./scripts/build_macos.sh --test も成功
+2026-07-11 T1-5 完了: odin test tests -collection:bbl=src 全パス(52 tests)
