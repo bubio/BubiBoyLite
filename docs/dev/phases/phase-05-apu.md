@@ -95,7 +95,7 @@ odin test tests -collection:bbl=src   # blargg dmg_sound 対象が PASS
 
 ### T5-5: ミキサーと 48kHz サンプル生成
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: 4ch を混合して 48kHz ステレオ i16 サンプルを core 内リングバッファに蓄積する。
 **作るもの**: apu.odin:
@@ -212,3 +212,21 @@ tests/apu_noise_test.odin 新規6件(トリガーでのLFSR初期化とDACゲー
 即停止)。
 `odin build src/app -collection:bbl=src -out:bbl` 成功、
 `odin test tests -collection:bbl=src` 253件全パス(新規6件含む)。
+
+2026-07-12 T5-5 完了: apu.odin にミキサーと48kHzダウンサンプリングを実装。各chの出力は
+「点サンプル」方式(F#移植のような区間平均は行わない。dmg_soundはレジスタ/制御ロジック
+しか検査しないため不要な複雑さと判断、advisorの助言どおり)。ダウンサンプリングは
+`sample_counter += 48000`して`>= 4194304`で採取・減算する固定小数点カウンタ(apu_tick内)。
+NR51パンニング→NR50マスター音量→i16スケーリング(クリッピング付き)。`apu_drain_samples
+(apu, dst) -> int`と固定サイズ配列(動的確保なし、architecture.md「固定サイズ配列を優先」)の
+リングバッファ(容量8192ステレオペア、あふれたら最古を破棄)を実装。重要な設計変更:
+apu_tickの電源offガードをフレームシーケンサ/ch進行のみに限定し、サンプル生成(無音0出力)は
+電源状態に関わらず一定レートで継続するようにした(T5-6のオーディオ駆動ペーシングが
+APU電源off中に破綻しないため)。
+tests/apu_mixer_test.odin 新規5件: 1フレーム分(70224 T-cycle)のサンプル数が理論値どおり
+803ペア(Pythonで同アルゴリズムを独立再現して確認)、無音時のDCオフセットが厳密に0、
+電源off中もサンプル生成レートが変わらず全て無音であること、drain先バッファ容量不足時の
+分割取得、リングバッファがAPU_RING_CAPACITY(8192ペア)を超えないこと(12フレーム分
+ノンストップ生成しても上限に収まる)。
+`odin build src/app -collection:bbl=src -out:bbl` 成功、
+`odin test tests -collection:bbl=src` 258件全パス(新規5件含む)。

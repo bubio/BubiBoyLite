@@ -38,6 +38,7 @@ WAVE_RAM_END :: 0xFF3F
 
 FRAME_SEQUENCER_PERIOD :: 8192 // T-cycle。512Hz = 4194304/8192
 APU_MAX_VOLUME :: 15
+APU_SAMPLE_RATE :: 48000 // 出力サンプルレート(T5-5)
 
 Envelope_Direction :: enum {
 	Decrease,
@@ -117,7 +118,22 @@ Apu :: struct {
 	nr50, nr51:                   u8,
 
 	wave_ram: [16]u8, // FF30-FF3F。電源off中も読み書き可(T5-1落とし穴)
+
+	sample_counter: int, // 48kHzダウンサンプリング用固定小数点カウンタ(T5-5、CPU_HZ単位で蓄積)
+
+	ring:       [APU_RING_CAPACITY]Apu_Sample, // リングバッファ(T5-5)。あふれたら最古を破棄
+	ring_read:  int,
+	ring_write: int,
+	ring_count: int,
 }
+
+// Apu_Sample は1組のステレオ48kHz i16 サンプル(interleaved出力の1ペア分、T5-5)。
+Apu_Sample :: struct {
+	left:  i16,
+	right: i16,
+}
+
+APU_RING_CAPACITY :: 8192 // ステレオサンプル(ペア)容量(T5-5 DoD、あふれたら最古を破棄)
 
 // apu_read_mask は各 NR レジスタの「未使用/書き込み専用ビットは読み出し時1になる」マスクを返す
 // (Pan Docs "Audio Registers" の表どおり。dmg_sound 01-registers が最初に検査する)。
@@ -573,20 +589,28 @@ apu_notify_div_write :: proc(apu: ^Apu, old_div_counter: u16) {
 // (architecture.md のタイミングモデル)。T5-1時点ではフレームシーケンサの巡回のみ
 // (ch進行・サンプル生成はT5-2〜T5-5で追加)。
 apu_tick :: proc(apu: ^Apu, t_cycles: int) {
-	if !apu.powered_on {
-		return
-	}
 	for _ in 0 ..< t_cycles {
-		apu.frame_sequencer_cycles += 1
-		if apu.frame_sequencer_cycles >= FRAME_SEQUENCER_PERIOD {
-			apu.frame_sequencer_cycles -= FRAME_SEQUENCER_PERIOD
-			apu_clock_frame_sequencer(apu)
+		if apu.powered_on {
+			apu.frame_sequencer_cycles += 1
+			if apu.frame_sequencer_cycles >= FRAME_SEQUENCER_PERIOD {
+				apu.frame_sequencer_cycles -= FRAME_SEQUENCER_PERIOD
+				apu_clock_frame_sequencer(apu)
+			}
+
+			apu_tick_pulse(&apu.pulse1)
+			apu_tick_pulse(&apu.pulse2)
+			apu_tick_wave(apu)
+			apu_tick_noise(apu)
 		}
 
-		apu_tick_pulse(&apu.pulse1)
-		apu_tick_pulse(&apu.pulse2)
-		apu_tick_wave(apu)
-		apu_tick_noise(apu)
+		// サンプル生成は電源off中も一定レートで続ける(T5-5)。無音サンプル(0)が出るだけで、
+		// オーディオ駆動ペーシング(T5-6)のバッファ残量ペースを崩さないようにするため。
+		apu.sample_counter += APU_SAMPLE_RATE
+		if apu.sample_counter >= CPU_HZ {
+			apu.sample_counter -= CPU_HZ
+			left, right := apu_mix_sample(apu)
+			apu_push_sample(apu, left, right)
+		}
 	}
 }
 
@@ -817,4 +841,156 @@ apu_write_register :: proc(apu: ^Apu, addr: u16, value: u8) {
 	case NR51_ADDR:
 		apu.nr51 = value
 	}
+}
+
+// --- ミキサーと48kHzサンプル生成(T5-5) ---
+// ダウンサンプリングは apu_tick 内の固定小数点カウンタ(sample_counter += 48000、
+// >= 4194304 で採取・減算)で行う。各chの出力は「点サンプル」(F#移植のような区間平均は
+// 行わない。dmg_soundはレジスタ/制御ロジックしか検査せずここでは不要な複雑さになるため、
+// architecture.md のシンプルさ優先の方針に合わせた)。
+
+// apu_pulse_duty_table は4種のデューティ比(12.5/25/50/75%)を8ステップの0/1系列で表す。
+// Pan Docs "Sound Channel 1/2" の波形表どおり。
+@(private)
+apu_pulse_duty_table := [4][8]int {
+	{0, 0, 0, 0, 0, 0, 0, 1}, // 12.5%
+	{1, 0, 0, 0, 0, 0, 0, 1}, // 25%
+	{1, 0, 0, 0, 0, 1, 1, 1}, // 50%
+	{0, 1, 1, 1, 1, 1, 1, 0}, // 75%
+}
+
+// apu_pulse_output は矩形波chの現在の出力を -1.0〜+1.0 に正規化して返す。ch無効/DAC offなら
+// 0(簡易実装。DAC off時の「DAC入力0の電位」は本実装では0とみなす、T5-5落とし穴)。
+@(private)
+apu_pulse_output :: proc(ch: ^Pulse_Channel) -> f32 {
+	if !ch.enabled || !ch.dac_enabled {
+		return 0
+	}
+	bit := apu_pulse_duty_table[ch.duty][ch.duty_step]
+	vol := f32(ch.envelope.volume) / f32(APU_MAX_VOLUME)
+	return bit == 0 ? -vol : vol
+}
+
+// apu_wave_output は ch3 の現在位置のサンプルを output_level(0/100/50/25%)でスケーリングし、
+// -1.0〜+1.0 に正規化して返す。
+@(private)
+apu_wave_output :: proc(apu: ^Apu) -> f32 {
+	ch := &apu.wave
+	if !ch.enabled || !ch.dac_enabled || ch.output_level == 0 {
+		return 0
+	}
+	sample := int(apu_wave_current_nibble(apu))
+	shifted: int
+	switch ch.output_level {
+	case 1:
+		shifted = sample // 100%
+	case 2:
+		shifted = sample >> 1 // 50%
+	case:
+		shifted = sample >> 2 // 25%
+	}
+	return f32(2*shifted-15) / 15.0
+}
+
+// apu_noise_output は ch4 の現在の出力を -1.0〜+1.0 に正規化して返す。落とし穴: 出力は
+// LFSR の bit0 の反転(bit0=0で正、bit0=1で負)。
+@(private)
+apu_noise_output :: proc(ch: ^Noise_Channel) -> f32 {
+	if !ch.enabled || !ch.dac_enabled {
+		return 0
+	}
+	vol := f32(ch.envelope.volume) / f32(APU_MAX_VOLUME)
+	return ch.lfsr & 1 == 0 ? vol : -vol
+}
+
+// apu_scale_to_i16 は -1.0〜+1.0 の正規化値を i16 の範囲へスケーリングする(クリッピング付き)。
+@(private)
+apu_scale_to_i16 :: proc(v: f32) -> i16 {
+	scaled := v * 32767.0
+	if scaled > 32767.0 {
+		return 32767
+	}
+	if scaled < -32768.0 {
+		return -32768
+	}
+	return i16(scaled)
+}
+
+// apu_mix_sample は4chをNR51パンニング・NR50マスター音量で混合し、ステレオi16サンプル1組を
+// 返す。電源off中は無音(0,0)を返す(T5-5)。
+@(private)
+apu_mix_sample :: proc(apu: ^Apu) -> (left, right: i16) {
+	if !apu.powered_on {
+		return 0, 0
+	}
+
+	ch1 := apu_pulse_output(&apu.pulse1)
+	ch2 := apu_pulse_output(&apu.pulse2)
+	ch3 := apu_wave_output(apu)
+	ch4 := apu_noise_output(&apu.noise)
+
+	left_vol := f32(int((apu.nr50>>4) & 0x07) + 1) / 8.0
+	right_vol := f32(int(apu.nr50 & 0x07) + 1) / 8.0
+
+	left_mix: f32 = 0
+	if apu.nr51 & 0x10 != 0 {
+		left_mix += ch1
+	}
+	if apu.nr51 & 0x20 != 0 {
+		left_mix += ch2
+	}
+	if apu.nr51 & 0x40 != 0 {
+		left_mix += ch3
+	}
+	if apu.nr51 & 0x80 != 0 {
+		left_mix += ch4
+	}
+	left_mix *= 0.25 * left_vol
+
+	right_mix: f32 = 0
+	if apu.nr51 & 0x01 != 0 {
+		right_mix += ch1
+	}
+	if apu.nr51 & 0x02 != 0 {
+		right_mix += ch2
+	}
+	if apu.nr51 & 0x04 != 0 {
+		right_mix += ch3
+	}
+	if apu.nr51 & 0x08 != 0 {
+		right_mix += ch4
+	}
+	right_mix *= 0.25 * right_vol
+
+	return apu_scale_to_i16(left_mix), apu_scale_to_i16(right_mix)
+}
+
+// apu_push_sample はリングバッファへ1組追加する。満杯なら最古を1組破棄してから追加する
+// (T5-5 DoD「あふれたら古い方を捨てる」)。固定サイズ配列なのでフレーム毎のアロケーションは
+// 発生しない(architecture.md「固定サイズ配列を優先」)。
+@(private)
+apu_push_sample :: proc(apu: ^Apu, left, right: i16) {
+	apu.ring[apu.ring_write] = Apu_Sample{left, right}
+	apu.ring_write = (apu.ring_write + 1) % APU_RING_CAPACITY
+	if apu.ring_count < APU_RING_CAPACITY {
+		apu.ring_count += 1
+	} else {
+		apu.ring_read = (apu.ring_read + 1) % APU_RING_CAPACITY // 満杯: 最古を破棄
+	}
+}
+
+// apu_drain_samples はリングバッファから溜まっているサンプルを dst(ステレオinterleaved i16)
+// へ書き出し、書き込んだ要素数(i16の個数。ペア数ではない)を返す(architecture.md公開API、
+// T5-5)。dst の容量が足りなければ入りきる分だけ書き出す。
+apu_drain_samples :: proc(apu: ^Apu, dst: []i16) -> int {
+	max_pairs := len(dst) / 2
+	n := min(max_pairs, apu.ring_count)
+	for i in 0 ..< n {
+		s := apu.ring[apu.ring_read]
+		dst[i*2] = s.left
+		dst[i*2+1] = s.right
+		apu.ring_read = (apu.ring_read + 1) % APU_RING_CAPACITY
+	}
+	apu.ring_count -= n
+	return n * 2
 }
