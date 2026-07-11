@@ -4,7 +4,6 @@ package core
 // MBC 状態は Odin の tagged union で表現する(Mbc_State :: union { Mbc_None, Mbc1_State, ... })。
 // bus.odin の 0000-7FFF(ROM)・A000-BFFF(外部RAM)はこのファイルの mbc_read/mbc_write を
 // 経由する(T4-2、~/dev/_Emu/BubiBoy/src/BubiBoy.Core/CartridgeMemory.fs のアルゴリズムを移植)。
-// MBC5 は T4-5 で union に追加する。
 
 ROM_BANK_SIZE :: 0x4000
 RAM_BANK_SIZE :: 0x2000
@@ -48,11 +47,21 @@ Mbc3_State :: struct {
 	rtc_base_unix:     i64, // 直近の emulator_set_wall_clock 供給値。0=未同期
 }
 
+// Mbc5_State: GBC世代の標準MBC5(T4-5)。落とし穴: MBC1/MBC2/MBC3と違い、バンク0を
+// そのまま4000-7FFFに指定できる(0→1の読み替えをしない)。
+Mbc5_State :: struct {
+	ram_enabled:    bool, // 0000-1FFF: 下位4bit=0x0A で有効
+	rom_bank_low8:  u8, // 2000-2FFF: ROMバンク下位8bit
+	rom_bank_high1: u8, // 3000-3FFF: ROMバンクbit8(0-1)。500バンク超のROM向け
+	ram_bank:       u8, // 4000-5FFF: RAMバンク(0-15)
+}
+
 Mbc_State :: union {
 	Mbc_None,
 	Mbc1_State,
 	Mbc2_State,
 	Mbc3_State,
+	Mbc5_State,
 }
 
 // mbc_read は ROM(0000-7FFF)・外部 RAM(A000-BFFF)への読み出しを MBC の種類に応じてディスパッチする。
@@ -66,6 +75,8 @@ mbc_read :: proc(cart: ^Cartridge, addr: u16) -> u8 {
 		return mbc2_read(cart, state, addr)
 	case Mbc3_State:
 		return mbc3_read(cart, state, addr)
+	case Mbc5_State:
+		return mbc5_read(cart, state, addr)
 	}
 	return 0xFF
 }
@@ -83,6 +94,8 @@ mbc_write :: proc(cart: ^Cartridge, addr: u16, value: u8) {
 		mbc2_write(cart, &state, addr, value)
 	case Mbc3_State:
 		mbc3_write(cart, &state, addr, value)
+	case Mbc5_State:
+		mbc5_write(cart, &state, addr, value)
 	}
 }
 
@@ -94,7 +107,7 @@ mbc_sync_wall_clock :: proc(cart: ^Cartridge, unix_seconds: i64) {
 		if cart.info.has_rtc {
 			mbc3_advance_rtc(&state, unix_seconds)
 		}
-	case Mbc_None, Mbc1_State, Mbc2_State:
+	case Mbc_None, Mbc1_State, Mbc2_State, Mbc5_State:
 	}
 }
 
@@ -478,6 +491,52 @@ mbc3_write :: proc(cart: ^Cartridge, state: ^Mbc3_State, addr: u16, value: u8) {
 			}
 		} else if state.ram_or_rtc_select <= 0x03 {
 			write_ram_bank(cart, int(state.ram_or_rtc_select), addr - 0xA000, value)
+		}
+	case:
+	// 未使用領域: 無視
+	}
+}
+
+// --- MBC5 ---
+
+@(private)
+mbc5_rom_bank :: proc(state: Mbc5_State) -> int {
+	return (int(state.rom_bank_high1) << 8) | int(state.rom_bank_low8)
+}
+
+@(private)
+mbc5_read :: proc(cart: ^Cartridge, state: Mbc5_State, addr: u16) -> u8 {
+	switch {
+	case addr <= 0x3FFF:
+		return read_rom_bank(cart, 0, addr)
+	case addr <= 0x7FFF:
+		return read_rom_bank(cart, mbc5_rom_bank(state), addr - 0x4000)
+	case addr >= 0xA000 && addr <= 0xBFFF:
+		if !state.ram_enabled {
+			return 0xFF
+		}
+		return read_ram_bank(cart, int(state.ram_bank), addr - 0xA000)
+	case:
+		return 0xFF
+	}
+}
+
+// mbc5_write: 落とし穴(T4-5) MBC1/MBC2/MBC3の「バンク0は1に読み替える」癖を
+// 持ち込まない。MBC5はバンク0をそのまま4000-7FFFに指定できる。
+@(private)
+mbc5_write :: proc(cart: ^Cartridge, state: ^Mbc5_State, addr: u16, value: u8) {
+	switch {
+	case addr <= 0x1FFF:
+		state.ram_enabled = value & 0x0F == 0x0A
+	case addr <= 0x2FFF:
+		state.rom_bank_low8 = value
+	case addr <= 0x3FFF:
+		state.rom_bank_high1 = value & 0x01
+	case addr <= 0x5FFF:
+		state.ram_bank = value & 0x0F
+	case addr >= 0xA000 && addr <= 0xBFFF:
+		if state.ram_enabled {
+			write_ram_bank(cart, int(state.ram_bank), addr - 0xA000, value)
 		}
 	case:
 	// 未使用領域: 無視

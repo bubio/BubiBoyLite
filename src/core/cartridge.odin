@@ -243,9 +243,11 @@ cartridge_init :: proc(rom: []u8) -> (cart: Cartridge, err: Cartridge_Parse_Erro
 			rom_bank = 1,
 		}
 	case .Mbc5:
-		// T4-5 で実装され次第、対応する *_State の初期値に置き換える。
-		// それまでは ROM only 相当(バンク0/1固定、外部RAM無効)にフォールバックする。
-		cart.mbc = Mbc_None{}
+		// 電源投入直後はバンク1(他のMBCと同じ既定値)。ただし実行中に0を書けば
+		// そのままバンク0を選択できる(0→1読み替えをしない、落とし穴)。
+		cart.mbc = Mbc5_State {
+			rom_bank_low8 = 1,
+		}
 	}
 
 	return cart, .None

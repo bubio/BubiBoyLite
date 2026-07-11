@@ -92,7 +92,7 @@ odin test tests -collection:bbl=src   # cpu_instrs 統合版 + mooneye emulator-
 
 ### T4-5: MBC5
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: GBC 世代の標準 MBC5 を実装する。
 **作るもの**: mbc.odin:
@@ -213,4 +213,17 @@ tests/mbc3_test.odin新規作成(6件: ROMバンク0→1読み替え、RAMバン
 自動テストROMが存在しない(mbc3-tester/mealybug-tearoom mbc3_rtcは目視確認用ROMのため
 対象外、phase-04記載のT4-7対象にもmbc3は含まれない)ため、単体テストのみで検証した。
 `odin test tests -collection:bbl=src` 184 tests 全パス(既存178 + 新規6)、17.2秒。
+`odin build src/app -collection:bbl=src`もクリーン。
+
+2026-07-11 T4-5 完了: mbc.odinにMbc5_State(ram_enabled/rom_bank_low8/rom_bank_high1/
+ram_bank)を追加しMbc_State unionに組み込んだ(mbc5_read/mbc5_write)。2000-2FFF ROMバンク
+下位8bit、3000-3FFF bit8(9bit全体で最大512バンク=8MiBまで対応)、4000-5FFF RAMバンク
+(0-15)。落とし穴どおりMBC1/2/3の「0→1読み替え」を持ち込まず、バンク0をそのまま
+4000-7FFFに指定できる(cartridge_initでの電源投入直後の既定値のみ1、他MBCと揃えるため)。
+tests/mbc5_test.odin新規作成(5件: 電源投入直後バンク1、バンク0を読み替え無しで選択、
+bit8による256以上のバンク選択、low8/high1の組み合わせ、RAM有効化とバンク独立性)。
+mooneye emulator-only/mbc5/ の rom_512kb・rom_1Mb・rom_2Mb・rom_4Mb・rom_8Mb・rom_16Mb・
+rom_32Mb・rom_64Mb 全8本(64Mbit=8MiB、rom_size_code上限0x08=512バンクを含む)を手元で
+個別実行しPASSを確認済み(正式な@(test)化とfetch_test_roms.shへの追加はT4-7で行う)。
+`odin test tests -collection:bbl=src` 189 tests 全パス(既存184 + 新規5)、16.2秒。
 `odin build src/app -collection:bbl=src`もクリーン。
