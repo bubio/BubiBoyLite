@@ -147,7 +147,7 @@ odin test tests -collection:bbl=src
 
 ### T1-8: テスト ROM ランナー
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: ヘッドレスでテスト ROM を実行し PASS/FAIL 判定する仕組みを tests/ に作る。
 **作るもの**:
@@ -198,3 +198,4 @@ odin test tests -collection:bbl=src                    # ROM なし → skip 扱
 2026-07-11 T1-5 完了: odin test tests -collection:bbl=src 全パス(52 tests)
 2026-07-11 T1-6 完了: cpu_daa 実装、odin test tests -collection:bbl=src 全パス(60 tests, DAA 6ケース + 全256/CB256オペコード網羅テスト追加)、odin build src/app -collection:bbl=src も成功
 2026-07-11 T1-7 完了: src/core/serial.odin 新規作成(SB/SC経由のキャプチャ、bus_io_read/write から接続)、odin test tests -collection:bbl=src 全パス(64 tests)
+2026-07-11 T1-8 完了: scripts/fetch_test_roms.sh 実装(retrio/gb-test-roms を c240dd7d700e5c0b00a7bbba52b53e4ee67b5f15 で固定取得)、tests/rom_runner.odin・tests/blargg_test.odin・tests/expected_failures.odin 新規作成。ROM未取得時は odin test tests -collection:bbl=src が全76テストskip扱いで成功、./scripts/fetch_test_roms.sh 実行後は cpu_instrs個別11本中10本(01,03-11)が実装済みDAA/CB/16bit命令だけで即PASSしたためexpected_failuresには実際にFAILする02-interruptsとinstr_timingの2本のみ計上(「12本全部入れる」という当初設計は「予期せぬPASS即FAIL」の自己検証と矛盾するため、実態に合わせて調整)。odin test tests -collection:bbl=src 全パス(76 tests)、odin build src/app -collection:bbl=src も成功
