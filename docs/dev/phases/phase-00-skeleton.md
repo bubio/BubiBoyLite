@@ -48,7 +48,7 @@ odin test tests -collection:bbl=src
 
 ### T0-2: バージョン定義と -h / -v
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: バージョンを単一の場所で定義し、`-h`/`--help` と `-v`/`--version` を実装する。
 **作るもの**:
@@ -200,3 +200,4 @@ grep "mise install" README.md
 （タスク完了ごとに 1 行追記: `YYYY-MM-DD T0-N 完了: <検証結果の要約>`）
 
 2026-07-11 T0-1 完了: odin build src/app -collection:bbl=src -out:bbl && ./bbl => "BubiBoyLite" 出力, odin test tests -collection:bbl=src => 1 test passed
+2026-07-11 T0-2 完了: ./bbl -v => "bbl 0.1.0" exit=0, ./bbl -h に --scale/--fullscreen 記載を確認
