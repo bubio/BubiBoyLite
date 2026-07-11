@@ -41,7 +41,7 @@ odin test tests -collection:bbl=src   # blargg dmg_sound 対象が PASS
 
 ### T5-2: 矩形波チャンネル (ch1 / ch2)
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: スイープ付き矩形波 (ch1) とスイープなし (ch2) を実装する。
 **作るもの**: apu.odin:
@@ -168,3 +168,21 @@ NR52電源off/onでのステータス、電源offでのレジスタクリア/wav
 T5-1実装と衝突したため、真に未使用な 0xFF08 に差し替え。
 `odin build src/app -collection:bbl=src -out:bbl` 成功、
 `odin test tests -collection:bbl=src` 231件全パス(新規6件含む)。
+
+2026-07-12 T5-2 完了: apu.odin に ch1(スイープ付き)/ch2(スイープなし)矩形波の実挙動を
+実装(デューティ8ステップ・length・エンベロープ・トリガー・DAC・スイープ)。obscure仕様は
+Pan Docs "Audio details" を直接確認して実装: (1) NRx4書き込みでlength_enableを無効→有効に
+切り替える際、次のフレームシーケンサstepがlengthを刻まないタイミングなら即座に1減算、
+0になったらトリガーでない限り即ch停止。(2) トリガー時length=0のリロード(64)も同条件なら
+63にする。(3) スイープのnegate計算後に正方向へ切替でch即停止(negate_calculated_since_trigger
+で追跡)。(4) トリガー時のオーバーフロー即時判定(dmg_sound "06-overflow on trigger")。
+実装中に見つけた誤り: 当初F#移植の記憶を頼りにshift=0でもスイープの周波数計算
+(delta=shadow>>0=shadow自体)とオーバーフロー判定を無条件に行っていたが、これだと
+NR10=0x00(スイープ完全オフ、shift=0)でトリガーするだけでch1が常にオーバーフロー扱いで
+即停止してしまうバグがあった(duty_stepテストで実測して発覚、正規のGB挙動ではshift=0は
+計算自体を行わない)。トリガー時・周期クロック時とも shift!=0 のときのみ計算する形に修正。
+tests/apu_pulse_test.odin 新規10件(トリガーでのDAC有効/無効、DAC offでの即停止、length満了
+での停止、duty_step前進、エンベロープ増加、ch2にスイープが効かないこと、トリガー時
+オーバーフロー、周期スイープでの周波数更新、negate→positive切替での即停止)。
+`odin build src/app -collection:bbl=src -out:bbl` 成功、
+`odin test tests -collection:bbl=src` 241件全パス(新規10件含む)。

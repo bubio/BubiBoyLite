@@ -65,7 +65,6 @@ Sweep :: struct {
 Pulse_Channel :: struct {
 	enabled:        bool,
 	dac_enabled:    bool,
-	has_sweep:      bool, // true=ch1(T5-2で使用)
 	duty:           int, // NRx1 bit7-6
 	duty_step:      int, // 0-7
 	length_counter: int,
@@ -73,7 +72,8 @@ Pulse_Channel :: struct {
 	frequency:      int, // 11bit
 	timer:          int,
 	envelope:       Envelope,
-	sweep:          Sweep, // has_sweep=false のときは未使用
+	sweep:          Sweep, // ch2(スイープなし)では未使用。has_sweepは呼び出し側(apu_trigger_pulse)が
+	// 引数で指定する(構造体に持たせるとapu_power_offのゼロクリアで消えるため)
 }
 
 Wave_Channel :: struct {
@@ -286,10 +286,158 @@ apu_clock_envelope :: proc(env: ^Envelope) {
 	}
 }
 
-// apu_sweep_clock は ch1 のスイープを1ステップ進める(step 2,6、T5-2で実装)。
+// apu_pulse_period は矩形波chの周期タイマーの再ロード値を返す((2048-freq)*4 T-cycle)。
+@(private)
+apu_pulse_period :: proc(frequency: int) -> int {
+	return (2048 - frequency) * 4
+}
+
+// apu_sweep_calculate はスイープの周波数計算を行い、オーバーフロー(>2047)なら overflow=true
+// を返す(値そのものは適用しない、呼び出し側が判断する)。negate方向を使った場合は
+// negate_calculated_since_trigger を立てる(NR10落とし穴: negate使用後の正方向切替でch停止、
+// T5-2「落とし穴」)。shift=0でも計算自体は行う(shift0でdelta=shadow自体になり2倍加算に
+// なるため、period>0のsweepはshift0でもオーバーフローしうる。Pan Docsの記述に基づく)。
+@(private)
+apu_sweep_calculate :: proc(sweep: ^Sweep) -> (new_freq: int, overflow: bool) {
+	delta := sweep.shadow_frequency >> uint(sweep.shift)
+	if sweep.negate {
+		new_freq = sweep.shadow_frequency - delta
+		sweep.negate_calculated_since_trigger = true
+	} else {
+		new_freq = sweep.shadow_frequency + delta
+	}
+	overflow = new_freq > 2047 // 負値にはなりえない(delta<=shadow、Pan Docs "cannot underflow")
+	return
+}
+
+// apu_sweep_clock は ch1 のスイープを1ステップ進める(step 2,6)。
 @(private)
 apu_sweep_clock :: proc(pulse1: ^Pulse_Channel) {
-	// T5-2で実装。
+	sweep := &pulse1.sweep
+	if !pulse1.enabled || !sweep.enabled {
+		return
+	}
+	sweep.timer -= 1
+	if sweep.timer > 0 {
+		return
+	}
+	sweep.timer = sweep.period == 0 ? 8 : sweep.period
+
+	if sweep.period == 0 {
+		return // 周期0はイテレーション無し(タイマーのリロードのみ行う)
+	}
+	if sweep.shift == 0 {
+		return // shift=0では計算そのものを行わない(shift>>0=shadow自体になり誤って
+		// 倍加/オーバーフロー判定してしまうのを防ぐ。NR10=0x00でスイープ無効の
+		// 一般的なケースがこれで壊れないようにする)
+	}
+
+	new_freq, overflow := apu_sweep_calculate(sweep)
+	if overflow {
+		pulse1.enabled = false
+		return
+	}
+	sweep.shadow_frequency = new_freq
+	pulse1.frequency = new_freq
+	pulse1.timer = apu_pulse_period(new_freq)
+	// 2回目のオーバーフロー判定(次回の反映に備えた事前チェック、実機仕様)。
+	_, overflow2 := apu_sweep_calculate(sweep)
+	if overflow2 {
+		pulse1.enabled = false
+	}
+}
+
+// apu_trigger_pulse はNRx4トリガー(bit7=1)時の共通初期化。has_sweep=trueはch1用で
+// スイープのshadow初期化とトリガー時オーバーフロー即時判定(dmg_sound "06-overflow on
+// trigger")も行う。
+@(private)
+apu_trigger_pulse :: proc(ch: ^Pulse_Channel, has_sweep: bool) {
+	ch.envelope.volume = ch.envelope.initial_volume
+	ch.envelope.timer = ch.envelope.period
+	ch.duty_step = 0
+	ch.timer = apu_pulse_period(ch.frequency)
+
+	if has_sweep {
+		ch.sweep.shadow_frequency = ch.frequency
+		ch.sweep.timer = ch.sweep.period == 0 ? 8 : ch.sweep.period
+		ch.sweep.enabled = ch.sweep.period != 0 || ch.sweep.shift != 0
+		ch.sweep.negate_calculated_since_trigger = false
+		// オーバーフロー判定はshift!=0のときのみ実際に計算が走る(shift=0でshadow自体を
+		// deltaにしてしまい誤検出するのを防ぐ。dmg_sound "06-overflow on trigger" 対象)。
+		if ch.sweep.shift != 0 {
+			_, overflow := apu_sweep_calculate(&ch.sweep)
+			if overflow {
+				ch.enabled = false
+				return
+			}
+		}
+	}
+
+	ch.enabled = ch.dac_enabled
+}
+
+// apu_apply_length_and_trigger は NRx4 書き込み共通の length/trigger 処理。Pan Docs
+// "Audio details" の obscure 挙動を反映する(T5-2落とし穴):
+//   1. 「次のフレームシーケンサ step が length を刻まない」タイミングで length_enable を
+//      無効→有効に切り替えると、length_counter を即座に1減らす(0になったら即ch停止、
+//      ただしこのタイミングでトリガーもされているなら停止しない)
+//   2. トリガー時に length_counter が0なら max にリロードするが、上と同じ条件が
+//      成立していれば max-1 にする(dmg_sound 02-len ctr / 03-trigger が検査)
+@(private)
+apu_apply_length_and_trigger :: proc(
+	length_counter: ^int,
+	length_enabled: ^bool,
+	enabled: ^bool,
+	apu: ^Apu,
+	new_length_enabled: bool,
+	trigger: bool,
+	max_length: int,
+) {
+	next_step_clocks_length := apu.frame_sequencer_step % 2 == 0
+	was_enabled := length_enabled^
+
+	if !next_step_clocks_length && !was_enabled && new_length_enabled && length_counter^ > 0 {
+		length_counter^ -= 1
+		if length_counter^ == 0 && !trigger {
+			enabled^ = false
+		}
+	}
+
+	length_enabled^ = new_length_enabled
+
+	if trigger && length_counter^ == 0 {
+		length_counter^ = max_length
+		if !next_step_clocks_length && new_length_enabled {
+			length_counter^ -= 1
+		}
+	}
+}
+
+// apu_write_nr10 は NR10(スイープ)への書き込み。negateから正方向へ切り替えた際、
+// トリガー以降にnegate計算を1回でも使っていればchを即停止する(T5-2落とし穴)。
+@(private)
+apu_write_nr10 :: proc(pulse1: ^Pulse_Channel, value: u8) {
+	old_negate := pulse1.sweep.negate
+	pulse1.sweep.period = int((value >> 4) & 0x07)
+	pulse1.sweep.shift = int(value & 0x07)
+	new_negate := value & 0x08 != 0
+	if old_negate && !new_negate && pulse1.sweep.negate_calculated_since_trigger {
+		pulse1.enabled = false
+	}
+	pulse1.sweep.negate = new_negate
+}
+
+// apu_tick_pulse は矩形波chの周期タイマーを1 T-cycle進める(T5-2)。
+@(private)
+apu_tick_pulse :: proc(ch: ^Pulse_Channel) {
+	if !ch.enabled {
+		return
+	}
+	ch.timer -= 1
+	if ch.timer <= 0 {
+		ch.timer += apu_pulse_period(ch.frequency)
+		ch.duty_step = (ch.duty_step + 1) & 0x07
+	}
 }
 
 // apu_clock_frame_sequencer は512Hzのフレームシーケンサを1step進める。
@@ -344,6 +492,9 @@ apu_tick :: proc(apu: ^Apu, t_cycles: int) {
 			apu.frame_sequencer_cycles -= FRAME_SEQUENCER_PERIOD
 			apu_clock_frame_sequencer(apu)
 		}
+
+		apu_tick_pulse(&apu.pulse1)
+		apu_tick_pulse(&apu.pulse2)
 	}
 }
 
@@ -436,12 +587,16 @@ apu_write_register :: proc(apu: ^Apu, addr: u16, value: u8) {
 	switch addr {
 	case NR10_ADDR:
 		apu.nr10 = value
+		apu_write_nr10(&apu.pulse1, value)
 	case NR11_ADDR:
 		apu.nr11 = value
 		apu.pulse1.duty = int(value >> 6)
 		apu.pulse1.length_counter = 64 - int(value & 0x3F)
 	case NR12_ADDR:
 		apu.nr12 = value
+		apu.pulse1.envelope.initial_volume = int(value >> 4)
+		apu.pulse1.envelope.direction = value & 0x08 != 0 ? .Increase : .Decrease
+		apu.pulse1.envelope.period = int(value & 0x07)
 		apu.pulse1.dac_enabled = value & 0xF8 != 0
 		if !apu.pulse1.dac_enabled {
 			apu.pulse1.enabled = false
@@ -450,9 +605,22 @@ apu_write_register :: proc(apu: ^Apu, addr: u16, value: u8) {
 		apu.nr13 = value
 		apu.pulse1.frequency = (apu.pulse1.frequency & 0x700) | int(value)
 	case NR14_ADDR:
-		apu.nr14 = value & 0x7F // トリガービットはクリアして保持(T5-2で実挙動を実装)
+		trigger := value & 0x80 != 0
+		new_length_enabled := value & 0x40 != 0
+		apu.nr14 = value & 0x7F // トリガービットはクリアして保持
 		apu.pulse1.frequency = (apu.pulse1.frequency & 0x0FF) | (int(value & 0x07) << 8)
-		apu.pulse1.length_enabled = value & 0x40 != 0
+		apu_apply_length_and_trigger(
+			&apu.pulse1.length_counter,
+			&apu.pulse1.length_enabled,
+			&apu.pulse1.enabled,
+			apu,
+			new_length_enabled,
+			trigger,
+			64,
+		)
+		if trigger {
+			apu_trigger_pulse(&apu.pulse1, true)
+		}
 
 	case NR21_ADDR:
 		apu.nr21 = value
@@ -460,6 +628,9 @@ apu_write_register :: proc(apu: ^Apu, addr: u16, value: u8) {
 		apu.pulse2.length_counter = 64 - int(value & 0x3F)
 	case NR22_ADDR:
 		apu.nr22 = value
+		apu.pulse2.envelope.initial_volume = int(value >> 4)
+		apu.pulse2.envelope.direction = value & 0x08 != 0 ? .Increase : .Decrease
+		apu.pulse2.envelope.period = int(value & 0x07)
 		apu.pulse2.dac_enabled = value & 0xF8 != 0
 		if !apu.pulse2.dac_enabled {
 			apu.pulse2.enabled = false
@@ -468,9 +639,22 @@ apu_write_register :: proc(apu: ^Apu, addr: u16, value: u8) {
 		apu.nr23 = value
 		apu.pulse2.frequency = (apu.pulse2.frequency & 0x700) | int(value)
 	case NR24_ADDR:
+		trigger := value & 0x80 != 0
+		new_length_enabled := value & 0x40 != 0
 		apu.nr24 = value & 0x7F
 		apu.pulse2.frequency = (apu.pulse2.frequency & 0x0FF) | (int(value & 0x07) << 8)
-		apu.pulse2.length_enabled = value & 0x40 != 0
+		apu_apply_length_and_trigger(
+			&apu.pulse2.length_counter,
+			&apu.pulse2.length_enabled,
+			&apu.pulse2.enabled,
+			apu,
+			new_length_enabled,
+			trigger,
+			64,
+		)
+		if trigger {
+			apu_trigger_pulse(&apu.pulse2, false)
+		}
 
 	case NR30_ADDR:
 		apu.nr30 = value
