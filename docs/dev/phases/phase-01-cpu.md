@@ -40,7 +40,7 @@ odin test tests -collection:bbl=src
 
 ### T1-2: バス骨格と M-cycle tick
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: メモリマップと「アクセスごとに周辺機器を tick する」構造を最初から作る。
 **作るもの**: `src/core/bus.odin`:
@@ -192,3 +192,4 @@ odin test tests -collection:bbl=src                    # ROM なし → skip 扱
 （タスク完了ごとに 1 行追記）
 
 2026-07-11 T1-1 完了: odin test tests -collection:bbl=src 全パス(13 tests)
+2026-07-11 T1-2 完了: odin test tests -collection:bbl=src 全パス(21 tests)
