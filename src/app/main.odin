@@ -75,22 +75,31 @@ run_rom_window :: proc(opts: Options) {
 	}
 	defer video_destroy(&video)
 
-	// 暫定ペーシング: 1フレームの所要時間(70224/4194304秒 ≈ 16.74ms)を壁時計で待つ。
-	// SDL_Delayの分解能は粗く誤差が蓄積しうるため、SDL_GetPerformanceCounterで基準時刻を
-	// 管理し毎フレームの誤差を補正する。VSyncには頼らない(高リフレッシュレートモニタで
-	// 実行速度が変わってしまうため)。
-	// TODO(フェーズ5): オーディオ駆動のペーシング(SDL2オーディオのバッファ残量に基づく)に
-	// 置き換える(architecture.md「タイミングモデル」)。壁時計ベースの本実装はそれまでの暫定。
-	frame_seconds := f64(core.CYCLES_PER_FRAME) / f64(core.CPU_HZ)
-	perf_freq := f64(sdl.GetPerformanceFrequency())
-	next_frame_at := sdl.GetPerformanceCounter()
+	audio: Audio
+	if !audio_init(&audio, &emu) {
+		os.exit(1)
+	}
+	defer audio_destroy(&audio)
 
-	// バッテリーセーブの保存タイミング(T4-6): RAM書き込みから約1秒(60フレーム相当)
+	// オーディオ駆動ペーシング(T5-6、T3-6の壁時計ペーシングを置換): オーディオバッファ残量が
+	// 目標(3フレーム分)を下回っている間だけ emulator_run_frame を回し、満杯なら1ms待つ
+	// (BubiBoy RuntimePacing.fs の方式、architecture.md「タイミングモデル」)。
+	// 音声消費速度(48kHz)がそのまま実行速度を決めるため、映像60fpsと音声のドリフトが
+	// 構造的に発生しない。
+
+	// バッテリーセーブの保存タイミング(T4-6): RAM書き込みから約1秒相当(60フレーム分)
 	// 書き込みが無かったら保存する。emu.bus.cart.ram_dirty はRAMへの実書き込みでのみ
 	// core側が立てる(mbc.odin)ので、毎フレーム消費(false化)して次の書き込みを検出できるようにする。
+	// オーディオ駆動ペーシングでは実行フレーム数と壁時計秒数の対応が厳密ではなくなるが、
+	// 平均的には48kHz消費に合わせて約60fps相当で回るためヒューリスティックとして妥当。
 	SAVE_IDLE_FRAMES :: 60
 	save_pending := false
 	save_idle_frames := 0
+
+	// 定期診断ログ(T5-6): アンダーラン数はプレイ中に確認できないと意味がないため、
+	// 終了時だけでなく約5秒(300フレーム相当)ごとにも累積値をログする。
+	LOG_INTERVAL_FRAMES :: 300
+	frames_executed := 0
 
 	running := true
 	for running {
@@ -109,31 +118,46 @@ run_rom_window :: proc(opts: Options) {
 			}
 		}
 
-		core.emulator_run_frame(&emu)
-		video_present(&video, emu.bus.ppu.framebuffer[:])
+		if audio_buffered_pairs(&audio) < AUDIO_TARGET_BUFFERED_PAIRS {
+			audio_run_frame_locked(&audio)
+			// 表示は最新フレームのみ(中間フレームの描画スキップは行わない実装だが、
+			// バッファが目標未満の間は毎回1フレームずつ生成するため実質最新フレーム表示になる)。
+			video_present(&video, emu.bus.ppu.framebuffer[:])
+			frames_executed += 1
 
-		if emu.bus.cart.ram_dirty {
-			save_pending = true
-			save_idle_frames = 0
-			emu.bus.cart.ram_dirty = false // 消費して次の書き込みを検出できるようにする
-		} else if save_pending {
-			save_idle_frames += 1
-			if save_idle_frames >= SAVE_IDLE_FRAMES {
-				save_ram_now(&emu, save_path)
-				save_pending = false
-				save_idle_frames = 0
+			if frames_executed % LOG_INTERVAL_FRAMES == 0 {
+				fmt.eprintfln(
+					"audio: frames=%d buffered=%d underrun_events=%d underrun_samples=%d",
+					frames_executed,
+					audio_buffered_pairs(&audio),
+					audio.underrun_events,
+					audio.underrun_samples,
+				)
 			}
-		}
 
-		next_frame_at += u64(frame_seconds * perf_freq)
-		now := sdl.GetPerformanceCounter()
-		if next_frame_at > now {
-			remaining_ms := f64(next_frame_at - now) / perf_freq * 1000.0
-			sdl.Delay(u32(remaining_ms))
+			if emu.bus.cart.ram_dirty {
+				save_pending = true
+				save_idle_frames = 0
+				emu.bus.cart.ram_dirty = false // 消費して次の書き込みを検出できるようにする
+			} else if save_pending {
+				save_idle_frames += 1
+				if save_idle_frames >= SAVE_IDLE_FRAMES {
+					save_ram_now(&emu, save_path)
+					save_pending = false
+					save_idle_frames = 0
+				}
+			}
 		} else {
-			// 大幅に遅延している場合は基準時刻を現在時刻へ再同期する(遅延の際限ない蓄積を防ぐ)。
-			next_frame_at = now
+			sdl.Delay(1)
 		}
+	}
+
+	if audio.underrun_events > 0 {
+		fmt.eprintfln(
+			"audio: アンダーラン %d 回(無音で埋めたサンプル数 %d)",
+			audio.underrun_events,
+			audio.underrun_samples,
+		)
 	}
 
 	// 終了時セーブ(T4-6)。バッテリー無し/外部RAM無しカートリッジでは save_ram_now が
