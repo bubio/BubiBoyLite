@@ -386,15 +386,22 @@ cpu_daa :: proc(cpu: ^Cpu) {
 	cpu_set_flags(cpu, cpu.a == 0, n, false, set_c)
 }
 
-// cpu_step は 1 命令(または割り込み処理、フェーズ2)を実行し、
-// 消費した T-cycle 数を返す。実測は bus.cycles の差分で行うため、
-// 各オペコードの実装が正しく cpu_read8/cpu_write8/bus_tick を呼べば
-// 自動的に命令表どおりのサイクル数になる。
+// cpu_step は 1 命令(または割り込みディスパッチ)を実行し、消費した T-cycle 数を返す。
+// 実測は bus.cycles の差分で行うため、各オペコードの実装が正しく
+// cpu_read8/cpu_write8/bus_tick を呼べば自動的に命令表どおりのサイクル数になる。
+//
+// 先頭で割り込みディスパッチを判定する(T2-1)。HALT の起床条件・EI の 1 命令遅延・
+// HALT バグは T2-2 で追加する。
 cpu_step :: proc(cpu: ^Cpu, bus: ^Bus) -> int {
 	start := bus.cycles
 
 	if cpu.halted {
 		bus_tick(bus, 4)
+		return int(bus.cycles - start)
+	}
+
+	if cpu.ime && interrupt_pending(bus) != 0 {
+		cpu_dispatch_interrupt(cpu, bus)
 		return int(bus.cycles - start)
 	}
 

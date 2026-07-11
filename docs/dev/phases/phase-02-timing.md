@@ -21,7 +21,7 @@ Mooneye acceptance の timer/ と割り込み系テスト、Blargg 02-interrupts
 
 ### T2-1: IF / IE / IME と割り込みディスパッチ
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: 割り込みの検出・優先度・ディスパッチを実装する。
 **作るもの**: `src/core/interrupt.odin` + cpu.odin 変更:
@@ -155,3 +155,9 @@ odin test tests -collection:bbl=src
 ## 検証ログ
 
 （タスク完了ごとに 1 行追記）
+
+2026-07-11 T2-1 完了: interrupt.odin 新規作成(IF/IE/IME、Interrupt enum、優先度付き20T-cycleディスパッチ)。
+cpu_step 先頭で `ime && pending!=0` を判定するよう変更。ie_push(mooneye acceptance/interrupts/ie_push.s)の
+実機挙動を事前に確認し、ベクタ決定を「PC上位バイトPUSH直後・下位バイトPUSH前」に行うよう実装
+(上位バイト書き込みがIEを潰すとキャンセルされPC=0x0000、下位バイト書き込みでの書き換えは手遅れで
+通常どおり進む)。`odin test tests -collection:bbl=src`: 86 tests 全パス(新規 tests/interrupt_test.odin 6件含む)。
