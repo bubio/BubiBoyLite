@@ -9,6 +9,9 @@ TIMA_ADDR :: 0xFF05
 TMA_ADDR :: 0xFF06
 TAC_ADDR :: 0xFF07
 IF_ADDR :: 0xFF0F
+DMA_ADDR :: 0xFF46
+
+OAM_SIZE :: 160
 
 Bus :: struct {
 	rom:                       []u8, // ROM-only カートリッジ(32KiB)。MBC はフェーズ4
@@ -29,6 +32,11 @@ Bus :: struct {
 	joyp_select_action:        bool, // JOYP bit5=0(joypad.odin)
 	joyp_select_direction:     bool, // JOYP bit4=0(joypad.odin)
 	joyp_pressed:              u8, // Button ごとのビットマスク(joypad.odin の button_bit)
+	dma_active:                bool, // OAM DMA 転送中(HRAM以外の読み出しが0xFFになる。T2-5)
+	dma_source:                u16, // 現在進行中の転送の転送元ベースアドレス
+	dma_index:                 int, // 転送済みバイト数(0..159)
+	dma_start_delay:           int, // (再)開始までの残りM-cycle数(0=保留無し)。開始には1 M-cycleの遅延がある
+	dma_pending_source:        u16, // dma_start_delay が0になった時点で dma_source に反映される転送元
 }
 
 // bus_load_rom は ROM-only カートリッジをそのまま map する(MBC はフェーズ4)。
@@ -41,13 +49,57 @@ bus_load_rom :: proc(bus: ^Bus, data: []u8) -> bool {
 }
 
 // bus_tick は t_cycles ぶん時間を進める。CPU の全メモリアクセスごとに呼ばれる。
-// Timer(timer.odin、T2-3)を駆動する。PPU/APU の駆動はフェーズ3/5以降。
+// Timer(timer.odin、T2-3)と OAM DMA(T2-5)を駆動する。PPU/APU の駆動はフェーズ3/5以降。
+// t_cycles は常に4の倍数(1 M-cycle単位)で渡される想定(architecture.md のタイミングモデル)。
 bus_tick :: proc(bus: ^Bus, t_cycles: int) {
 	bus.cycles += u64(t_cycles)
 	timer_tick(bus, t_cycles)
+	for _ in 0 ..< t_cycles / 4 {
+		dma_tick_one_mcycle(bus)
+	}
 }
 
+// dma_tick_one_mcycle は OAM DMA を1 M-cycleぶん進める。
+//
+// 開始タイミング(Mooneye oam_dma_start.s のコメントで実機確認済み):
+//   M0: 0xFF46 への書き込みが起きる(この時点では dma_start_delay=2 をセットするのみ)
+//   M1: まだ何も起きない(旧転送が実行中ならそれはそのまま継続する。新規開始の場合はOAMがまだ読める)
+//   M2: 新しい転送が(旧転送を打ち切って)開始し、以後1バイト/M-cycleで160 M-cycleかけて転送する
+//
+// dma_active は「CPUからの読み出しをHRAM以外0xFFにする」条件を兼ねる(bus_read 参照)。
+@(private)
+dma_tick_one_mcycle :: proc(bus: ^Bus) {
+	if bus.dma_start_delay > 0 {
+		bus.dma_start_delay -= 1
+		if bus.dma_start_delay == 0 {
+			// M2: 新しい転送が(実行中だったものを打ち切って)ここから始まる。
+			bus.dma_active = true
+			bus.dma_source = bus.dma_pending_source
+			bus.dma_index = 0
+		}
+	}
+
+	if bus.dma_active {
+		bus.oam[bus.dma_index] = bus_read_raw(bus, bus.dma_source + u16(bus.dma_index))
+		bus.dma_index += 1
+		if bus.dma_index >= OAM_SIZE {
+			bus.dma_active = false
+		}
+	}
+}
+
+// bus_read は CPU からの読み出し経路。OAM DMA 中は HRAM(FF80-FFFE)以外を読むと
+// 0xFF になる(実バス競合の簡易モデル、T2-5)。DMA 自身の内部読み出しは
+// この制限を受けない bus_read_raw を直接使う。
 bus_read :: proc(bus: ^Bus, addr: u16) -> u8 {
+	if bus.dma_active && !(addr >= 0xFF80 && addr <= 0xFFFE) {
+		return 0xFF
+	}
+	return bus_read_raw(bus, addr)
+}
+
+@(private)
+bus_read_raw :: proc(bus: ^Bus, addr: u16) -> u8 {
 	switch {
 	case addr <= 0x7FFF:
 		if int(addr) < len(bus.rom) {
@@ -120,6 +172,9 @@ bus_io_read :: proc(bus: ^Bus, addr: u16) -> u8 {
 		return bus.tac | 0xF8 // 未使用bitは1で読める
 	case IF_ADDR:
 		return bus.io[IF_ADDR - 0xFF00] | 0xE0 // 上位3bit未使用、読み出し時は1
+	case DMA_ADDR:
+		// 転送状態に関わらず、直近に書き込まれた値をそのまま返す(mooneye oam_dma/reg_read)。
+		return bus.io[DMA_ADDR - 0xFF00]
 	case:
 		return 0xFF
 	}
@@ -140,6 +195,10 @@ bus_io_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 		timer_write_tma(bus, value)
 	case TAC_ADDR:
 		timer_write_tac(bus, value)
+	case DMA_ADDR:
+		bus.io[DMA_ADDR - 0xFF00] = value // 読み戻し用(mooneye oam_dma/reg_read)
+		bus.dma_pending_source = u16(value) << 8
+		bus.dma_start_delay = 2 // 1 M-cycleの遅延後、2M-cycle目から新しい転送が始まる
 	case:
 		bus.io[addr - 0xFF00] = value
 	}

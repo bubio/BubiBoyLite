@@ -98,7 +98,7 @@ odin test tests -collection:bbl=src
 
 ### T2-5: OAM DMA
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: 0xFF46 への書き込みで OAM へ 160 バイト転送する DMA を実装する。
 **作るもの**: bus.odin 変更:
@@ -239,3 +239,33 @@ JOYP_ADDR(0xFF00)をそれぞれ `joypad_read_p1`/`joypad_write_p1` に委譲。
 それぞれの反映、両方選択時のAND合成、選択ビットの読み戻し、押下時の割り込み、
 非選択グループでは割り込みが起きないこと、離す操作では割り込みが起きないことの8件)。
 `odin test tests -collection:bbl=src`: 123 tests 全パス。
+
+2026-07-11 T2-5 完了: bus.odin に OAM DMA(0xFF46)を実装。
+- `dma_tick_one_mcycle`(`bus_tick`から1 M-cycleごとに呼ばれる)で状態機械を実装:
+  書き込み時に `dma_start_delay=2` をセット、1回目の減算(M1)では何もせず(実行中の旧転送が
+  あればそのまま継続する。新規開始ならOAMはまだ読める)、2回目の減算(M2)で
+  `dma_active=true`・`dma_source`/`dma_index=0`を確定し即座に1バイト目を転送、以後
+  1バイト/M-cycleで160バイト転送し終わると`dma_active=false`に戻す。この1 M-cycleの
+  開始遅延はMooneye `oam_dma_start.s`冒頭のコメント("M=0: write, M=1: nothing, M=2: new
+  DMA starts")と実装前に照合して決めた。
+- `bus_read`をCPU向け経路として残し、内部実装は`bus_read_raw`に分離。`bus_read`は
+  `dma_active`中はHRAM(FF80-FFFE)以外への読み出しを0xFFにする。DMA自身の転送は
+  `bus_read_raw`を直接使うため、この制限を受けない(自分自身の転送を妨げない)。
+  ソースが0xE000以上でもWRAMミラーとして扱われる(bus_read_rawの既存ロジックがそのまま
+  流用される)。
+- FF46 読み出しは常に直近の書き込み値を返す(mooneye oam_dma/reg_read対応。転送状態に
+  関わらない)。
+- 単体テスト `tests/dma_test.odin` を新規作成(160バイトの転送内容、1 M-cycle遅延後に
+  転送が始まること、転送中の非HRAM読み出しが0xFFになること、転送完了後は通常どおり
+  読めること、レジスタ読み戻しの5件)。
+- **調査で判明した重要事項**: `mooneye/acceptance/interrupts/ie_push`・`oam_dma/basic`・
+  `oam_dma/reg_read`・`oam_dma_start`の4本(c-sp/game-boy-test-roms v7.0収録ビルド)を
+  逆アセンブルしたところ、冒頭で呼んでいる`disable_ppu_safe`が現在のmooneye-test-suite
+  ソース(タイムアウト付き`wait_ly_with_timeout`使用)より古い、**タイムアウト無し**の
+  `LDH A,(LY); CP $90; JR NZ,-`版であることを確認した。LCDC/LYはフェーズ3まで未実装
+  (常に0xFF)のため、この4本はテスト本体に到達する前に無限ループしタイムアウトする。
+  したがって T2-5 自体のバグではなく、これらは`halt_ime0_ei`/`halt_ime0_nointr_timing`と
+  同様に正真正銘のフェーズ3送り(理由コメント付きで許可リストに追加)。
+  ie_push のディスパッチロジック自体は tests/interrupt_test.odin の単体テストで
+  ie_push.s のRound1/Round3を手でトレースして別途検証済み(T2-1参照)。
+- `odin test tests -collection:bbl=src`: 128 tests 全パス。
