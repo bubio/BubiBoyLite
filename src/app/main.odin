@@ -25,6 +25,12 @@ main :: proc() {
 		os.exit(1)
 	}
 
+	if opts.headless {
+		// SDL を一切初期化しない経路。CI やテスト ROM ランナーの前提（architecture.md）。
+		fmt.println("headless: nothing to do")
+		os.exit(0)
+	}
+
 	run_test_pattern_window(opts)
 }
 
