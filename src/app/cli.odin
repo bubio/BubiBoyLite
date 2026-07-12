@@ -36,6 +36,18 @@ Shader_Kind :: enum {
 	Smooth,
 }
 
+// Option_Field は「CLIで明示的に指定されたか」を表すフラグ(T8-1)。
+// 優先順位 CLI > 設定ファイル > デフォルト を実現するには、「指定されなかった」ことを
+// 区別できる必要がある(scale はデフォルト値自体が有効な値なので、フィールドの値だけでは
+// 「明示指定 か デフォルトのまま か」を判別できない)。parse_args の戻り値のタプル形状
+// (opts, err, ok)は cli_test.odin が分解構造で依存しているため変更せず、Options 構造体に
+// bit_set を追加する形で表現する。
+Option_Field :: enum {
+	Scale,
+	Fullscreen,
+	Shader,
+}
+
 Options :: struct {
 	scale:      int,
 	fullscreen: bool,
@@ -43,6 +55,7 @@ Options :: struct {
 	recent:     bool,
 	headless:   bool,
 	rom_path:   string,
+	provided:   bit_set[Option_Field], // CLIで明示的に指定されたフィールド(config.odinのマージで使用)
 }
 
 DEFAULT_SCALE :: 4
@@ -78,9 +91,11 @@ parse_args :: proc(args: []string) -> (opts: Options, err: string, ok: bool) {
 				n = MAX_SCALE
 			}
 			opts.scale = n
+			opts.provided += {.Scale}
 
 		case "--fullscreen":
 			opts.fullscreen = true
+			opts.provided += {.Fullscreen}
 
 		case "--shader":
 			i += 1
@@ -95,6 +110,7 @@ parse_args :: proc(args: []string) -> (opts: Options, err: string, ok: bool) {
 			case:
 				return opts, fmt.tprintf("--shader の値が不正です: %s (nearest または smooth)", args[i]), false
 			}
+			opts.provided += {.Shader}
 
 		case "--recent":
 			opts.recent = true

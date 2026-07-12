@@ -21,7 +21,7 @@ odin test tests -collection:bbl=src
 
 ### T8-1: 設定ファイル
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: BluePrint 仕様の設定ファイルを実装する: **実行ファイルと同じ場所、起動時になければ全デフォルト値で作成**。
 **作るもの**: `src/app/config.odin`:
@@ -163,3 +163,5 @@ odin test tests -collection:bbl=src
 ## 検証ログ
 
 （タスク完了ごとに 1 行追記）
+
+2026-07-12 T8-1 完了: `odin test tests -collection:bbl=src` 349 tests 全パス(config_test.odin 19件追加)。結合検証 `rm -f ./bbl.ini && ./bbl --headless && cat ./bbl.ini` を実行しデフォルト値で全項目(scale/fullscreen/shader/save_dir/state_dir/volume/key_*/pad_*)が生成されることを確認。生成後に scale を手編集して再起動しても上書きされない(既存ファイル優先)ことを確認。`grep -i "$(whoami)" bbl.ini` はヒット0。CLI優先(--scale等)はCLI引数のprovidedビットセットで判定しconfig_apply_cli_overridesで検証済み(単体テスト)。

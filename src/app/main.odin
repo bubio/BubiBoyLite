@@ -25,6 +25,21 @@ main :: proc() {
 		os.exit(1)
 	}
 
+	// 設定ファイルの読み込み/自動生成(T8-1)。--headless の早期終了より前に行う必要がある。
+	// 検証コマンド(phase-08-frontend.md T8-1)
+	// `rm -f ./bbl.ini && ./bbl --headless && cat ./bbl.ini` はヘッドレス起動でも
+	// bbl.ini が生成されることを期待しているため。実行ファイルの場所を特定できない場合は
+	// 警告してデフォルト値のまま続行する(起動は止めない、T8-1の完了条件)。
+	cfg := default_config()
+	if dir, dir_ok := config_dir_path(); dir_ok {
+		cfg = config_load(config_path(dir))
+		delete(dir)
+	} else {
+		fmt.eprintln("config: 実行ファイルの場所を特定できませんでした(デフォルト値で続行します)")
+	}
+	// CLI引数は「一時的な変更」として設定ファイルの値を上書きする(書き戻しはしない)。
+	cfg = config_apply_cli_overrides(cfg, opts)
+
 	if opts.headless {
 		// SDL を一切初期化しない経路。CI やテスト ROM ランナーの前提（architecture.md）。
 		fmt.println("headless: nothing to do")
@@ -32,16 +47,16 @@ main :: proc() {
 	}
 
 	if opts.rom_path != "" {
-		run_rom_window(opts)
+		run_rom_window(opts, cfg)
 		return
 	}
 
-	run_test_pattern_window(opts)
+	run_test_pattern_window(opts, cfg)
 }
 
 // run_rom_window は ROM を読み込み実際にエミュレーションを実行しながら SDL2 ウィンドウへ
 // 描画するメインループ(T3-6)。Esc またはウィンドウクローズで終了する。
-run_rom_window :: proc(opts: Options) {
+run_rom_window :: proc(opts: Options, cfg: Config) {
 	rom_data, read_err := os.read_entire_file(opts.rom_path, context.allocator)
 	if read_err != nil {
 		fmt.eprintfln("ROM を読み込めません: %s (%v)", opts.rom_path, read_err)
@@ -89,7 +104,7 @@ run_rom_window :: proc(opts: Options) {
 	}
 	core.emulator_set_wall_clock(emu, wall_clock_now())
 
-	video, video_ok := video_init(opts.scale, opts.fullscreen, opts.shader)
+	video, video_ok := video_init(cfg.scale, cfg.fullscreen, cfg.shader)
 	if !video_ok {
 		os.exit(1)
 	}
@@ -278,8 +293,8 @@ show_status :: proc(video: ^Video, message: string) {
 
 // run_test_pattern_window は ROM 未指定 & TUI 未実装の間、テストパターンを表示する
 // イベントループ。Esc またはウィンドウクローズで終了する。
-run_test_pattern_window :: proc(opts: Options) {
-	video, video_ok := video_init(opts.scale, opts.fullscreen, opts.shader)
+run_test_pattern_window :: proc(opts: Options, cfg: Config) {
+	video, video_ok := video_init(cfg.scale, cfg.fullscreen, cfg.shader)
 	if !video_ok {
 		os.exit(1)
 	}
