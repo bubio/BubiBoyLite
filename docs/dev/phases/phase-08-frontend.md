@@ -61,7 +61,7 @@ odin test tests -collection:bbl=src
 
 ### T8-3: smooth シェーダー
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: `--shader smooth` を実装する。
 **作るもの**: `src/app/video.odin`:
@@ -167,3 +167,5 @@ odin test tests -collection:bbl=src
 2026-07-12 T8-1 完了: `odin test tests -collection:bbl=src` 349 tests 全パス(config_test.odin 19件追加)。結合検証 `rm -f ./bbl.ini && ./bbl --headless && cat ./bbl.ini` を実行しデフォルト値で全項目(scale/fullscreen/shader/save_dir/state_dir/volume/key_*/pad_*)が生成されることを確認。生成後に scale を手編集して再起動しても上書きされない(既存ファイル優先)ことを確認。`grep -i "$(whoami)" bbl.ini` はヒット0。CLI優先(--scale等)はCLI引数のprovidedビットセットで判定しconfig_apply_cli_overridesで検証済み(単体テスト)。
 
 2026-07-12 T8-2 完了: `odin test tests -collection:bbl=src` 359 tests 全パス(video_layout_test.odin 5件、input_shortcut_test.odinにAlt/Cmd+Enterトグル判定5件を追加)。video_compute_layoutを純粋関数として切り出し、min(display_w/160, display_h/144)の整数倍率算出とレターボックス中央寄せを単体テストで検証(4Kディスプレイ相当3840x2160でも整数倍率になることを確認)。実機目視: `--scale 3`のウィンドウ表示と`--fullscreen`(実行環境の3440x1440ディスプレイ)をscreencapture+Readツールで確認。フルスクリーン時のログ`video: 表示倍率 = 10 (出力サイズ 3440x1440)`(=min(21,10))を確認し、スクリーンショットで画面全体を覆う黒レターボックス+中央寄せされた10倍表示を確認(画像は開発機のスクリーンショットのため作業記録にのみ使用しコミットはしない)。Alt+Enter/Cmd+Enterのトグル自体はキー判定ロジックの単体テストのみで、実キー入力によるライブトグルは未確認(TUIなし・対話的キー入力不可のため)。
+
+2026-07-12 T8-3 完了: `odin test tests -collection:bbl=src` 359 tests 全パス(T8-2と同一の video_layout_test.odin を共有、追加の専用単体テストは無し。中間テクスチャ生成/SetRenderTarget切替はSDL依存でapp側の統合コードのため純粋関数化していない)。実機目視: `--scale 6 --shader nearest` と `--shader smooth` をそれぞれ起動しscreencaptureで同一座標を撮影、色境界(オレンジ色ブロックと背景グラデーションの境目)を8倍ズームして比較。nearestは1px単位でハードエッジ、smoothは境界に中間色のブレンドされたピクセル列が確認でき、sharp-bilinearの効果を視覚的に確認した。`--scale 1 --shader smooth`(中間倍率2倍未満でスムース処理をスキップするフォールバック経路)でもクラッシュしないことを確認。レンダーターゲット切替の戻し忘れは無い(video_present内でSetRenderTarget(renderer, video.intermediate)の直後に必ずnilへ戻すコードパスのみで、早期returnが無いことをコードレビューで確認)。

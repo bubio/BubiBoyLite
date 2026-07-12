@@ -4,12 +4,19 @@ import "core:fmt"
 import core "bbl:core"
 import sdl "vendor:sdl2"
 
-// video.odin: SDL2ウィンドウ/レンダラー(T3-6)、フルスクリーン(T8-2)。
+// video.odin: SDL2ウィンドウ/レンダラー(T3-6)、フルスクリーン(T8-2)、smoothシェーダー(T8-3)。
+
+// INTERMEDIATE_SCALE は smooth シェーダーの「いったんnearestで整数倍する」段階の倍率
+// (T8-3「2倍以上」)。最終的な表示倍率(video_compute_layoutが返すscale)へは、この中間
+// テクスチャからlinearで引き伸ばす。中間段階を固定倍率にすることで、最終倍率が中間倍率の
+// 整数倍にならない限り必ずlinear補間が効き、nearestとの見た目の差が出る。
+INTERMEDIATE_SCALE :: 2
 
 Video :: struct {
 	window:            ^sdl.Window,
 	renderer:          ^sdl.Renderer,
-	texture:           ^sdl.Texture, // 160x144のフレームバッファテクスチャ
+	texture:           ^sdl.Texture, // 160x144のフレームバッファテクスチャ(常にnearest)
+	intermediate:      ^sdl.Texture, // smooth用の中間テクスチャ(TEXTUREACCESS_TARGET、遅延生成)
 	shader:            Shader_Kind,
 	fullscreen:        bool,
 	last_logged_scale: int, // T8-2 DoD: 算出倍率をログ出力するための直近値(変化時のみログ)
@@ -21,11 +28,9 @@ video_init :: proc(scale: int, fullscreen: bool, shader: Shader_Kind) -> (video:
 		return video, false
 	}
 
-	if shader == .Nearest {
-		sdl.SetHint(sdl.HINT_RENDER_SCALE_QUALITY, "0")
-	} else {
-		sdl.SetHint(sdl.HINT_RENDER_SCALE_QUALITY, "1")
-	}
+	// nearest/smooth いずれもテクスチャ単位(SetTextureScaleMode)で制御するが、ヒントは
+	// テクスチャ生成時にも参照されるため、streamingテクスチャ生成前に既定値を設定しておく。
+	sdl.SetHint(sdl.HINT_RENDER_SCALE_QUALITY, "0")
 
 	window_flags: sdl.WindowFlags = sdl.WINDOW_SHOWN | sdl.WINDOW_RESIZABLE
 	if fullscreen {
@@ -72,6 +77,7 @@ video_init :: proc(scale: int, fullscreen: bool, shader: Shader_Kind) -> (video:
 		sdl.Quit()
 		return video, false
 	}
+	sdl.SetTextureScaleMode(texture, .Nearest) // このテクスチャ自体は常にnearest(中間テクスチャ経由でsmooth化する)
 
 	video.window = window
 	video.renderer = renderer
@@ -105,8 +111,36 @@ video_compute_layout :: proc(output_w, output_h: int) -> (rect: sdl.Rect, scale:
 	return rect, scale
 }
 
-// video_present は1フレーム分のフレームバッファを、算出した整数倍矩形へ描画する
-// (T8-2: はみ出た余白は黒でレターボックス)。
+// video_ensure_intermediate は smooth シェーダー用の中間テクスチャを(無ければ)生成する。
+// TEXTUREACCESS_TARGET で SetRenderTarget の描画先にできるようにする(T8-3)。
+@(private = "file")
+video_ensure_intermediate :: proc(video: ^Video) -> bool {
+	if video.intermediate != nil {
+		return true
+	}
+	tex := sdl.CreateTexture(
+		video.renderer,
+		.ARGB8888,
+		.TARGET,
+		i32(core.SCREEN_WIDTH * INTERMEDIATE_SCALE),
+		i32(core.SCREEN_HEIGHT * INTERMEDIATE_SCALE),
+	)
+	if tex == nil {
+		fmt.eprintfln("video: smooth用の中間テクスチャ生成に失敗しました: %s", sdl.GetError())
+		return false
+	}
+	sdl.SetTextureScaleMode(tex, .Linear) // 中間テクスチャ→最終出力の段階でlinear補間する
+	video.intermediate = tex
+	return true
+}
+
+// video_present は1フレーム分のフレームバッファを描画する。
+// nearest: フレームバッファテクスチャを直接、算出した整数倍矩形へnearestで描く。
+// smooth: いったんINTERMEDIATE_SCALE倍にnearestで拡大した中間テクスチャを作り、
+//   それを最終矩形へlinearで描く(sharp-bilinear、T8-3)。
+//   落とし穴: SetRenderTargetを中間テクスチャに切り替えたら、必ず nil (バックバッファ) へ
+//   戻してから最終描画とRenderPresentを行うこと(戻し忘れるとその後の描画が全部中間
+//   テクスチャに乗ってしまい画面が更新されなくなる)。
 video_present :: proc(video: ^Video, framebuffer: []u32) {
 	pitch := i32(core.SCREEN_WIDTH * size_of(u32))
 	sdl.UpdateTexture(video.texture, nil, raw_data(framebuffer), pitch)
@@ -121,7 +155,20 @@ video_present :: proc(video: ^Video, framebuffer: []u32) {
 	}
 
 	sdl.RenderClear(video.renderer) // 黒でクリアしてからレターボックス領域外に描画しない(T8-2)
-	sdl.RenderCopy(video.renderer, video.texture, nil, &dst_rect)
+
+	use_smooth := video.shader == .Smooth && scale >= INTERMEDIATE_SCALE
+	if use_smooth && video_ensure_intermediate(video) {
+		sdl.SetRenderTarget(video.renderer, video.intermediate)
+		sdl.RenderCopy(video.renderer, video.texture, nil, nil) // 160x144 -> 320x288 相当、nearest
+		sdl.SetRenderTarget(video.renderer, nil) // 戻し忘れ厳禁(落とし穴)
+
+		sdl.RenderCopy(video.renderer, video.intermediate, nil, &dst_rect) // 中間 -> 最終矩形、linear
+	} else {
+		// nearestモード、またはsmoothだが最終倍率がINTERMEDIATE_SCALE未満(拡大の余地が無い)
+		// ためフォールバックする経路。
+		sdl.RenderCopy(video.renderer, video.texture, nil, &dst_rect)
+	}
+
 	sdl.RenderPresent(video.renderer)
 }
 
@@ -145,6 +192,9 @@ video_set_title :: proc(video: ^Video, title: string) {
 }
 
 video_destroy :: proc(video: ^Video) {
+	if video.intermediate != nil {
+		sdl.DestroyTexture(video.intermediate)
+	}
 	sdl.DestroyTexture(video.texture)
 	sdl.DestroyRenderer(video.renderer)
 	sdl.DestroyWindow(video.window)
