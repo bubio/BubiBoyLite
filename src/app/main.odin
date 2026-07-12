@@ -48,6 +48,13 @@ main :: proc() {
 
 	if opts.rom_path != "" {
 		run_rom_window(opts, cfg)
+		// T9-3「ROM起動成功のたびに更新」。TUI経由でない直接起動(`bbl rom.gb`)でも
+		// run_rom_window がここまで戻ってくれば(=os.exit(1)していなければ)起動成功とみなし、
+		// 最近使ったファイル履歴を更新する(TUI側の run_tui と同じ判断基準)。
+		if dir, dir_ok := config_dir_path(); dir_ok {
+			recent_record_launch(dir, opts.rom_path)
+			delete(dir)
+		}
 		return
 	}
 

@@ -487,10 +487,11 @@ Browser_Entry_Kind :: enum {
 }
 
 Browser_Entry :: struct {
-	kind: Browser_Entry_Kind,
-	name: string, // 表示名(所有)
-	path: string, // フルパス(所有): Rom は起動対象、Directory/Parent は移動先
-	info: string, // 右寄せ情報。Rom 以外は空文字(所有)
+	kind:      Browser_Entry_Kind,
+	name:      string, // 表示名(所有)
+	path:      string, // フルパス(所有): Rom は起動対象、Directory/Parent は移動先
+	info:      string, // 右寄せ情報。Rom 以外は空文字(所有)
+	is_recent: bool, // T9-3: 最近使ったファイル一覧から来たエントリなら true(表示上の目印用)
 }
 
 @(private = "file")
@@ -558,6 +559,38 @@ scan_rom_directory :: proc(dir: string) -> (entries: []Browser_Entry, ok: bool) 
 	return result[:], true
 }
 
+// --- 最近使ったファイル(T9-3) ---
+
+// RECENT_LABEL_PREFIX は一覧上で「最近使ったファイル」由来のエントリだと分かるように
+// 表示名の先頭へ付ける目印(BluePrint「--recent」、T9-3「TUI通常起動時も『最近使った
+// ファイル』セクションを一覧の先頭に表示」)。
+RECENT_LABEL_PREFIX :: "★ "
+
+// build_recent_entries は config_dir の bbl_recent.txt から実在するパスだけを読み込み、
+// Browser_Entry(kind=.Rom, is_recent=true)のスライスへ変換する。config_dir が空、または
+// 履歴が無ければ空スライスを返す(呼び出し側はその場合 recent セクションを描画しない)。
+build_recent_entries :: proc(config_dir: string) -> []Browser_Entry {
+	if strings.trim_space(config_dir) == "" {
+		return nil
+	}
+	path := recent_file_path(config_dir)
+	defer delete(path)
+
+	raw := recent_load(path)
+	defer recent_list_delete(raw)
+
+	existing := recent_filter_existing(raw)
+	defer recent_list_delete(existing)
+
+	result := make([dynamic]Browser_Entry, 0, len(existing))
+	for p in existing {
+		label := read_rom_header_label(p)
+		base := filepath.base(p)
+		append(&result, Browser_Entry{kind = .Rom, name = strings.clone(base), path = strings.clone(p), info = label, is_recent = true})
+	}
+	return result[:]
+}
+
 // --- ROM ブラウザ画面 ---
 
 Rom_Browser_Result :: enum {
@@ -565,10 +598,48 @@ Rom_Browser_Result :: enum {
 	Launch,
 }
 
+// browser_entry_label は一覧の左側に表示するラベルを作る(純粋関数)。ディレクトリは
+// 末尾に "/" を付け、最近使ったファイル由来のエントリには RECENT_LABEL_PREFIX を付ける。
+browser_entry_label :: proc(e: Browser_Entry) -> string {
+	name := e.name
+	if e.kind == .Directory {
+		name = fmt.tprintf("%s/", name)
+	}
+	if e.is_recent {
+		return fmt.tprintf("%s%s", RECENT_LABEL_PREFIX, name)
+	}
+	return name
+}
+
+// scan_with_recent は scan_rom_directory の結果に、dir が「ホーム」(TUI起動時の初期
+// ディレクトリ、cwdをどれだけ移動してもそこへ戻れば再度表示される)であれば
+// build_recent_entries を先頭に連結したものを返す(T9-3「TUI通常起動時も『最近使った
+// ファイル』セクションを一覧の先頭に表示」)。config_dir が空なら recent セクションは
+// 付けない(履歴の保存場所が分からない = config_dir_path() の解決に失敗している場合)。
+@(private = "file")
+scan_with_recent :: proc(dir: string, home_dir: string, config_dir: string) -> (entries: []Browser_Entry, ok: bool) {
+	scanned, scan_ok := scan_rom_directory(dir)
+	if dir != home_dir {
+		return scanned, scan_ok
+	}
+	recent := build_recent_entries(config_dir)
+	if len(recent) == 0 {
+		delete(recent)
+		return scanned, scan_ok
+	}
+	combined := make([dynamic]Browser_Entry, 0, len(recent) + len(scanned))
+	append(&combined, ..recent)
+	append(&combined, ..scanned)
+	delete(recent)
+	delete(scanned)
+	return combined[:], scan_ok
+}
+
 // tui_run_rom_browser はディレクトリを移動しながら ROM を選ぶ画面(T9-2)。
 // Enter で ROM を選ぶと Rom_Browser_Result.Launch + そのフルパスを返す(呼び出し側が
 // tui_suspend_for_game → 起動 → tui_resume_from_game する)。q/Esc で Quit を返す。
-tui_run_rom_browser :: proc(start_dir: string) -> (result: Rom_Browser_Result, rom_path: string) {
+// config_dir は最近使ったファイル(T9-3)の保存場所。空文字なら recent セクションを出さない。
+tui_run_rom_browser :: proc(start_dir: string, config_dir: string) -> (result: Rom_Browser_Result, rom_path: string) {
 	cwd, abs_err := filepath.abs(start_dir)
 	if abs_err != nil {
 		cwd = strings.clone(".")
@@ -578,10 +649,12 @@ tui_run_rom_browser :: proc(start_dir: string) -> (result: Rom_Browser_Result, r
 	defer {
 		delete(cwd)
 	}
+	home_dir := strings.clone(cwd) // 起動時ディレクトリ。ここに戻った時だけrecentセクションを出す。
+	defer delete(home_dir)
 
 	entries: []Browser_Entry
 	scan_ok: bool
-	entries, scan_ok = scan_rom_directory(cwd)
+	entries, scan_ok = scan_with_recent(cwd, home_dir, config_dir)
 	// 落とし穴(実装中に検証で発見、malloc: pointer being freed was not allocated で顕在化):
 	// `defer browser_entries_delete(entries)` (単一のcall文)だと引数はdefer文の実行時点で
 	// 即時評価される(Goのdeferと同じ挙動)。entries は reload() 内で &entries 経由で
@@ -599,9 +672,9 @@ tui_run_rom_browser :: proc(start_dir: string) -> (result: Rom_Browser_Result, r
 	dirty := true
 	status := scan_ok ? "" : fmt.tprintf("ディレクトリを読み込めません: %s", cwd)
 
-	reload :: proc(cwd: string, entries: ^[]Browser_Entry, selected: ^int, status: ^string) {
+	reload :: proc(cwd: string, home_dir: string, config_dir: string, entries: ^[]Browser_Entry, selected: ^int, status: ^string) {
 		browser_entries_delete(entries^)
-		new_entries, ok := scan_rom_directory(cwd)
+		new_entries, ok := scan_with_recent(cwd, home_dir, config_dir)
 		entries^ = new_entries
 		selected^ = 0
 		status^ = ok ? "" : fmt.tprintf("ディレクトリを読み込めません: %s", cwd)
@@ -617,11 +690,7 @@ tui_run_rom_browser :: proc(start_dir: string) -> (result: Rom_Browser_Result, r
 		if dirty {
 			items := make([]List_Item, len(entries), context.temp_allocator)
 			for e, i in entries {
-				label := e.name
-				if e.kind == .Directory {
-					label = fmt.tprintf("%s/", e.name)
-				}
-				items[i] = List_Item{label = label, info = e.info}
+				items[i] = List_Item{label = browser_entry_label(e), info = e.info}
 			}
 			frame := Tui_Frame {
 				cols     = cols,
@@ -665,9 +734,80 @@ tui_run_rom_browser :: proc(start_dir: string) -> (result: Rom_Browser_Result, r
 				next := strings.clone(chosen.path)
 				delete(cwd)
 				cwd = next
-				reload(cwd, &entries, &selected, &status)
+				reload(cwd, home_dir, config_dir, &entries, &selected, &status)
 				dirty = true
 			}
+		case .Escape:
+			return .Quit, ""
+		case .Char:
+			if ev.ch == 'q' {
+				return .Quit, ""
+			}
+		}
+	}
+}
+
+// tui_run_recent_browser は `--recent` 専用の画面(T9-3): ディレクトリ移動を持たない、
+// 履歴だけのフラットな一覧。BluePrint「--recent : 最近使ったファイルを表示して選択できる」。
+tui_run_recent_browser :: proc(config_dir: string) -> (result: Rom_Browser_Result, rom_path: string) {
+	entries := build_recent_entries(config_dir)
+	defer {
+		browser_entries_delete(entries)
+	}
+
+	status := len(entries) == 0 ? "最近使ったファイルの履歴がありません" : ""
+	selected := 0
+	kr: Key_Reader
+	last_cols, last_rows := -1, -1
+	dirty := true
+
+	for {
+		cols, rows := tui_term_size()
+		if cols != last_cols || rows != last_rows {
+			last_cols, last_rows = cols, rows
+			dirty = true
+		}
+
+		if dirty {
+			items := make([]List_Item, len(entries), context.temp_allocator)
+			for e, i in entries {
+				items[i] = List_Item{label = browser_entry_label(e), info = e.info}
+			}
+			frame := Tui_Frame {
+				cols     = cols,
+				rows     = rows,
+				title    = fmt.tprintf("BubiBoyLite v%s", VERSION),
+				heading  = "最近使ったファイル",
+				status   = status,
+				items    = items,
+				selected = selected,
+				footer   = "↑↓ 選択  Enter 起動  q 終了",
+			}
+			tui_write_frame(frame)
+			dirty = false
+		}
+
+		ev, ok := key_reader_poll(&kr)
+		if !ok {
+			tui_plat_sleep_ms(30)
+			continue
+		}
+		#partial switch ev.key {
+		case .Up:
+			if len(entries) > 0 && selected > 0 {
+				selected -= 1
+				dirty = true
+			}
+		case .Down:
+			if len(entries) > 0 && selected < len(entries) - 1 {
+				selected += 1
+				dirty = true
+			}
+		case .Enter:
+			if len(entries) == 0 {
+				break
+			}
+			return .Launch, strings.clone(entries[selected].path)
 		case .Escape:
 			return .Quit, ""
 		case .Char:
@@ -698,8 +838,32 @@ run_tui :: proc(opts: Options, cfg: Config) {
 
 	start_dir := strings.trim_space(cfg.rom_dir) != "" ? cfg.rom_dir : "."
 
+	// T9-3: 履歴ファイルの保存場所は設定ファイルと同じ場所(config_dir_path を共有)。
+	// 解決できない場合は recent 機能全体を静かに無効化する(TUI自体の起動は妨げない、
+	// config_load 側の「実行ファイルの場所を特定できない場合も起動は止めない」方針と揃える)。
+	config_dir, config_dir_ok := config_dir_path()
+	defer if config_dir_ok {
+		delete(config_dir)
+	}
+	if !config_dir_ok {
+		config_dir = ""
+	}
+
+	// --recent はTUIの初回表示だけに効かせる(BluePrint「--recent : 最近使ったファイルを
+	// 表示して選択できる」。ゲームから戻るたびに履歴だけを再表示し続けると新しいROMを
+	// 選びにくくなるため、2周目以降は通常のディレクトリ一覧に戻す)。
+	// Odin の値渡し引数は書き換え不可なので、ループで変化させるローカル変数にコピーする。
+	show_recent_first := opts.recent
+
 	for {
-		result, rom_path := tui_run_rom_browser(start_dir)
+		result: Rom_Browser_Result
+		rom_path: string
+		if show_recent_first {
+			result, rom_path = tui_run_recent_browser(config_dir)
+			show_recent_first = false
+		} else {
+			result, rom_path = tui_run_rom_browser(start_dir, config_dir)
+		}
 		if result == .Quit {
 			return
 		}
@@ -714,5 +878,11 @@ run_tui :: proc(opts: Options, cfg: Config) {
 		game_opts.rom_path = rom_path
 		run_rom_window(game_opts, cfg)
 		tui_resume_from_game()
+
+		// T9-3「ROM起動成功のたびに更新」。run_rom_window がここまで戻ってきた時点で
+		// (os.exit(1)していない=)起動成功とみなす。
+		if config_dir_ok {
+			recent_record_launch(config_dir, rom_path)
+		}
 	}
 }

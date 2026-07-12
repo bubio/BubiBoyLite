@@ -14,3 +14,4 @@ dist/
 *.sav
 *.state
 bbl.ini
+bbl_recent.txt
