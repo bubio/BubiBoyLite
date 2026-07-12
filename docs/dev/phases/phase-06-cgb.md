@@ -91,7 +91,7 @@ odin test tests -collection:bbl=src   # cgb_acid2 が PASS
 
 ### T6-5: CGB の優先度制御
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: CGB で変わる BG/OBJ 優先度規則を実装する。
 **作るもの**: ppu.odin:
@@ -223,4 +223,18 @@ BGパレット0を既知の原色(黒/赤/緑/青)に設定してから比較す
 追加(tests/cgb_palette_test.odin): BCPSオートインクリメント(書込み時のみ進む・bit7=0で
 進まない・63→0ラップ)、BCPS/OCPSの独立性、DMGモードでの無視、RGB555境界値(0x7FFF→白)。
 `odin test tests -collection:bbl=src` 289 tests 全パス(既存283+新規6、dmg-acid2ハッシュ含め
+リグレッションなし)。
+
+2026-07-12 T6-5 完了: ppu.odin に `cgb_obj_wins_over_bg`(Pan Docs "BG-to-OBJ Priority in CGB
+Mode"の表: LCDC bit0=0でOBJ常勝→BG color0でOBJ勝ち→BG属性bit7でBG勝ち→OAM属性bit7でBG勝ち→
+それ以外はOBJ勝ち、の順で判定)を実装し、`ppu_render_sprites`のBG優先度チェックをCGB/DMGで
+分岐させた(CGBはこの表、DMGは従来のattr bit7判定のまま)。スプライト間優先度も分岐: CGBは
+`ppu_collect_line_sprites`が既に返すOAM順のままソートせず使う(X座標無視、先頭が勝つ)。DMGは
+従来どおり`ppu_sort_sprites_by_priority`でX優先ソート。単体テスト5件追加
+(tests/cgb_priority_test.odin): LCDC bit0=0でのOBJ最前面強制、BG属性bit7の勝ち、OAM属性bit7の
+勝ち(BG属性bit7=0時)、優先度ビット両方0でのOBJ勝ち、OAM順優先度(小さいXのスプライトでも
+後のOAM indexなら負ける)。デバッグで一度、BG用テストのLCDCがunsigned tile mode(bit4)を
+立て忘れてsigned基点(0x9000)を読みに行きBG色が全て0になる(結果的にOBJ勝ち判定に落ちて
+テストが誤って通る/落ちる)というハマりがあり、bit4を追加して修正した。
+`odin test tests -collection:bbl=src` 294 tests 全パス(既存289+新規5、dmg-acid2ハッシュ含め
 リグレッションなし)。

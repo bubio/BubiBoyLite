@@ -571,11 +571,35 @@ ppu_sort_sprites_by_priority :: proc(sprites: ^[10]Oam_Sprite, count: int) {
 	}
 }
 
-// ppu_render_sprites はこのラインのスプライト(8x8/8x16)を優先度込みで描画する(T3-5)。
-// DMGの優先度: X座標が小さいスプライトが勝つ(同Xなら OAM 順)。一度確定したピクセルは
-// 他のスプライトに上書きされない(pixel_owned で管理)。attr bit7=1 なら BG カラー1-3の
-// 上には描かない(ただしピクセルの所有権自体はBG優先度に関係なく確定する)。
-// スプライトのカラー0は常に透明。
+// cgb_obj_wins_over_bg はCGBモードのBG-to-OBJ優先度表(Pan Docs "BG-to-OBJ Priority in CGB
+// Mode")を実装する(T6-5)。呼び出し側は「trueならOBJを描画してよい、falseならBGを残す」
+// として使う(OBJ側のcolor_number=0=透明は呼び出し側で既に除外済みの前提)。
+// 表(優先順): (1) LCDC bit0=0(マスタープライオリティ無効)ならOBJが常に勝つ。
+// (2) BGのcolor_numberが0(透明)ならOBJが勝つ。(3) BG属性bit7(bg_priority)が立っていれば
+// BGが勝つ。(4) OAM属性bit7(oam_priority)が立っていればBGが勝つ。(5) それ以外はOBJが勝つ。
+@(private)
+cgb_obj_wins_over_bg :: proc(p: ^Ppu, bg_color_number: u8, bg_priority: bool, oam_priority: bool) -> bool {
+	if p.lcdc & LCDC_BIT_BG_ENABLE == 0 {
+		return true
+	}
+	if bg_color_number == 0 {
+		return true
+	}
+	if bg_priority {
+		return false
+	}
+	if oam_priority {
+		return false
+	}
+	return true
+}
+
+// ppu_render_sprites はこのラインのスプライト(8x8/8x16)を優先度込みで描画する(T3-5、
+// CGBのOAM順優先度・BG-to-OBJ優先度表はT6-5)。
+// DMGの優先度: X座標が小さいスプライトが勝つ(同Xなら OAM 順)。CGBの優先度: X座標に
+// 関係なくOAM順(先頭が勝つ)。一度確定したピクセルは他のスプライトに上書きされない
+// (pixel_owned で管理、この「スプライト間」の優先度は「スプライトとBGの間」の優先度
+// (cgb_bg_wins_over_obj/DMGのattr bit7)とは独立)。スプライトのカラー0は常に透明。
 @(private)
 ppu_render_sprites :: proc(bus: ^Bus, line_start: int) {
 	p := &bus.ppu
@@ -593,7 +617,12 @@ ppu_render_sprites :: proc(bus: ^Bus, line_start: int) {
 	if count == 0 {
 		return
 	}
-	ppu_sort_sprites_by_priority(&sprites, count)
+	// 落とし穴(T6-5): CGBではOAM順優先度(先頭が勝つ)なのでソートしない
+	// (ppu_collect_line_sprites が既にOAM index0からの走査順で詰めている)。
+	// DMGモードのみX座標優先(同Xなら OAM 順)にソートする。
+	if bus.mode != .Cgb {
+		ppu_sort_sprites_by_priority(&sprites, count)
+	}
 
 	pixel_owned: [SCREEN_WIDTH]bool
 
@@ -636,10 +665,14 @@ ppu_render_sprites :: proc(bus: ^Bus, line_start: int) {
 				continue // スプライトのカラー0は透明(ピクセルの所有権も取らない)
 			}
 
-			pixel_owned[x] = true // X優先度でこのピクセルはこのスプライトが確定(BG優先度とは独立)
+			pixel_owned[x] = true // スプライト間優先度でこのピクセルはこのスプライトが確定(BG優先度とは独立)
 
-			if s.attr & OAM_ATTR_BG_PRIORITY != 0 && p.bg_color_index[x] != 0 {
-				continue // BGカラー1-3の上には描かない
+			if bus.mode == .Cgb {
+				if !cgb_obj_wins_over_bg(p, p.bg_color_index[x], p.bg_cgb_priority[x], s.attr & OAM_ATTR_BG_PRIORITY != 0) {
+					continue // BGが前面(T6-5の優先度表)
+				}
+			} else if s.attr & OAM_ATTR_BG_PRIORITY != 0 && p.bg_color_index[x] != 0 {
+				continue // BGカラー1-3の上には描かない(DMGの優先度規則)
 			}
 
 			// T6-4: CGBモードはOAM属性bit2-0のパレット番号でパレットRAMを引く。
