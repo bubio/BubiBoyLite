@@ -234,6 +234,11 @@ savestate_write :: proc(emu: ^Emulator) -> []u8 {
 	write_cpu_state(&c, &emu.cpu)
 	write_bus_state(&c, &emu.bus)
 
+	// 内部不変条件: 実際に書き込んだバイト数は savestate_expected_size の計算値とちょうど
+	// 一致するはず(read 側はこのサイズ計算だけを頼りに範囲外アクセスを避けているため、
+	// ここがずれると静かに壊れる。フォーマット変更時にサイズ計算の更新漏れを即検出する)。
+	assert(c.pos == size, "savestate_write: 書き込みバイト数が savestate_expected_size と一致しない")
+
 	return buf
 }
 

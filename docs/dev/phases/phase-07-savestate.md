@@ -37,7 +37,7 @@ odin test tests -collection:bbl=src   # ラウンドトリップテスト PASS
 
 ### T7-2: 復元と検証
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: .state からの復元を安全にする。
 **作るもの**: savestate.odin:
@@ -110,3 +110,4 @@ odin test tests -collection:bbl=src
 （タスク完了ごとに 1 行追記）
 
 2026-07-12 T7-1 完了: `src/core/savestate.odin` 新規作成(マジック"BBLS"+バージョンu32+ROMグローバルチェックサム2B+本体、全項目リトルエンディアン)。本体サイズを`savestate_expected_size`で事前計算し書き込みバッファをちょうどのサイズで確保する方式(範囲外アクセスを構造的に防止)。CPU全レジスタ/ime/halted/halt_bug/ime_delay/stopped/illegal_opcode_hit、VRAM全2バンク、WRAM全8バンク、OAM、HRAM、IO、IE、パレットRAM、HDMA状態、double_speed、Timer内部状態、PPU状態(レジスタ+モード+dot+window_line+framebuffer)、Joypad、DMA、APU(ch毎のタイマー/LFSR/エンベロープ/スイープ、フレームシーケンサ位置、NRレジスタ生値、wave RAM)、MBC状態(unionタグ+中身、MBC3のRTC含む)、外部RAMを保存。オーディオリングバッファ(apu.ring*)とMooneye判定用デバッグフラグ(cpu.debug_break_on_ld_b_b/ld_b_b_hit)、シリアル出力キャプチャは意図的に除外(落とし穴欄のとおり)。`tests/savestate_test.odin`新規作成、write→write決定性テストと外部RAM込みのround-tripテストで検証: `odin test tests -collection:bbl=src` 310 tests 全パス(304→310、既存テストの後退無し)。
+2026-07-12 T7-2 完了: savestate.odinの`savestate_read`は「マジック→バージョン→ROMチェックサム→本体サイズ充足」の順に検証し、いずれかで失敗したら emu へは一切書き込まず別々の`Load_Error`(.Bad_Magic/.Version_Mismatch/.Rom_Checksum_Mismatch/.Too_Small)を返す設計(全読み取りが本体サイズの事前一括チェックで保証されるため、一時Emulator+swapは不要。advisorでも「validate-before-mutateで十分」と確認済み)。`savestate_write`末尾に書き込みバイト数とサイズ計算の一致を検証する`assert`を追加(フォーマット変更時のサイズ計算更新漏れを即検出)。`src/app/statefile.odin`新規作成: `<ROM名>.state`(スロット2-4は`.state2`-`.state4`)の読み書きを`save_ram_write_atomic`/`save_ram_load`(saveram.odinの既存アトミック書き込み)で実装。`tests/statefile_test.odin`新規作成、パス導出・save/loadラウンドトリップ・破損データ別エラー・元状態無傷を検証: `odin test tests -collection:bbl=src` 315 tests 全パス(310→315)。
