@@ -19,7 +19,7 @@ odin test tests -collection:bbl=src   # ラウンドトリップテスト PASS
 
 ### T7-1: ステートのシリアライズ
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: エミュレータ全状態をバージョン付きバイナリに書き出す。
 **作るもの**: `src/core/savestate.odin`:
@@ -108,3 +108,5 @@ odin test tests -collection:bbl=src
 ## 検証ログ
 
 （タスク完了ごとに 1 行追記）
+
+2026-07-12 T7-1 完了: `src/core/savestate.odin` 新規作成(マジック"BBLS"+バージョンu32+ROMグローバルチェックサム2B+本体、全項目リトルエンディアン)。本体サイズを`savestate_expected_size`で事前計算し書き込みバッファをちょうどのサイズで確保する方式(範囲外アクセスを構造的に防止)。CPU全レジスタ/ime/halted/halt_bug/ime_delay/stopped/illegal_opcode_hit、VRAM全2バンク、WRAM全8バンク、OAM、HRAM、IO、IE、パレットRAM、HDMA状態、double_speed、Timer内部状態、PPU状態(レジスタ+モード+dot+window_line+framebuffer)、Joypad、DMA、APU(ch毎のタイマー/LFSR/エンベロープ/スイープ、フレームシーケンサ位置、NRレジスタ生値、wave RAM)、MBC状態(unionタグ+中身、MBC3のRTC含む)、外部RAMを保存。オーディオリングバッファ(apu.ring*)とMooneye判定用デバッグフラグ(cpu.debug_break_on_ld_b_b/ld_b_b_hit)、シリアル出力キャプチャは意図的に除外(落とし穴欄のとおり)。`tests/savestate_test.odin`新規作成、write→write決定性テストと外部RAM込みのround-tripテストで検証: `odin test tests -collection:bbl=src` 310 tests 全パス(304→310、既存テストの後退無し)。
