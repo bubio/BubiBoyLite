@@ -655,9 +655,17 @@ cpu_execute :: proc(cpu: ^Cpu, bus: ^Bus, opcode: u8) {
 		}
 	case 0x10:
 		// STOP: 2バイト命令。パディングバイトを読み飛ばす。
-		// ダブルスピード切替の正式対応はフェーズ6。今は簡易ログのみ。
+		// T6-6: CGBモードでKEY1切替準備(speed_switch_prepared)済みならここで速度を反転する
+		// (T1-6の仮実装を置換)。DMGモード、またはCGBでも準備されていなければ従来どおり
+		// 何もせず無視のログのみ(既存のopcodeカバレッジテストの挙動を維持)。
 		cpu.pc += 1
-		fmt.eprintfln("cpu: STOP at pc=0x%04X (未対応、無視)", cpu.pc - 2)
+		if bus.mode == .Cgb && bus.speed_switch_prepared {
+			bus.double_speed = !bus.double_speed
+			bus.speed_switch_prepared = false
+			timer_write_div(bus) // DIVリセット(実機の仕様、Pan Docs "CGB Registers: KEY1")
+		} else {
+			fmt.eprintfln("cpu: STOP at pc=0x%04X (未対応、無視)", cpu.pc - 2)
+		}
 	case 0xF3:
 		cpu.ime = false
 		cpu.ime_delay = 0 // 予約されていた EI の遅延発動もキャンセルする

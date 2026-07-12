@@ -42,12 +42,17 @@ emulator_step :: proc(emu: ^Emulator) -> int {
 
 // emulator_run_frame は1フレーム(70224 T-cycle)ぶん実行する(architecture.md「実行」)。
 // cpu_stepは命令単位でしか止まれず1フレームちょうどでは終わらない(オーバーシュートする)ため、
-// 累計サイクル数(emu.bus.cycles)を基準に「フレーム開始時点+70224に達するまで」ループする。
+// 累計サイクル数を基準に「フレーム開始時点+70224に達するまで」ループする。
 // 余剰分は自然に次フレームへ持ち越されるので、毎フレーム0から数え直す方式(誤差が蓄積して
 // ドリフトする)は採らない。
+//
+// T6-6: フレーム境界は emu.bus.cycles(CPU側クロック)ではなく emu.bus.hw_cycles(PPU側クロック)
+// で数える。ダブルスピード中はCPUが2倍速で回るため、bus.cyclesで70224を数えるとPPU的には
+// 半フレームしか進んでいないのに打ち切ってしまう(落とし穴)。単一速度時はhw_cycles==cyclesなので
+// この変更はDMG/等速時の挙動に影響しない。
 emulator_run_frame :: proc(emu: ^Emulator) {
-	frame_end := emu.bus.cycles + CYCLES_PER_FRAME
-	for emu.bus.cycles < frame_end {
+	frame_end := emu.bus.hw_cycles + CYCLES_PER_FRAME
+	for emu.bus.hw_cycles < frame_end {
 		cpu_step(&emu.cpu, &emu.bus)
 	}
 }

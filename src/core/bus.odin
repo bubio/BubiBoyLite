@@ -10,6 +10,7 @@ TMA_ADDR :: 0xFF06
 TAC_ADDR :: 0xFF07
 IF_ADDR :: 0xFF0F
 DMA_ADDR :: 0xFF46
+KEY1_ADDR :: 0xFF4D // T6-6: [CGB] ダブルスピード切替(bit7=現速度読取, bit0=切替準備書込)
 VBK_ADDR :: 0xFF4F // T6-2: [CGB] VRAM バンク切替(bit0 のみ有効)
 BCPS_ADDR :: 0xFF68 // T6-4: [CGB] BG パレットRAM インデックス(bit7=オートインクリメント)
 BCPD_ADDR :: 0xFF69 // T6-4: [CGB] BG パレットRAM データ
@@ -33,7 +34,10 @@ Bus :: struct {
 	hram:                      [127]u8,
 	io:                        [128]u8, // FF00-FF7F の生バックストア(個別実装されたレジスタ以外は読み出し時 0xFF)
 	ie:                        u8, // FFFF
-	cycles:                    u64, // 累計 T-cycle
+	cycles:                    u64, // 累計 T-cycle(CPU側クロック。ダブルスピード中は実時間の2倍で進む)
+	hw_cycles:                 u64, // 累計 T-cycle(PPU/APU側=実時間クロック。T6-6、emulator_run_frameのフレーム境界はこちらで数える)
+	double_speed:              bool, // T6-6: KEY1 bit7相当。trueの間CPU/Timer/シリアルは2倍速、PPU/APUは等速
+	speed_switch_prepared:     bool, // T6-6: KEY1 bit0相当(書込み)。STOP実行時にtrueなら速度反転してfalseに戻す
 	serial_log:                [dynamic]u8, // シリアル出力キャプチャ(T1-7、serial.odin)
 	div_counter:               u16, // DIV の内部カウンタ(上位8bitがDIVとして読める。timer.odin)
 	tima:                      u8, // 0xFF05
@@ -96,13 +100,27 @@ bus_power_on :: proc(bus: ^Bus) {
 // bus_tick は t_cycles ぶん時間を進める。CPU の全メモリアクセスごとに呼ばれる。
 // Timer(timer.odin、T2-3)、PPU(ppu.odin、T3-2)、APU(apu.odin、T5-1)、OAM DMA(T2-5)を駆動する。
 // t_cycles は常に4の倍数(1 M-cycle単位)で渡される想定(architecture.md のタイミングモデル)。
+//
+// T6-6: ダブルスピード中はCPU/Timer/シリアルは実時間の2倍速で進むが、PPU/APUは等速のまま
+// (実クロックは変わらない)。そのため t_cycles(CPU側)をそのまま渡すのは Timer/DMA だけにし、
+// PPU/APUには hw_cycles = double_speed ? t_cycles/2 : t_cycles を渡す(BubiBoy Bus.fs の
+// hardwareCyclesForCpuCycles方式)。落とし穴: これを逆にすると音程が半オクターブずれたり
+// ゲームが倍速になったりする。bus.hw_cycles(PPU/APU側の累計)は emulator_run_frame の
+// フレーム境界判定に使う(bus.cyclesのままだとダブルスピード中に1フレームがPPU的には
+// 半分しか進んでいないのに70224で打ち切ってしまう)。
 bus_tick :: proc(bus: ^Bus, t_cycles: int) {
 	bus.cycles += u64(t_cycles)
-	timer_tick(bus, t_cycles)
-	ppu_tick(bus, t_cycles)
-	apu_tick(&bus.apu, t_cycles)
+	hw_cycles := t_cycles
+	if bus.double_speed {
+		hw_cycles = t_cycles / 2
+	}
+	bus.hw_cycles += u64(hw_cycles)
+
+	timer_tick(bus, t_cycles) // Timerは常にCPU側クロック(ダブルスピードで2倍速)
+	ppu_tick(bus, hw_cycles) // PPUは実時間側(等速)
+	apu_tick(&bus.apu, hw_cycles) // APUも実時間側(等速)
 	for _ in 0 ..< t_cycles / 4 {
-		dma_tick_one_mcycle(bus)
+		dma_tick_one_mcycle(bus) // OAM DMAはCPU側クロックでのM-cycle単位のまま
 	}
 }
 
@@ -256,6 +274,20 @@ bus_io_read :: proc(bus: ^Bus, addr: u16) -> u8 {
 		return bus.io[DMA_ADDR - 0xFF00]
 	case LCDC_ADDR, STAT_ADDR, SCY_ADDR, SCX_ADDR, LY_ADDR, LYC_ADDR, BGP_ADDR, OBP0_ADDR, OBP1_ADDR, WY_ADDR, WX_ADDR:
 		return ppu_read(bus, addr)
+	case KEY1_ADDR:
+		// CGB 専用レジスタ。bit7=現在の速度(読み専用)、bit0=切替準備(読み書き可)、
+		// 残りは常に1で読める未使用bit(BubiBoy Bus.fs方式)。
+		if bus.mode != .Cgb {
+			return 0xFF
+		}
+		v: u8 = 0x7E
+		if bus.double_speed {
+			v |= 0x80
+		}
+		if bus.speed_switch_prepared {
+			v |= 0x01
+		}
+		return v
 	case VBK_ADDR:
 		// CGB 専用レジスタ。DMG モードでは他の未実装レジスタと同じく 0xFF を返す
 		// (BubiBoy Bus.fs の isCgb ガード方式に倣う)。
@@ -331,6 +363,11 @@ bus_io_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 		bus.dma_start_delay = 2 // 1 M-cycleの遅延後、2M-cycle目から新しい転送が始まる
 	case LCDC_ADDR, STAT_ADDR, SCY_ADDR, SCX_ADDR, LY_ADDR, LYC_ADDR, BGP_ADDR, OBP0_ADDR, OBP1_ADDR, WY_ADDR, WX_ADDR:
 		ppu_write(bus, addr, value)
+	case KEY1_ADDR:
+		// bit0(切替準備)のみ書き込み可能。実際の速度反転はSTOP実行時(cpu.odin)に行う。
+		if bus.mode == .Cgb {
+			bus.speed_switch_prepared = value & 0x01 != 0
+		}
 	case VBK_ADDR:
 		// 落とし穴(phase-06): DMG モードでは VBK 書き込みを無視しバンク0固定のままにする。
 		if bus.mode == .Cgb {

@@ -107,7 +107,7 @@ odin test tests -collection:bbl=src   # cgb_acid2 が PASS
 
 ### T6-6: ダブルスピードモード
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: KEY1 (FF4D) と STOP によるダブルスピード切替を実装する。
 **作るもの**:
@@ -237,4 +237,23 @@ Mode"の表: LCDC bit0=0でOBJ常勝→BG color0でOBJ勝ち→BG属性bit7でBG
 立て忘れてsigned基点(0x9000)を読みに行きBG色が全て0になる(結果的にOBJ勝ち判定に落ちて
 テストが誤って通る/落ちる)というハマりがあり、bit4を追加して修正した。
 `odin test tests -collection:bbl=src` 294 tests 全パス(既存289+新規5、dmg-acid2ハッシュ含め
+リグレッションなし)。
+
+2026-07-12 T6-6 完了: bus.odin に `double_speed`/`speed_switch_prepared`(KEY1相当)と
+`hw_cycles`(PPU/APU側の累計T-cycle、フレーム境界判定用)を追加。KEY1(FF4D)はbit7=現在速度
+(読み専用)・bit0=切替準備(読み書き)・残りは常に1で読める未使用bit。`bus_tick`を
+`hw_cycles = double_speed ? t_cycles/2 : t_cycles` で分岐させ、Timer/OAM DMAはCPU側の
+`t_cycles`のまま、PPU/APUは`hw_cycles`を渡すようにした(落とし穴として明記されていた
+「Timerを実時間側にすると音程が半オクターブずれる/ゲームが倍速になる」を回避)。
+`emulator_run_frame`のフレーム境界を`bus.cycles`から`bus.hw_cycles`に変更(等速時は
+`hw_cycles==cycles`なのでDMG/既存動作に影響なし)。cpu.odinのSTOP(0x10)ハンドラで
+`mode==Cgb && speed_switch_prepared`のときだけ速度反転・prepared クリア・
+`timer_write_div`によるDIVリセットを行い、それ以外(DMGモード、または未準備)は
+T1-6以来の「無視ログのみ」のプレースホルダ挙動を維持した(既存のopcodeカバレッジテストが
+STOPを叩く際の挙動を壊さないため)。単体テスト4件追加(tests/cgb_double_speed_test.odin):
+KEY1準備→STOP→bit7反転+DIVリセット、往復切替、prepared無しSTOPでの無変化、DMGモードでの
+無視、ダブルスピード中の1フレームCPUサイクルが等速の約2倍になること(WRAM上にSTOP命令を
+置いて実行する手法。ROM領域はカートリッジ未ロードの生Busではmbc_writeが無視するため使えない
+という落とし穴に最初にはまり、書き込み先をWRAMへ変更して解決した)。
+`odin test tests -collection:bbl=src` 298 tests 全パス(既存294+新規4、dmg-acid2ハッシュ含め
 リグレッションなし)。
