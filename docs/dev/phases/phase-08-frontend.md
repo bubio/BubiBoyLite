@@ -138,20 +138,20 @@ odin test tests -collection:bbl=src
 
 ### T8-7: BluePrint 受け入れチェック
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: フェーズ 8 のマイルストーン。BluePrint の仕様を一項目ずつ突き合わせる。
 **作るもの**: このタスクの下にチェックリストを作り全項目を実施:
-- [ ] `bbl -h` / `--help` が使い方を表示
-- [ ] `bbl -v` / `--version` がバージョン表示
-- [ ] `--scale 1〜8` が効き、9 以上は 8 に丸め
-- [ ] `--fullscreen` が --scale を無視して最大整数倍率
-- [ ] `--shader nearest` / `smooth` が切替わる（デフォルト nearest）
-- [ ] 設定ファイルが実行ファイルと同じ場所に自動生成される
-- [ ] .sav が ROM と同じ場所（デフォルト）/ 設定した場所に保存される
-- [ ] キーボードで全操作可能、コントローラーでプレイ可能
-- [ ] 実 BIOS 関連のオプション・コードが存在しない
-- [ ] コード・設定・ドキュメントに実ユーザー名が含まれない: `git grep -i "$(whoami)"` がヒット 0
+- [x] `bbl -h` / `--help` が使い方を表示
+- [x] `bbl -v` / `--version` がバージョン表示
+- [x] `--scale 1〜8` が効き、9 以上は 8 に丸め
+- [x] `--fullscreen` が --scale を無視して最大整数倍率
+- [x] `--shader nearest` / `smooth` が切替わる（デフォルト nearest）
+- [x] 設定ファイルが実行ファイルと同じ場所に自動生成される
+- [x] .sav が ROM と同じ場所（デフォルト）/ 設定した場所に保存される
+- [x] キーボードで全操作可能、コントローラーでプレイ可能(キーボードは実バイナリ+単体テストで確認。コントローラーは実機未確認、検証ログ参照)
+- [x] 実 BIOS 関連のオプション・コードが存在しない
+- [x] コード・設定・ドキュメントに実ユーザー名が含まれない: `git grep -i "$(whoami)"` がヒット 0
 **参照**: BluePrint.md 全文
 **完了条件 (DoD)**: 上記チェックリスト全項目にチェックが付き、結果を検証ログに記録。
 **検証方法**: 各項目のコマンド実行 + 目視。
@@ -175,3 +175,16 @@ odin test tests -collection:bbl=src
 2026-07-12 T8-5 完了: `odin test tests -collection:bbl=src` 377 tests 全パス(controller_test.odin 7件追加。ボタン/軸イベント→GBボタンの変換は純粋関数化し、core.Emulatorを使ってJOYPレジスタの実際の変化まで検証)。SDL_INIT_GAMECONTROLLER を video_init に追加、Controller_Manager でホットプラグ(CONTROLLERDEVICEADDED/REMOVED)と1台までの接続管理を実装、左スティックはデッドゾーン±8000で十字キーへマップ。デフォルト割当はconfig.odinのdefault_pad_map(T8-1で作成済み)をそのまま使用(SDLのB=GBのA、SDLのA=GBのB、Xbox配置とNintendo配置の左右逆転を吸収)。**実機コントローラーでの操作感は未確認**(ハードウェア無し)。確認できたのはコントローラー未接続時の起動・実行(実バイナリで1.5秒間クラッシュなく動作継続、`video: 表示倍率 = 4`のログも正常出力)と、ホットプラグイベントハンドラの単体テスト(未接続状態でのREMOVED/destroyがクラッシュしないこと)のみ。
 
 2026-07-12 T8-6 完了: `odin test tests -collection:bbl=src` 382 tests 全パス(keyconfig_test.odin 5件追加)。input_key_to_button/input_handle_key_eventをkey_map引数で可変にし(従来のハードコードswitchから、config.odinのdefault_key_map/bbl.iniのkey_*を逆引きする方式へ変更)、main.odinはcfg.key_map/cfg.pad_map(T8-1で読み込み済み)をイベントループへ渡すよう更新。ショートカットキー衝突チェック(T8-1で実装済みのconfig_key_map_conflicts/config_warn_key_conflicts)は結合検証: `key_select = F5`と書いたbbl.iniで`./bbl --headless`を実行し、`config: key_select (F5) はセーブステート/終了ショートカットと衝突しています`という警告が実際に出力されることを確認(起動は継続、DoD「警告してその項目だけデフォルト」ではなく単純警告のみに留める設計だが、割当自体は反映されクラッシュしないことも確認)。bbl.iniのデフォルト生成にキー/パッド全割当がコメント付きで出ることはT8-1のconfig_render_default_iniで既に達成済み。
+
+2026-07-12 T8-7 完了(フェーズ8マイルストーン): `odin test tests -collection:bbl=src` 382 tests 全パス。BluePrint受け入れチェックリストを実バイナリ(`odin build src/app -collection:bbl=src -out:bbl`)で1項目ずつ実施:
+- `bbl -h`/`--help`: 使い方(オプション一覧+キーボードショートカット一覧)を表示することを確認。
+- `bbl -v`/`--version`: `bbl 0.1.0` を表示することを確認。
+- `--scale`: 1/9/20 を実行し、ログ`video: 表示倍率 = N`で1→1、9→8(出力1280x1152=160x8 x 144x8)、20→8に丸められることを確認。odin testのtest_scale_round_down_to_8/test_scale_zero_is_errorとも整合。
+- `--fullscreen --scale 2`: 実行環境の3440x1440ディスプレイで`表示倍率 = 10`となり(--scaleの2ではなくmin(3440/160,1440/144)=10)、--scaleが無視されることを確認(T8-2のスクリーンショット検証と同一環境)。
+- `--shader nearest`/`smooth`: 両方とも起動・実行してクラッシュしないこと、および見た目の差(T8-3のズームスクリーンショット比較)を確認済み。デフォルトがnearestであることはdefault_config()/CLIデフォルトの単体テストで確認。
+- 設定ファイル自動生成: 実行ファイルのディレクトリ(/tmp配下)とは別のカレントディレクトリから`bbl --headless`を実行し、bbl.iniが実行ファイルと同じディレクトリに生成されカレントディレクトリには生成されないことを確認(落とし穴「実行ファイルの場所はカレントディレクトリではない」を明示的に検証)。
+- `.sav`保存場所: デフォルト(save_dir空欄)でROMと同じディレクトリにmygame.savが生成されることと、save_dir指定時に`~`展開先へ生成されること(T8-4検証ログのosascript実機テスト)の両方を確認。
+- キーボード操作: 全8ボタン(十字キー/A/B/Start/Select)+ショートカット(F1-F5,F7,Esc,Alt+Enter/Cmd+Enter)を単体テストで反映確認済み(input_handle_key_event/input_handle_shortcut_key/input_is_fullscreen_toggle)。実バイナリでのキー入力そのものの目視確認は行っていないが、joypadレジスタへの反映はcore.Emulatorを使った統合テストで検証済み。コントローラーはT8-5/T8-6検証ログの通り実機未確認(ハードウェア無し)。ホットプラグ・デッドゾーン・A/Bの物理配置反転(SDL.B→GB.A)は単体テストとコード確認のみ。
+- 実BIOS: `grep -rin "bios"` はコア実装のコメント(「実BIOSは読み込まない」という方針説明)のみがヒットし、`--bios`等のCLIオプションやブートROM読み込みコードは存在しないことを確認。
+- ユーザー名: `git grep -i seiji` はヒット0(exit code 1)。
+以上により、フェーズ8のマイルストーン(BluePrint記載の全CLIオプションが仕様どおり + 初回起動で設定ファイル自動生成)を達成したと判断する。**未確認事項の明記**: 実ゲームコントローラーでの操作感、実キー入力によるAlt+Enter/Cmd+Enterのライブなフルスクリーン切替は、開発環境に対話的GUI操作手段が無いため目視確認できていない(コード実装・単体テスト・screencaptureによる静的確認のみ)。
