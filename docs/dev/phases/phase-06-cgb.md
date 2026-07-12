@@ -72,7 +72,7 @@ odin test tests -collection:bbl=src   # cgb_acid2 が PASS
 
 ### T6-4: CGB パレット RAM
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: BG/OBJ 各 64 バイトのパレット RAM と RGB555 描画を実装する。
 **作るもの**:
@@ -209,3 +209,18 @@ src/app/main.odin の2箇所(run_rom_window/run_test_pattern_window)を`new(core
 bus_power_on無し時のデフォルトバンク1、エコーRAMのバンク追従(D000/C000両方)、DMGモードでの
 無視。`odin test tests -collection:bbl=src` 283 tests 全パス(既存278+新規5、dmg-acid2ハッシュ
 含めリグレッションなし)。
+
+2026-07-12 T6-4 完了: bus.odin に `bg_palette_ram`/`obj_palette_ram: [64]u8` とBCPS/BCPD
+(FF68/69)・OCPS/OCPD(FF6A/6B)を実装。インデックスレジスタ(bcps/ocps)はbit6を常に1で読める
+未使用bitとして保持し(BubiBoy Bus.fs方式)、オートインクリメントは`palette_index_increment`
+としてBCPD/OCPD書込み時のみ適用(読み出しでは進まない、落とし穴)。ppu.odin に
+`rgb555_to_argb`(architecture.md固定の`(c<<3)|(c>>2)`変換、BubiBoyのガンマ補正版は使わない
+決定を再確認)と`cgb_palette_color`を追加し、BG/ウィンドウ(T6-2のBg_Pixel.palette)とOBJ
+(OAM属性bit2-0)の両方でCGBモード時はBGP/OBPではなくパレットRAMから色を引くようにした
+(DMGモードは従来のBGP/OBP0/OBP1のまま、モードで分岐)。これに伴いT6-2で追加したCGBモード
+ピクセルテスト3件(ppu_cgb_vram_test.odin)がBGPグレー4階調ベースのままだと不整合になるため、
+BGパレット0を既知の原色(黒/赤/緑/青)に設定してから比較するよう更新した。単体テスト6件
+追加(tests/cgb_palette_test.odin): BCPSオートインクリメント(書込み時のみ進む・bit7=0で
+進まない・63→0ラップ)、BCPS/OCPSの独立性、DMGモードでの無視、RGB555境界値(0x7FFF→白)。
+`odin test tests -collection:bbl=src` 289 tests 全パス(既存283+新規6、dmg-acid2ハッシュ含め
+リグレッションなし)。

@@ -11,11 +11,16 @@ TAC_ADDR :: 0xFF07
 IF_ADDR :: 0xFF0F
 DMA_ADDR :: 0xFF46
 VBK_ADDR :: 0xFF4F // T6-2: [CGB] VRAM バンク切替(bit0 のみ有効)
+BCPS_ADDR :: 0xFF68 // T6-4: [CGB] BG パレットRAM インデックス(bit7=オートインクリメント)
+BCPD_ADDR :: 0xFF69 // T6-4: [CGB] BG パレットRAM データ
+OCPS_ADDR :: 0xFF6A // T6-4: [CGB] OBJ パレットRAM インデックス
+OCPD_ADDR :: 0xFF6B // T6-4: [CGB] OBJ パレットRAM データ
 SVBK_ADDR :: 0xFF70 // T6-3: [CGB] WRAM バンク切替(bit2-0、1-7。0指定は1扱い)
 
 OAM_SIZE :: 160
 VRAM_BANK_SIZE :: 8192
 WRAM_BANK_SIZE :: 4096
+PALETTE_RAM_SIZE :: 64 // T6-4: BG/OBJ 各64バイト(8パレット×4色×2バイト)
 
 Bus :: struct {
 	mode:                      Gb_Mode, // T6-1: ヘッダのCGBフラグから決まる実行モード(emulator_load_romが設定)
@@ -23,7 +28,7 @@ Bus :: struct {
 	vram:                      [2][VRAM_BANK_SIZE]u8, // T6-2: バンク0=DMG互換、バンク1=CGB属性/追加タイルデータ
 	vram_bank:                 u8, // FF4F(VBK) bit0。DMGモードでは常に0固定(書き込み無視)
 	wram:                      [8][WRAM_BANK_SIZE]u8, // T6-3: C000-CFFFはバンク0固定、D000-DFFFはこのうちwram_bankを使う
-	wram_bank:                 u8, // D000-DFFF が使う解決済みバンク番号(1-7)。bus_power_onで1初期化、SVBK書込みで更新(0→1読み替え済み)
+	wram_bank:                 u8, // SVBK生値(0-7)。「0→1読み替え」は書込み時ではなくwram_active_bankで解決するため、未書込み(ゼロ値)でも自動的にバンク1として扱われる
 	oam:                       [160]u8,
 	hram:                      [127]u8,
 	io:                        [128]u8, // FF00-FF7F の生バックストア(個別実装されたレジスタ以外は読み出し時 0xFF)
@@ -47,6 +52,12 @@ Bus :: struct {
 	ppu:                       Ppu, // LCD レジスタ・モードタイミング・フレームバッファ(ppu.odin、T3-1)
 	apu:                       Apu, // 4ch + フレームシーケンサ + 48kHzサンプル生成(apu.odin、T5-1)
 	cart_load_error:           Cartridge_Parse_Error, // 直近の bus_load_rom 失敗理由(T4-2)。成功時は .None
+
+	// T6-4: CGB パレットRAM(BG/OBJ各64バイト = 8パレット×4色×リトルエンディアンRGB555 2バイト)。
+	bg_palette_ram:  [PALETTE_RAM_SIZE]u8,
+	obj_palette_ram: [PALETTE_RAM_SIZE]u8,
+	bcps:            u8, // FF68生値(bit7=オートインクリメント有効, bit6=常に1で読める未使用bit, bit5-0=インデックス)
+	ocps:            u8, // FF6A生値。レイアウトはbcpsと同じ
 }
 
 // bus_load_rom はヘッダを解析してカートリッジ(ROM/RAM/MBC状態)をロードする(T4-2)。
@@ -257,9 +268,42 @@ bus_io_read :: proc(bus: ^Bus, addr: u16) -> u8 {
 			return 0xFF
 		}
 		return 0xF8 | wram_active_bank(bus) // 0指定は1扱いなので読み出しも解決済みバンクを返す
+	case BCPS_ADDR:
+		if bus.mode != .Cgb {
+			return 0xFF
+		}
+		return bus.bcps
+	case BCPD_ADDR:
+		// 落とし穴: 読み出しではオートインクリメントしない(書き込み時のみ)。
+		if bus.mode != .Cgb {
+			return 0xFF
+		}
+		return bus.bg_palette_ram[bus.bcps & 0x3F]
+	case OCPS_ADDR:
+		if bus.mode != .Cgb {
+			return 0xFF
+		}
+		return bus.ocps
+	case OCPD_ADDR:
+		if bus.mode != .Cgb {
+			return 0xFF
+		}
+		return bus.obj_palette_ram[bus.ocps & 0x3F]
 	case:
 		return 0xFF
 	}
+}
+
+// palette_index_increment はBCPS/OCPSのオートインクリメントを適用した新しいインデックス
+// レジスタ値を返す(T6-4)。bit7(オートインクリメント有効)が0なら何もしない。bit6は常に1で
+// 読める未使用bitとして保持し、インデックス(bit5-0)だけ+1(64でラップ)する
+// (BubiBoy CgbMemory.incrementPaletteIndex を移植)。
+@(private)
+palette_index_increment :: proc(index_reg: u8) -> u8 {
+	if index_reg & 0x80 == 0 {
+		return index_reg
+	}
+	return (index_reg & 0x80) | 0x40 | ((index_reg + 1) & 0x3F)
 }
 
 @(private)
@@ -296,6 +340,24 @@ bus_io_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 		// 落とし穴(phase-06): DMG モードでは SVBK 書き込みを無視する。
 		if bus.mode == .Cgb {
 			bus.wram_bank = value & 0x07 // 0→1読み替えは読み出し/アドレス解決側(wram_active_bank)で行う
+		}
+	case BCPS_ADDR:
+		if bus.mode == .Cgb {
+			bus.bcps = value | 0x40 // bit6は常に1で読める(BubiBoy Bus.fs方式)
+		}
+	case BCPD_ADDR:
+		if bus.mode == .Cgb {
+			bus.bg_palette_ram[bus.bcps & 0x3F] = value
+			bus.bcps = palette_index_increment(bus.bcps) // 落とし穴: 書き込み時のみオートインクリメント
+		}
+	case OCPS_ADDR:
+		if bus.mode == .Cgb {
+			bus.ocps = value | 0x40
+		}
+	case OCPD_ADDR:
+		if bus.mode == .Cgb {
+			bus.obj_palette_ram[bus.ocps & 0x3F] = value
+			bus.ocps = palette_index_increment(bus.ocps)
 		}
 	case:
 		bus.io[addr - 0xFF00] = value

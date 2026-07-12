@@ -322,6 +322,30 @@ ppu_tick :: proc(bus: ^Bus, t_cycles: int) {
 	}
 }
 
+// rgb555_to_argb はCGBパレットRAMの1色(リトルエンディアン2バイト、bit4-0=R, 9-5=G, 14-10=B)を
+// ARGBへ変換する(T6-4、architecture.md固定の変換式 `(c<<3)|(c>>2)` をそのまま使う。
+// BubiBoyのガンマ補正/色滲みテーブルは使わない、フェーズ6タスク指定の決定)。
+@(private)
+rgb555_to_argb :: proc(raw: u16) -> u32 {
+	expand := proc(c5: u16) -> u32 {
+		c := u32(c5 & 0x1F)
+		return (c << 3) | (c >> 2)
+	}
+	r := expand(raw & 0x1F)
+	g := expand((raw >> 5) & 0x1F)
+	b := expand((raw >> 10) & 0x1F)
+	return 0xFF000000 | (r << 16) | (g << 8) | b
+}
+
+// cgb_palette_color はパレットRAM(BG/OBJいずれか)からpalette番号(0-7)・color_number(0-3)の
+// 色を引きARGBへ変換する(T6-4)。1色=2バイト、パレット1本=8バイト(4色×2バイト)。
+@(private)
+cgb_palette_color :: proc(ram: ^[PALETTE_RAM_SIZE]u8, palette: u8, color_number: u8) -> u32 {
+	index := (int(palette & 0x07) * 8 + int(color_number & 0x03) * 2) & 0x3F
+	raw := u16(ram[index]) | (u16(ram[index + 1]) << 8)
+	return rgb555_to_argb(raw)
+}
+
 // dmg_shade は BGP/OBPn から取り出した2bitシェード番号(0-3)を DMG 4階調の
 // ARGB カラーへ変換する(T3-3、素直なグレー表現。BluePrint/phase-03指定)。
 @(private)
@@ -476,9 +500,13 @@ ppu_render_scanline :: proc(bus: ^Bus) {
 		p.bg_color_index[x] = pixel.color_number
 		p.bg_cgb_palette[x] = pixel.palette
 		p.bg_cgb_priority[x] = pixel.priority
-		// T6-4でCGBモードはパレットRAM由来の色に置き換える。それまではBGP(グレー)で暫定描画する。
-		shade := (p.bgp >> (pixel.color_number * 2)) & 0x03
-		p.framebuffer[line_start + x] = dmg_shade(shade)
+		// T6-4: CGBモードはパレットRAM(BGP/OBPは無視)、DMGモードは従来どおりBGPのグレー4階調。
+		if bus.mode == .Cgb {
+			p.framebuffer[line_start + x] = cgb_palette_color(&bus.bg_palette_ram, pixel.palette, pixel.color_number)
+		} else {
+			shade := (p.bgp >> (pixel.color_number * 2)) & 0x03
+			p.framebuffer[line_start + x] = dmg_shade(shade)
+		}
 	}
 
 	if win_visible_this_line {
@@ -614,12 +642,19 @@ ppu_render_sprites :: proc(bus: ^Bus, line_start: int) {
 				continue // BGカラー1-3の上には描かない
 			}
 
-			palette := p.obp0
-			if s.attr & OAM_ATTR_PALETTE != 0 {
-				palette = p.obp1
+			// T6-4: CGBモードはOAM属性bit2-0のパレット番号でパレットRAMを引く。
+			// DMGモードは従来どおりOBP0/OBP1(attr bit4で選択)。
+			if bus.mode == .Cgb {
+				cgb_palette := s.attr & CGB_ATTR_PALETTE_MASK
+				p.framebuffer[line_start + x] = cgb_palette_color(&bus.obj_palette_ram, cgb_palette, color_number)
+			} else {
+				palette := p.obp0
+				if s.attr & OAM_ATTR_PALETTE != 0 {
+					palette = p.obp1
+				}
+				shade := (palette >> (color_number * 2)) & 0x03
+				p.framebuffer[line_start + x] = dmg_shade(shade)
 			}
-			shade := (palette >> (color_number * 2)) & 0x03
-			p.framebuffer[line_start + x] = dmg_shade(shade)
 		}
 	}
 }
