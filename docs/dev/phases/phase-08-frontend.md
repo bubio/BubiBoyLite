@@ -99,7 +99,7 @@ odin test tests -collection:bbl=src
 
 ### T8-5: ゲームコントローラー対応
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: BluePrint「ゲームコントローラーでも操作できる」を実装する。
 **作るもの**: `src/app/input.odin`:
@@ -171,3 +171,5 @@ odin test tests -collection:bbl=src
 2026-07-12 T8-3 完了: `odin test tests -collection:bbl=src` 359 tests 全パス(T8-2と同一の video_layout_test.odin を共有、追加の専用単体テストは無し。中間テクスチャ生成/SetRenderTarget切替はSDL依存でapp側の統合コードのため純粋関数化していない)。実機目視: `--scale 6 --shader nearest` と `--shader smooth` をそれぞれ起動しscreencaptureで同一座標を撮影、色境界(オレンジ色ブロックと背景グラデーションの境目)を8倍ズームして比較。nearestは1px単位でハードエッジ、smoothは境界に中間色のブレンドされたピクセル列が確認でき、sharp-bilinearの効果を視覚的に確認した。`--scale 1 --shader smooth`(中間倍率2倍未満でスムース処理をスキップするフォールバック経路)でもクラッシュしないことを確認。レンダーターゲット切替の戻し忘れは無い(video_present内でSetRenderTarget(renderer, video.intermediate)の直後に必ずnilへ戻すコードパスのみで、早期returnが無いことをコードレビューで確認)。
 
 2026-07-12 T8-4 完了: `odin test tests -collection:bbl=src` 370 tests 全パス(save_state_dir_test.odin 11件追加。実ディレクトリ作成・実ファイルI/Oを伴うテストを含む)。実装中に発見した既存stdlibの落とし穴: このOdinバージョンの`os.make_directory_all`は対象パスが既に存在すると`.Exist`エラーを返す(mkdir -pのような「既存なら成功」ではない)ため、resolve_and_ensure_dirで`.Exist`を非致命扱いに修正(修正前は2回目以降の起動でsave_dir指定時に毎回ROM同置へフォールバックする不具合があった)。結合検証: 実際に`bbl`バイナリをビルドし、`save_dir = ~/bbl_t84_saves_test`を設定したbbl.ini + MBC2+BATTERYの実ROM(tests/roms/mooneye/emulator-only/mbc2/ram.gb)で起動、osascriptで実際にEscキーを送って終了させ、`~`展開先のディレクトリが自動作成され`testcart.sav`/`testcart.sav.bak`が書き込まれることを確認(テスト後に生成物は削除済み)。state_dir側は同じresolve_and_ensure_dir/state_path_for_rom_with_dirの単体テスト(実ファイルの保存→ロードのラウンドトリップ)で検証。
+
+2026-07-12 T8-5 完了: `odin test tests -collection:bbl=src` 377 tests 全パス(controller_test.odin 7件追加。ボタン/軸イベント→GBボタンの変換は純粋関数化し、core.Emulatorを使ってJOYPレジスタの実際の変化まで検証)。SDL_INIT_GAMECONTROLLER を video_init に追加、Controller_Manager でホットプラグ(CONTROLLERDEVICEADDED/REMOVED)と1台までの接続管理を実装、左スティックはデッドゾーン±8000で十字キーへマップ。デフォルト割当はconfig.odinのdefault_pad_map(T8-1で作成済み)をそのまま使用(SDLのB=GBのA、SDLのA=GBのB、Xbox配置とNintendo配置の左右逆転を吸収)。**実機コントローラーでの操作感は未確認**(ハードウェア無し)。確認できたのはコントローラー未接続時の起動・実行(実バイナリで1.5秒間クラッシュなく動作継続、`video: 表示倍率 = 4`のログも正常出力)と、ホットプラグイベントハンドラの単体テスト(未接続状態でのREMOVED/destroyがクラッシュしないこと)のみ。

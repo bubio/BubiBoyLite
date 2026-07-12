@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import core "bbl:core"
 import sdl "vendor:sdl2"
 
@@ -112,4 +113,148 @@ input_handle_shortcut_key :: proc(state: ^Input_State, event: sdl.KeyboardEvent)
 		return .Load_State
 	}
 	return .None
+}
+
+// --- ゲームコントローラー対応(T8-5) ---
+// BluePrint「ゲームコントローラーでも操作できる」。SDL_GameController API(Joystick APIでは
+// なく、マッピングDBが使える方)を使う。GBは1プレイヤーなので同時に1台だけ扱う
+// (2台目以降が挿されても無視する。1台目を抜けば次に挿さっているコントローラーを拾える)。
+
+// CONTROLLER_DEADZONE はスティックのデッドゾーン(T8-5「落とし穴」、±8000/32767目安)。
+CONTROLLER_DEADZONE :: 8000
+
+Controller_Manager :: struct {
+	handle:      ^sdl.GameController,
+	instance_id: sdl.JoystickID,
+}
+
+// controller_manager_open_first_available は起動時に既に接続されているコントローラーの
+// うち最初の1台を開く(未接続でもok、起動に影響しない)。
+controller_manager_open_first_available :: proc(mgr: ^Controller_Manager) {
+	n := sdl.NumJoysticks()
+	for i in i32(0) ..< n {
+		if sdl.IsGameController(i) {
+			controller_manager_try_open(mgr, i)
+			if mgr.handle != nil {
+				return
+			}
+		}
+	}
+}
+
+@(private = "file")
+controller_manager_try_open :: proc(mgr: ^Controller_Manager, device_index: i32) {
+	if mgr.handle != nil {
+		return // 既に1台接続済み(GBは1プレイヤーのため複数コントローラーは扱わない)
+	}
+	handle := sdl.GameControllerOpen(device_index)
+	if handle == nil {
+		fmt.eprintfln("controller: オープンに失敗しました: %s", sdl.GetError())
+		return
+	}
+	joystick := sdl.GameControllerGetJoystick(handle)
+	mgr.handle = handle
+	mgr.instance_id = sdl.JoystickInstanceID(joystick)
+	fmt.eprintfln("controller: 接続しました (%s)", sdl.GameControllerName(handle))
+}
+
+// controller_manager_handle_added は SDL_CONTROLLERDEVICEADDED(T8-5ホットプラグ)を処理する。
+// event.cdevice.which はこのイベントでは「デバイスindex」であることに注意(REMOVEDとは意味が違う)。
+controller_manager_handle_added :: proc(mgr: ^Controller_Manager, device_index: i32) {
+	if !sdl.IsGameController(device_index) {
+		return
+	}
+	controller_manager_try_open(mgr, device_index)
+}
+
+// controller_manager_handle_removed は SDL_CONTROLLERDEVICEREMOVED を処理する。
+// event.cdevice.which はこのイベントでは「instance id」であることに注意(ADDEDとは意味が違う)。
+// 抜かれたのが現在保持しているコントローラーでなければ何もしない(2台目以降を無視した結果、
+// 既にopenしていないデバイスのREMOVEDが飛んでくることがあるため)。
+controller_manager_handle_removed :: proc(mgr: ^Controller_Manager, instance_id: sdl.JoystickID) {
+	if mgr.handle == nil || mgr.instance_id != instance_id {
+		return
+	}
+	fmt.eprintln("controller: 切断されました")
+	sdl.GameControllerClose(mgr.handle)
+	mgr.handle = nil
+	mgr.instance_id = 0
+}
+
+controller_manager_destroy :: proc(mgr: ^Controller_Manager) {
+	if mgr.handle != nil {
+		sdl.GameControllerClose(mgr.handle)
+		mgr.handle = nil
+	}
+}
+
+// controller_button_to_gb_button は pad_map(config.odinのdefault_pad_map/bbl.iniのpad_*)の
+// 逆引き(SDLボタン -> GBボタン)を行う純粋関数。core.Buttonは8種類しかないので線形探索で十分。
+controller_button_to_gb_button :: proc(
+	pad_map: [core.Button]sdl.GameControllerButton,
+	sdl_button: sdl.GameControllerButton,
+) -> (
+	button: core.Button,
+	ok: bool,
+) {
+	for b in core.Button {
+		if pad_map[b] == sdl_button {
+			return b, true
+		}
+	}
+	return .A, false
+}
+
+// input_handle_controller_button_event は SDL_CONTROLLERBUTTONDOWN/UP イベント1件を
+// joypad の状態へ反映する。
+input_handle_controller_button_event :: proc(
+	emu: ^core.Emulator,
+	pad_map: [core.Button]sdl.GameControllerButton,
+	event: sdl.ControllerButtonEvent,
+	pressed: bool,
+) {
+	button, ok := controller_button_to_gb_button(pad_map, sdl.GameControllerButton(event.button))
+	if !ok {
+		return
+	}
+	core.joypad_set_button(&emu.bus, button, pressed)
+}
+
+// controller_axis_to_buttons は左スティックの軸(LEFTX/LEFTY)に対応する正/負方向のGBボタンを
+// 返す(十字キー相当)。右スティック・トリガーは割当てない(ok=false)。
+// #partial switchの理由はinput_key_to_buttonと同じ(sdl.GameControllerAxisは対応しない値の
+// 方が多い巨大列挙型で、網羅を強制する価値が無い)。
+controller_axis_to_buttons :: proc(
+	axis: sdl.GameControllerAxis,
+) -> (
+	positive: core.Button,
+	negative: core.Button,
+	ok: bool,
+) {
+	#partial switch axis {
+	case .LEFTX:
+		return .Right, .Left, true
+	case .LEFTY:
+		return .Down, .Up, true
+	}
+	return .A, .A, false
+}
+
+// input_handle_controller_axis_event は SDL_CONTROLLERAXISMOTION イベント1件を
+// デッドゾーン付きでjoypadの状態へ反映する(T8-5「落とし穴」)。
+input_handle_controller_axis_event :: proc(emu: ^core.Emulator, event: sdl.ControllerAxisEvent) {
+	positive, negative, ok := controller_axis_to_buttons(sdl.GameControllerAxis(event.axis))
+	if !ok {
+		return
+	}
+	if event.value > CONTROLLER_DEADZONE {
+		core.joypad_set_button(&emu.bus, positive, true)
+		core.joypad_set_button(&emu.bus, negative, false)
+	} else if event.value < -CONTROLLER_DEADZONE {
+		core.joypad_set_button(&emu.bus, negative, true)
+		core.joypad_set_button(&emu.bus, positive, false)
+	} else {
+		core.joypad_set_button(&emu.bus, positive, false)
+		core.joypad_set_button(&emu.bus, negative, false)
+	}
 }

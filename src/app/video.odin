@@ -23,7 +23,9 @@ Video :: struct {
 }
 
 video_init :: proc(scale: int, fullscreen: bool, shader: Shader_Kind) -> (video: Video, ok: bool) {
-	if sdl.Init(sdl.INIT_VIDEO) != 0 {
+	// INIT_GAMECONTROLLER はここでまとめて初期化する(T8-5)。GameControllerは
+	// INIT_JOYSTICKを内包するため個別に指定する必要は無い。
+	if sdl.Init(sdl.INIT_VIDEO | sdl.INIT_GAMECONTROLLER) != 0 {
 		fmt.eprintfln("SDL_Init に失敗しました: %s", sdl.GetError())
 		return video, false
 	}

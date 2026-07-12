@@ -140,6 +140,12 @@ run_rom_window :: proc(opts: Options, cfg: Config) {
 	// セーブステートショートカット(T7-4)のスロット状態。F1-F4でここのstate_slotが変わる。
 	input_state := input_state_default()
 
+	// ゲームコントローラー(T8-5)。起動時に既に挿さっている1台を開く。未接続でもok
+	// (controllers.handleがnilのまま、以降のボタン/軸イベントは単に発生しない)。
+	controllers: Controller_Manager
+	controller_manager_open_first_available(&controllers)
+	defer controller_manager_destroy(&controllers)
+
 	running := true
 	for running {
 		event: sdl.Event
@@ -162,6 +168,16 @@ run_rom_window :: proc(opts: Options, cfg: Config) {
 				handle_shortcut_action(action, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
 			case .KEYUP:
 				input_handle_key_event(emu, event.key, false)
+			case .CONTROLLERDEVICEADDED:
+				controller_manager_handle_added(&controllers, event.cdevice.which)
+			case .CONTROLLERDEVICEREMOVED:
+				controller_manager_handle_removed(&controllers, sdl.JoystickID(event.cdevice.which))
+			case .CONTROLLERBUTTONDOWN:
+				input_handle_controller_button_event(emu, default_pad_map(), event.cbutton, true)
+			case .CONTROLLERBUTTONUP:
+				input_handle_controller_button_event(emu, default_pad_map(), event.cbutton, false)
+			case .CONTROLLERAXISMOTION:
+				input_handle_controller_axis_event(emu, event.caxis)
 			}
 		}
 
