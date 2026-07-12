@@ -3,8 +3,11 @@ package main
 import "base:runtime"
 import "core:fmt"
 import "core:os"
+import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 import "core:terminal"
+import core "bbl:core"
 
 // tui.odin: Claude Code 風 TUI の基盤(T9-1)。
 // 設計方針(phase-09-tui.md「TUI の設計方針」): 依存ライブラリなし、ANSI エスケープ +
@@ -337,6 +340,30 @@ tui_exit_process :: proc(code: int) -> ! {
 	os.exit(code)
 }
 
+// --- 代替スクリーンの一時退避(T9-2: ROM選択→ゲーム実行→ROM選択の往復) ---
+// raw mode(ECHO/ICANON off)は「代替スクリーン表示中か」とは独立した状態にしてある
+// (T9-5でゲーム実行中もターミナルからホットキーを受け付ける設計のため、raw mode 自体は
+// ゲーム実行中も維持し続け、代替スクリーンだけ抜ける)。tui_force_restore はどちらの
+// 状態からでも安全に両方まとめて復元できる(ALT_SCREEN_EXITは既に代替スクリーン外でも
+// 端末側で無視される冪等なシーケンスなので、サブ状態を追跡する必要が無い)。
+
+// tui_suspend_for_game は ROM 選択画面から SDL ゲーム実行へ移る前に呼ぶ: 代替スクリーンを
+// 抜けてカーソルを表示し(SDLウィンドウが主役になるため、起動元ターミナルはBluePrint
+// 「TUIを活かすアイデア」のステータス行表示に使う、T9-4)、ターミナル読み取りを
+// 完全ノンブロッキング(VMIN=0/VTIME=0)に切り替える(T9-5「メインループを止めない」)。
+tui_suspend_for_game :: proc() {
+	tui_plat_write_raw(CURSOR_SHOW)
+	tui_plat_write_raw(ALT_SCREEN_EXIT)
+	tui_plat_set_read_timeout_deciseconds(0)
+}
+
+// tui_resume_from_game は SDL ゲーム終了後に ROM 選択画面へ戻るときに呼ぶ。
+tui_resume_from_game :: proc() {
+	tui_plat_write_raw(ALT_SCREEN_ENTER)
+	tui_plat_write_raw(CURSOR_HIDE)
+	tui_plat_set_read_timeout_deciseconds(1)
+}
+
 // --- 端末サイズ ---
 
 TERM_FALLBACK_COLS :: 80
@@ -390,27 +417,195 @@ key_reader_poll :: proc(kr: ^Key_Reader) -> (event: Key_Event, ok: bool) {
 	return ev, true
 }
 
-// --- T9-1 デモ画面 ---
+// --- ROM 選択画面(T9-2) ---
+// BluePrint「Claude Codeなどに見られる TUI も提供する」。T4-1 の core.cartridge_parse_header_lite
+// を再利用してヘッダの MBC種別/CGBフラグだけを読む(落とし穴: ファイル先頭 HEADER_MIN_LEN
+// バイトだけ読む。巨大ディレクトリでの全ROM全読み込み禁止)。
 
-// tui_run_demo は T9-1 の完了条件「デモ画面(枠+カーソル移動)が表示され、q で元のターミナル
-// 状態に完全復元される」を満たす最小デモ。矢印キーでカーソル(▸)を上下に動かし、q/Escで終了する。
-// この画面が使う tui_render_frame / Tui_Frame は T9-2 で実際の ROM 一覧描画にそのまま再利用する。
-tui_run_demo :: proc() {
-	items := []List_Item {
-		{label = "デモ項目 1", info = "(A)"},
-		{label = "デモ項目 2", info = "(B)"},
-		{label = "デモ項目 3", info = "(C)"},
+ROM_EXT_GB :: ".gb"
+ROM_EXT_GBC :: ".gbc"
+
+// is_rom_filename はファイル名が .gb/.gbc(大小文字区別なし)で終わるかを返す(純粋関数)。
+is_rom_filename :: proc(name: string) -> bool {
+	lower := strings.to_lower(name, context.temp_allocator)
+	return strings.has_suffix(lower, ROM_EXT_GB) || strings.has_suffix(lower, ROM_EXT_GBC)
+}
+
+// mbc_kind_label / cartridge_info_label は core.Cartridge_Info を表示用ラベルへ変換する
+// 純粋関数(単体テスト対象)。TUI設計方針のモックアップ「(MBC5, CGB)」「(MBC1)」の形式。
+mbc_kind_label :: proc(kind: core.Mbc_Kind) -> string {
+	switch kind {
+	case .Rom_Only:
+		return "ROM ONLY"
+	case .Mbc1:
+		return "MBC1"
+	case .Mbc2:
+		return "MBC2"
+	case .Mbc3:
+		return "MBC3"
+	case .Mbc5:
+		return "MBC5"
 	}
+	return "?"
+}
+
+cartridge_info_label :: proc(info: core.Cartridge_Info, allocator := context.allocator) -> string {
+	kind_label := mbc_kind_label(info.mbc_kind)
+	if info.cgb_flag == .Dmg_Only {
+		return fmt.aprintf("(%s)", kind_label, allocator = allocator)
+	}
+	return fmt.aprintf("(%s, CGB)", kind_label, allocator = allocator)
+}
+
+// read_rom_header_label はROMファイルの先頭 HEADER_MIN_LEN バイトだけを読んで表示ラベルを
+// 返す(戻り値は呼び出し側が delete する所有権付き文字列)。読み込み/解析に失敗しても
+// 一覧表示自体は止めない(その旨のラベルを返すだけ)。
+read_rom_header_label :: proc(path: string) -> string {
+	f, open_err := os.open(path)
+	if open_err != nil {
+		return strings.clone("(読み込み不可)")
+	}
+	defer os.close(f)
+
+	buf: [core.HEADER_MIN_LEN]u8
+	n, read_err := os.read(f, buf[:])
+	if read_err != nil || n < core.HEADER_MIN_LEN {
+		return strings.clone("(不明)")
+	}
+
+	info, err := core.cartridge_parse_header_lite(buf[:])
+	if err != .None {
+		return strings.clone("(未対応)")
+	}
+	return cartridge_info_label(info)
+}
+
+Browser_Entry_Kind :: enum {
+	Parent,
+	Directory,
+	Rom,
+}
+
+Browser_Entry :: struct {
+	kind: Browser_Entry_Kind,
+	name: string, // 表示名(所有)
+	path: string, // フルパス(所有): Rom は起動対象、Directory/Parent は移動先
+	info: string, // 右寄せ情報。Rom 以外は空文字(所有)
+}
+
+@(private = "file")
+browser_entries_delete :: proc(entries: []Browser_Entry) {
+	for e in entries {
+		delete(e.name)
+		delete(e.path)
+		delete(e.info)
+	}
+	delete(entries)
+}
+
+@(private = "file")
+browser_entry_less :: proc(a, b: Browser_Entry) -> bool {
+	return a.name < b.name
+}
+
+// scan_rom_directory は dir 直下(絶対パスを渡すこと)を列挙し、「..」(親ディレクトリ、
+// dir がルートでない限り) → サブディレクトリ(名前順) → .gb/.gbcファイル(名前順)の順で
+// Browser_Entry のスライスを返す。失敗時 ok=false(呼び出し側は直前の一覧を保持し続ける想定)。
+scan_rom_directory :: proc(dir: string) -> (entries: []Browser_Entry, ok: bool) {
+	infos, err := os.read_all_directory_by_path(dir, context.allocator)
+	if err != nil {
+		return nil, false
+	}
+	defer os.file_info_slice_delete(infos, context.allocator)
+
+	dirs := make([dynamic]Browser_Entry, 0, len(infos))
+	roms := make([dynamic]Browser_Entry, 0, len(infos))
+	defer delete(dirs)
+	defer delete(roms)
+
+	for info in infos {
+		#partial switch info.type {
+		case .Directory:
+			append(&dirs, Browser_Entry{kind = .Directory, name = strings.clone(info.name), path = strings.clone(info.fullpath)})
+		case .Regular:
+			if is_rom_filename(info.name) {
+				path := strings.clone(info.fullpath)
+				label := read_rom_header_label(path)
+				append(&roms, Browser_Entry{kind = .Rom, name = strings.clone(info.name), path = path, info = label})
+			}
+		case:
+		// シンボリックリンク・特殊ファイル等は対象外(BluePrintのスコープ外機能に相当する複雑さを避ける)。
+		}
+	}
+
+	slice.sort_by(dirs[:], browser_entry_less)
+	slice.sort_by(roms[:], browser_entry_less)
+
+	result := make([dynamic]Browser_Entry, 0, len(dirs) + len(roms) + 1)
+	// filepath.dir(os.dir) は dir を指す借用スライスを返す(確保しない)ので、
+	// Browser_Entry へ格納する前に clone して所有権を持たせる。
+	parent := filepath.dir(dir)
+	if parent != dir {
+		// 落とし穴(実装中に検証で発見、malloc: pointer being freed was not allocated で顕在化):
+		// name に文字列リテラル ".." をそのまま入れると、browser_entries_delete が全フィールドを
+		// delete() する際にヒープ確保でない静的データを free しようとしてクラッシュする。
+		// 他のフィールド(Directory/Romのname)は strings.clone 済みなので、ここも合わせる。
+		append(&result, Browser_Entry{kind = .Parent, name = strings.clone(".."), path = strings.clone(parent)})
+	}
+	append(&result, ..dirs[:])
+	append(&result, ..roms[:])
+
+	return result[:], true
+}
+
+// --- ROM ブラウザ画面 ---
+
+Rom_Browser_Result :: enum {
+	Quit,
+	Launch,
+}
+
+// tui_run_rom_browser はディレクトリを移動しながら ROM を選ぶ画面(T9-2)。
+// Enter で ROM を選ぶと Rom_Browser_Result.Launch + そのフルパスを返す(呼び出し側が
+// tui_suspend_for_game → 起動 → tui_resume_from_game する)。q/Esc で Quit を返す。
+tui_run_rom_browser :: proc(start_dir: string) -> (result: Rom_Browser_Result, rom_path: string) {
+	cwd, abs_err := filepath.abs(start_dir)
+	if abs_err != nil {
+		cwd = strings.clone(".")
+	}
+	// cwd も entries と同じ理由(上記コメント参照)でブロックdeferにする: ディレクトリ移動時に
+	// `delete(cwd); cwd = next` と再代入されるため、単純な defer だと最初の値を二重解放する。
+	defer {
+		delete(cwd)
+	}
+
+	entries: []Browser_Entry
+	scan_ok: bool
+	entries, scan_ok = scan_rom_directory(cwd)
+	// 落とし穴(実装中に検証で発見、malloc: pointer being freed was not allocated で顕在化):
+	// `defer browser_entries_delete(entries)` (単一のcall文)だと引数はdefer文の実行時点で
+	// 即時評価される(Goのdeferと同じ挙動)。entries は reload() 内で &entries 経由で
+	// 再代入されるため、単純な defer だと「最初のスキャン結果」を捕まえたまま関数末尾で
+	// もう一度解放してしまい、reload() が既に解放済みの内容を二重解放していた。
+	// ブロック `defer { ... }` にすると、ブロック内の変数参照は実行時(関数末尾)に
+	// 評価される通常の変数読み取りになるため、常に「その時点の最新の entries」を解放できる。
+	defer {
+		browser_entries_delete(entries)
+	}
+
 	selected := 0
 	kr: Key_Reader
-
-	// dirty: 「今の画面内容がまだ描画されていない」を表す。落とし穴(実装中に検証で発見):
-	// ループの毎回 tui_write_frame するとキー入力が無いアイドル中も高頻度(30msごと)に
-	// 全画面書き込みが走り続け、端末側の読み出しが追いつかない状況(遅い端末エミュレータ、
-	// 自動テストのパイプ等)で write が長時間ブロックしうる。「状態が変わった時だけ描画」に
-	// することでアイドル中の書き込みを完全に無くす(ちらつき防止の観点でも本来この方が正しい)。
 	last_cols, last_rows := -1, -1
 	dirty := true
+	status := scan_ok ? "" : fmt.tprintf("ディレクトリを読み込めません: %s", cwd)
+
+	reload :: proc(cwd: string, entries: ^[]Browser_Entry, selected: ^int, status: ^string) {
+		browser_entries_delete(entries^)
+		new_entries, ok := scan_rom_directory(cwd)
+		entries^ = new_entries
+		selected^ = 0
+		status^ = ok ? "" : fmt.tprintf("ディレクトリを読み込めません: %s", cwd)
+	}
 
 	for {
 		cols, rows := tui_term_size()
@@ -420,14 +615,23 @@ tui_run_demo :: proc() {
 		}
 
 		if dirty {
+			items := make([]List_Item, len(entries), context.temp_allocator)
+			for e, i in entries {
+				label := e.name
+				if e.kind == .Directory {
+					label = fmt.tprintf("%s/", e.name)
+				}
+				items[i] = List_Item{label = label, info = e.info}
+			}
 			frame := Tui_Frame {
 				cols     = cols,
 				rows     = rows,
-				title    = fmt.tprintf("BubiBoyLite v%s (デモ)", VERSION),
-				heading  = "矢印キーでカーソルを動かせます",
+				title    = fmt.tprintf("BubiBoyLite v%s", VERSION),
+				heading  = fmt.tprintf("ROM を選択してください  [%s]", cwd),
+				status   = status,
 				items    = items,
 				selected = selected,
-				footer   = "↑↓ 選択  q 終了",
+				footer   = "↑↓ 選択  Enter 起動/移動  q 終了",
 			}
 			tui_write_frame(frame)
 			dirty = false
@@ -440,27 +644,42 @@ tui_run_demo :: proc() {
 		}
 		#partial switch ev.key {
 		case .Up:
-			if selected > 0 {
+			if len(entries) > 0 && selected > 0 {
 				selected -= 1
 				dirty = true
 			}
 		case .Down:
-			if selected < len(items) - 1 {
+			if len(entries) > 0 && selected < len(entries) - 1 {
 				selected += 1
 				dirty = true
 			}
+		case .Enter:
+			if len(entries) == 0 {
+				break
+			}
+			chosen := entries[selected]
+			#partial switch chosen.kind {
+			case .Rom:
+				return .Launch, strings.clone(chosen.path)
+			case .Parent, .Directory:
+				next := strings.clone(chosen.path)
+				delete(cwd)
+				cwd = next
+				reload(cwd, &entries, &selected, &status)
+				dirty = true
+			}
 		case .Escape:
-			return
+			return .Quit, ""
 		case .Char:
 			if ev.ch == 'q' {
-				return
+				return .Quit, ""
 			}
 		}
 	}
 }
 
-// run_tui は main.odin から呼ばれるエントリポイント(T9-1時点ではデモのみ、T9-2以降で
-// ROM選択に置き換える)。非TTYなら起動せずエラー+exit 1(T9-1完了条件)。
+// run_tui は main.odin から呼ばれるエントリポイント。非TTYなら起動せずエラー+exit 1
+// (T9-1完了条件)。ROM選択→起動→終了後にROM選択へ戻る、を q で抜けるまで繰り返す(T9-2)。
 run_tui :: proc(opts: Options, cfg: Config) {
 	if !tui_available() {
 		fmt.eprintln("TUI を起動できません: 標準入出力が端末(TTY)に接続されていません")
@@ -472,12 +691,28 @@ run_tui :: proc(opts: Options, cfg: Config) {
 	}
 	// context.assertion_failure_proc は「代入した proc から呼ばれる範囲」にしか効かない
 	// (tui_enter 側コメント参照)ので、ここ(TUIを実際に動かす run_tui 自身)で設定する。
-	// これにより tui_run_demo 以降(将来の ROM 一覧・ゲーム起動フロー含む)の panic() を
-	// 全てここで捕捉できる。
 	context.assertion_failure_proc = tui_assertion_failure
 	defer tui_exit() // 通常のreturn経路(qで抜けた場合)ではdeferで問題ない。
 	// 異常系(シグナル/panic)は tui_plat_install_crash_restore(シグナル) と
 	// context.assertion_failure_proc(panic/assert) の両方で復元される。
 
-	tui_run_demo()
+	start_dir := strings.trim_space(cfg.rom_dir) != "" ? cfg.rom_dir : "."
+
+	for {
+		result, rom_path := tui_run_rom_browser(start_dir)
+		if result == .Quit {
+			return
+		}
+		defer delete(rom_path)
+
+		// T9-2「選択してEnter→TUIを一時停止(画面復元)→SDLでゲーム実行→ゲーム終了後TUIに戻る」。
+		// 落とし穴: run_rom_window はROM読み込み/SDL初期化失敗時に os.exit(1) する
+		// (これ自体はTUI起動前から既存の挙動)。その場合ターミナルは既に代替スクリーン外
+		// (tui_suspend_for_game 済み)なので復元は壊れない。
+		tui_suspend_for_game()
+		game_opts := opts
+		game_opts.rom_path = rom_path
+		run_rom_window(game_opts, cfg)
+		tui_resume_from_game()
+	}
 }

@@ -221,3 +221,36 @@ test_cartridge_cgb_flag_classification :: proc(t: ^testing.T) {
 	info_only, _ := core.cartridge_parse_header(rom_only)
 	testing.expect(t, info_only.cgb_flag == .Cgb_Only)
 }
+
+// cartridge_parse_header_lite の単体テスト(T9-2)。TUIのROM一覧はファイル先頭
+// HEADER_MIN_LEN(0x150)バイトだけを読むため、ROM全体サイズの申告(rom_size_code)が
+// 実データよりずっと大きい「truncated」なバッファでも MBC種別/CGBフラグ/タイトルまで
+// 正しく取れることを確認する(通常版の cartridge_parse_header は同じ入力に対して
+// Rom_Smaller_Than_Header を返すはずで、それとの違いも合わせて検証する)。
+@(test)
+test_cartridge_parse_header_lite_truncated_buffer :: proc(t: ^testing.T) {
+	// ヘッダは1MiB(rom_size_code=0x05)を申告するが、実データはHEADER_MIN_LEN(0x150)ぴったり
+	// しか無い(TUIが実際に読む量を模している)。
+	rom := make_header(core.HEADER_MIN_LEN, 0x1B, 0x05, 0x03, 0x80, "TESTGAME") // MBC5+RAM+BATTERY
+	defer delete(rom)
+
+	lite_info, lite_err := core.cartridge_parse_header_lite(rom)
+	testing.expect(t, lite_err == .None)
+	testing.expect(t, lite_info.mbc_kind == .Mbc5)
+	testing.expect(t, lite_info.has_battery)
+	testing.expect(t, lite_info.cgb_flag == .Cgb_Enhanced)
+	testing.expect(t, lite_info.title == "TESTGAME")
+
+	// 通常版は同じ切り詰めバッファに対して Rom_Smaller_Than_Header を返す(1MiB申告 vs 実際0x150)。
+	full_info, full_err := core.cartridge_parse_header(rom)
+	testing.expect(t, full_err == .Rom_Smaller_Than_Header)
+	testing.expect(t, full_info.mbc_kind == .Mbc5, "サイズ検証で落ちる前の分類結果は保持される")
+}
+
+@(test)
+test_cartridge_parse_header_lite_header_too_small :: proc(t: ^testing.T) {
+	rom := make([]u8, 0x100) // HEADER_MIN_LEN未満
+	defer delete(rom)
+	_, err := core.cartridge_parse_header_lite(rom)
+	testing.expect(t, err == .Header_Too_Small)
+}

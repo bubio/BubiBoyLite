@@ -57,7 +57,31 @@ Cartridge_Info :: struct {
 // cartridge_parse_header は ROM 全体のバイト列からヘッダを解析する。
 // rom の所有権は呼び出し側に残る(title は rom を指す借用スライスなので、
 // Cartridge_Info を使う間は rom を解放しないこと)。
+// 実際にロードして実行する経路(cartridge_init)はこちらを使う: rom 全体のサイズが
+// ヘッダの申告する ROM サイズ以上あるかを検証する(Rom_Smaller_Than_Header)。
 cartridge_parse_header :: proc(rom: []u8) -> (info: Cartridge_Info, err: Cartridge_Parse_Error) {
+	info, err = cartridge_parse_header_lite(rom)
+	if err != .None {
+		return info, err
+	}
+
+	// cartridge_parse_header_lite は既に rom_size_from_code の成否を検証済みなので、
+	// ここでは ok を無視して rom_bytes だけ再取得する(重複計算だが早期returnで安いため許容)。
+	_, rom_bytes, _ := rom_size_from_code(rom[HEADER_ROM_SIZE_ADDR])
+	if len(rom) < rom_bytes {
+		return info, .Rom_Smaller_Than_Header
+	}
+
+	return info, .None
+}
+
+// cartridge_parse_header_lite は cartridge_parse_header の軽量版。ROM 全体のサイズ検証
+// (Rom_Smaller_Than_Header)を行わない代わりに、HEADER_MIN_LEN(0x0150)バイトさえあれば
+// MBC種別/CGBフラグ/タイトルまで含めて解析できる(TUIのROM一覧表示のように、実行しない
+// ROMのヘッダだけを大量に読みたい用途向け。T9-2「ROM一覧のヘッダ読みはファイル先頭
+// 0x150バイトだけ読む」)。実際にロードして実行する場合は cartridge_parse_header
+// (cartridge_init 経由)を使うこと。
+cartridge_parse_header_lite :: proc(rom: []u8) -> (info: Cartridge_Info, err: Cartridge_Parse_Error) {
 	if len(rom) < HEADER_MIN_LEN {
 		return {}, .Header_Too_Small
 	}
@@ -73,7 +97,7 @@ cartridge_parse_header :: proc(rom: []u8) -> (info: Cartridge_Info, err: Cartrid
 	info.has_battery = has_battery
 	info.has_rtc = has_rtc
 
-	rom_banks, rom_bytes, rom_size_ok := rom_size_from_code(rom[HEADER_ROM_SIZE_ADDR])
+	rom_banks, _, rom_size_ok := rom_size_from_code(rom[HEADER_ROM_SIZE_ADDR])
 	if !rom_size_ok {
 		return info, .Unsupported_Rom_Size
 	}
@@ -91,10 +115,6 @@ cartridge_parse_header :: proc(rom: []u8) -> (info: Cartridge_Info, err: Cartrid
 		info.ram_size = ram_bytes
 	case:
 		info.ram_size = 0
-	}
-
-	if len(rom) < rom_bytes {
-		return info, .Rom_Smaller_Than_Header
 	}
 
 	info.cgb_flag = classify_cgb_flag(rom[HEADER_CGB_FLAG_ADDR])

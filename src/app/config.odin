@@ -21,6 +21,7 @@ Config :: struct {
 	shader:     Shader_Kind,
 	save_dir:   string, // 空 = ROM と同じ場所(T8-4で使用)
 	state_dir:  string, // 空 = ROM と同じ場所(T8-4で使用)
+	rom_dir:    string, // 空 = 実行ファイルのカレントディレクトリ(T9-2、TUIのROM一覧の起動ディレクトリ)
 	volume:     int, // 0-100
 	key_map:    [core.Button]sdl.Keycode,
 	pad_map:    [core.Button]sdl.GameControllerButton,
@@ -68,6 +69,7 @@ default_config :: proc() -> Config {
 		shader = .Nearest,
 		save_dir = "",
 		state_dir = "",
+		rom_dir = "",
 		volume = DEFAULT_VOLUME,
 		key_map = default_key_map(),
 		pad_map = default_pad_map(),
@@ -172,13 +174,16 @@ config_apply_raw :: proc(base: Config, raw: map[string]string) -> Config {
 		}
 	}
 
-	// save_dir/state_dir は Config として長生きするため、raw (text の一部を指すスライス) を
-	// そのまま持たせず clone する(config_parse_ini の docコメント参照)。
+	// save_dir/state_dir/rom_dir は Config として長生きするため、raw (text の一部を指す
+	// スライス) をそのまま持たせず clone する(config_parse_ini の docコメント参照)。
 	if v, ok := raw["save_dir"]; ok {
 		cfg.save_dir = strings.clone(v)
 	}
 	if v, ok := raw["state_dir"]; ok {
 		cfg.state_dir = strings.clone(v)
+	}
+	if v, ok := raw["rom_dir"]; ok {
+		cfg.rom_dir = strings.clone(v)
 	}
 
 	if v, ok := raw["volume"]; ok {
@@ -299,6 +304,9 @@ config_render_default_ini :: proc() -> string {
 
 	strings.write_string(&b, "# ステートファイル(.state)の保存先ディレクトリ。空欄ならROMファイルと同じ場所。\n")
 	strings.write_string(&b, fmt.tprintf("state_dir = %s\n\n", cfg.state_dir))
+
+	strings.write_string(&b, "# TUI(bblを引数無しで起動した時)のROM一覧が開く起動ディレクトリ。空欄ならカレントディレクトリ。\n")
+	strings.write_string(&b, fmt.tprintf("rom_dir = %s\n\n", cfg.rom_dir))
 
 	strings.write_string(&b, "# 音量 (0-100)\n")
 	strings.write_string(&b, fmt.tprintf("volume = %d\n\n", cfg.volume))
