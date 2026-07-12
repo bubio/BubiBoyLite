@@ -594,3 +594,49 @@ mbc_import_ram :: proc(cart: ^Cartridge, data: []u8) -> bool {
 	}
 	return false
 }
+
+// --- RTC永続化(.rtc)向けエクスポート/インポート(T7-3) ---
+// app 側(src/app/saveram.odin)はこれらだけを使い、Mbc3_State を意識しなくてよい
+// (mbc_export_ram/mbc_import_ram と同じ位置づけ)。MBC3 以外・RTC無しカートリッジは ok=false。
+
+// mbc_export_rtc は MBC3 の RTC(ライブレジスタ・直近ラッチのスナップショット・ラッチ準備
+// フラグ・基準UNIX時刻)を返す。
+mbc_export_rtc :: proc(
+	cart: ^Cartridge,
+) -> (
+	rtc: [5]u8,
+	latched_rtc: [5]u8,
+	latch_prepared: bool,
+	rtc_base_unix: i64,
+	ok: bool,
+) {
+	if !cart.info.has_rtc {
+		return {}, {}, false, 0, false
+	}
+	switch state in cart.mbc {
+	case Mbc3_State:
+		return state.rtc, state.latched_rtc, state.latch_prepared, state.rtc_base_unix, true
+	case Mbc_None, Mbc1_State, Mbc2_State, Mbc5_State:
+	}
+	return {}, {}, false, 0, false
+}
+
+// mbc_import_rtc は渡された値を MBC3 の RTC へそのまま書き戻す(時刻は進めない、単純代入)。
+// 「保存時からの経過秒をRTCへ加算する」処理自体は呼び出し側(app)が、この関数の直後に
+// emulator_set_wall_clock を呼ぶことで mbc3_advance_rtc(既存のテスト済みロジック、DH bit6
+// 停止中は加算しない・桁あふれ計算込み)へ委譲する設計(T7-3)。
+mbc_import_rtc :: proc(cart: ^Cartridge, rtc: [5]u8, latched_rtc: [5]u8, latch_prepared: bool, rtc_base_unix: i64) -> bool {
+	if !cart.info.has_rtc {
+		return false
+	}
+	switch &state in cart.mbc {
+	case Mbc3_State:
+		state.rtc = rtc
+		state.latched_rtc = latched_rtc
+		state.latch_prepared = latch_prepared
+		state.rtc_base_unix = rtc_base_unix
+		return true
+	case Mbc_None, Mbc1_State, Mbc2_State, Mbc5_State:
+	}
+	return false
+}

@@ -72,6 +72,23 @@ run_rom_window :: proc(opts: Options) {
 		}
 	}
 
+	// MBC3 RTC の永続化(.rtc、T7-3)。保存されていた基準UNIX時刻から現在時刻までの経過秒を
+	// core.emulator_set_wall_clock 経由でRTCへ反映する(mbc3_advance_rtcの停止ビット/桁あふれ
+	// 処理をそのまま再利用する。落とし穴: 停止ビット(DH bit6)が立っていれば加算されない)。
+	// .rtc が無い(初回起動)場合や RTC非搭載カートリッジでも emulator_set_wall_clock 自体は
+	// 無害(mbc_sync_wall_clock 内で has_rtc ガードされる)なので、常に一度呼んで基準点を打つ。
+	rtc_path := rtc_path_for_rom(opts.rom_path)
+	if rtc_snapshot, rtc_load_ok := rtc_load(rtc_path); rtc_load_ok {
+		core.mbc_import_rtc(
+			&emu.bus.cart,
+			rtc_snapshot.rtc,
+			rtc_snapshot.latched_rtc,
+			rtc_snapshot.latch_prepared,
+			rtc_snapshot.rtc_base_unix,
+		)
+	}
+	core.emulator_set_wall_clock(emu, wall_clock_now())
+
 	video, video_ok := video_init(opts.scale, opts.fullscreen, opts.shader)
 	if !video_ok {
 		os.exit(1)
@@ -146,6 +163,7 @@ run_rom_window :: proc(opts: Options) {
 				save_idle_frames += 1
 				if save_idle_frames >= SAVE_IDLE_FRAMES {
 					save_ram_now(emu, save_path)
+					save_rtc_now(emu, rtc_path) // .savと同タイミングで.rtcも保存する(T7-3)
 					save_pending = false
 					save_idle_frames = 0
 				}
@@ -166,6 +184,7 @@ run_rom_window :: proc(opts: Options) {
 	// 終了時セーブ(T4-6)。バッテリー無し/外部RAM無しカートリッジでは save_ram_now が
 	// 何もせず戻る(core.mbc_export_ram の ok=false)。
 	save_ram_now(emu, save_path)
+	save_rtc_now(emu, rtc_path)
 }
 
 // save_ram_now はカートリッジの外部RAMをエクスポートし、.sav へアトミック書き込みする。
@@ -177,6 +196,26 @@ save_ram_now :: proc(emu: ^core.Emulator, save_path: string) {
 	defer delete(data)
 	if !save_ram_write_atomic(save_path, data) {
 		fmt.eprintfln("セーブの書き込みに失敗しました: %s", save_path)
+	}
+}
+
+// save_rtc_now は現在の壁時計をRTCへ反映してから(このセッション中に経過した実時間を
+// 取り込む)、MBC3のRTC状態を .rtc へアトミック書き込みする(T7-3)。RTC非搭載カートリッジ
+// では core.mbc_export_rtc が ok=false を返すので何もしない。
+save_rtc_now :: proc(emu: ^core.Emulator, rtc_path: string) {
+	core.emulator_set_wall_clock(emu, wall_clock_now())
+	rtc, latched_rtc, latch_prepared, rtc_base_unix, ok := core.mbc_export_rtc(&emu.bus.cart)
+	if !ok {
+		return
+	}
+	snapshot := Rtc_Snapshot {
+		rtc            = rtc,
+		latched_rtc    = latched_rtc,
+		latch_prepared = latch_prepared,
+		rtc_base_unix  = rtc_base_unix,
+	}
+	if !rtc_save(rtc_path, snapshot) {
+		fmt.eprintfln("RTCの書き込みに失敗しました: %s", rtc_path)
 	}
 }
 

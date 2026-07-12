@@ -53,7 +53,7 @@ odin test tests -collection:bbl=src   # ラウンドトリップテスト PASS
 
 ### T7-3: RTC 永続化 (.rtc)
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: MBC3 の RTC を電源断（プロセス終了）をまたいで進める。
 **作るもの**: `src/app/saveram.odin` 拡張:
@@ -111,3 +111,4 @@ odin test tests -collection:bbl=src
 
 2026-07-12 T7-1 完了: `src/core/savestate.odin` 新規作成(マジック"BBLS"+バージョンu32+ROMグローバルチェックサム2B+本体、全項目リトルエンディアン)。本体サイズを`savestate_expected_size`で事前計算し書き込みバッファをちょうどのサイズで確保する方式(範囲外アクセスを構造的に防止)。CPU全レジスタ/ime/halted/halt_bug/ime_delay/stopped/illegal_opcode_hit、VRAM全2バンク、WRAM全8バンク、OAM、HRAM、IO、IE、パレットRAM、HDMA状態、double_speed、Timer内部状態、PPU状態(レジスタ+モード+dot+window_line+framebuffer)、Joypad、DMA、APU(ch毎のタイマー/LFSR/エンベロープ/スイープ、フレームシーケンサ位置、NRレジスタ生値、wave RAM)、MBC状態(unionタグ+中身、MBC3のRTC含む)、外部RAMを保存。オーディオリングバッファ(apu.ring*)とMooneye判定用デバッグフラグ(cpu.debug_break_on_ld_b_b/ld_b_b_hit)、シリアル出力キャプチャは意図的に除外(落とし穴欄のとおり)。`tests/savestate_test.odin`新規作成、write→write決定性テストと外部RAM込みのround-tripテストで検証: `odin test tests -collection:bbl=src` 310 tests 全パス(304→310、既存テストの後退無し)。
 2026-07-12 T7-2 完了: savestate.odinの`savestate_read`は「マジック→バージョン→ROMチェックサム→本体サイズ充足」の順に検証し、いずれかで失敗したら emu へは一切書き込まず別々の`Load_Error`(.Bad_Magic/.Version_Mismatch/.Rom_Checksum_Mismatch/.Too_Small)を返す設計(全読み取りが本体サイズの事前一括チェックで保証されるため、一時Emulator+swapは不要。advisorでも「validate-before-mutateで十分」と確認済み)。`savestate_write`末尾に書き込みバイト数とサイズ計算の一致を検証する`assert`を追加(フォーマット変更時のサイズ計算更新漏れを即検出)。`src/app/statefile.odin`新規作成: `<ROM名>.state`(スロット2-4は`.state2`-`.state4`)の読み書きを`save_ram_write_atomic`/`save_ram_load`(saveram.odinの既存アトミック書き込み)で実装。`tests/statefile_test.odin`新規作成、パス導出・save/loadラウンドトリップ・破損データ別エラー・元状態無傷を検証: `odin test tests -collection:bbl=src` 315 tests 全パス(310→315)。
+2026-07-12 T7-3 完了: `src/core/mbc.odin`に`mbc_export_rtc`/`mbc_import_rtc`を追加(MBC3のRTCライブレジスタ・ラッチ済み・ラッチ準備フラグ・基準UNIX時刻を単純に入出力するだけで、経過時間の加算自体はしない設計)。`src/app/saveram.odin`拡張: `<ROM名>.rtc`(マジック"BBLR"+バージョンu8+RTC5B+ラッチ済み5B+latch_prepared1B+基準UNIX時刻i64=24バイト固定)を`save_ram_write_atomic`で書き込む`rtc_save`/`rtc_load`、パス導出`rtc_path_for_rom`、壁時計取得`wall_clock_now`(core:time)を追加。`src/app/main.odin`を配線: ROM読み込み直後に.rtcがあれば`core.mbc_import_rtc`でインポートし、直後に`core.emulator_set_wall_clock`を呼んで既存のテスト済み`mbc3_advance_rtc`(DH bit6停止中は加算しない・512日での桁あふれ処理込み)に経過秒の反映を委譲する(advisor助言どおり「ロード済みロジックの再利用」)。.savの自動保存(アイドル60フレーム)と終了時に合わせて`save_rtc_now`(直前に壁時計を反映してから書き出し)を呼ぶことで、プロセスの生存期間中に経過した実時間もセッションをまたいで蓄積される。`tests/rtc_persist_test.odin`新規作成: .rtcファイルのラウンドトリップ・破損マジック拒否・DoD本体(1時間後を注入してのRTC進行)・停止ビット時の非進行を検証: `odin test tests -collection:bbl=src` 322 tests 全パス(315→322)。
