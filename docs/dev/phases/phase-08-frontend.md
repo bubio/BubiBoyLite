@@ -186,5 +186,5 @@ odin test tests -collection:bbl=src
 - `.sav`保存場所: デフォルト(save_dir空欄)でROMと同じディレクトリにmygame.savが生成されることと、save_dir指定時に`~`展開先へ生成されること(T8-4検証ログのosascript実機テスト)の両方を確認。
 - キーボード操作: 全8ボタン(十字キー/A/B/Start/Select)+ショートカット(F1-F5,F7,Esc,Alt+Enter/Cmd+Enter)を単体テストで反映確認済み(input_handle_key_event/input_handle_shortcut_key/input_is_fullscreen_toggle)。実バイナリでのキー入力そのものの目視確認は行っていないが、joypadレジスタへの反映はcore.Emulatorを使った統合テストで検証済み。コントローラーはT8-5/T8-6検証ログの通り実機未確認(ハードウェア無し)。ホットプラグ・デッドゾーン・A/Bの物理配置反転(SDL.B→GB.A)は単体テストとコード確認のみ。
 - 実BIOS: `grep -rin "bios"` はコア実装のコメント(「実BIOSは読み込まない」という方針説明)のみがヒットし、`--bios`等のCLIオプションやブートROM読み込みコードは存在しないことを確認。
-- ユーザー名: `git grep -i seiji` はヒット0(exit code 1)。
+- ユーザー名: `git grep -i "$(whoami)"` はヒット0(exit code 1)。
 以上により、フェーズ8のマイルストーン(BluePrint記載の全CLIオプションが仕様どおり + 初回起動で設定ファイル自動生成)を達成したと判断する。**未確認事項の明記**: 実ゲームコントローラーでの操作感、実キー入力によるAlt+Enter/Cmd+Enterのライブなフルスクリーン切替は、開発環境に対話的GUI操作手段が無いため目視確認できていない(コード実装・単体テスト・screencaptureによる静的確認のみ)。
