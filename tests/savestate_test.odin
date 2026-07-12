@@ -302,3 +302,83 @@ test_savestate_deterministic_replay_after_restore :: proc(t: ^testing.T) {
 		hash_after_first_replay,
 	)
 }
+
+// test_savestate_deterministic_replay_after_restore_cgb は上と同じ手順を CGB モードの
+// ROM(cgb-acid2)で行う(advisor助言: 上のテストは 01-special.gb がDMGモードで起動するため
+// パレットRAM・VRAMバンク1・WRAMバンク2-7・BCPS/OCPSといったCGB専用フィールドを一度も
+// 動かさない。それらのフィールドで書き込み/読み出しの順序がずれていても、常にデフォルト値
+// (ゼロ)のままなら両方のwriteが偶然一致してこのテストは検出できない。CGB ROMで同じ手順を
+// 踏むことで、その死角を塞ぐ)。
+// フレーム区間は事前にscratchpadでフレーム毎のframebufferハッシュを調査して選定
+// (frame0-12:無地→frame13で変化開始→frame14で確定・以後静止。落とし穴チェックのため
+// N=10(まだ無地)で保存しM=6(frame10→16、frame13の変化を跨ぐ)を実行する)。
+@(private = "file")
+CGB_MILESTONE_ROM_PATH :: "tests/roms/acid2/cgb-acid2.gbc"
+
+@(private = "file")
+CGB_MILESTONE_N_FRAMES :: 10
+@(private = "file")
+CGB_MILESTONE_M_FRAMES :: 6
+
+@(test)
+test_savestate_deterministic_replay_after_restore_cgb :: proc(t: ^testing.T) {
+	if !os.exists(CGB_MILESTONE_ROM_PATH) {
+		fmt.printfln(
+			"savestate_test: ROM 未取得のためスキップ: %s (./scripts/fetch_test_roms.sh を実行してください)",
+			CGB_MILESTONE_ROM_PATH,
+		)
+		return
+	}
+
+	data, err := os.read_entire_file(CGB_MILESTONE_ROM_PATH, context.allocator)
+	testing.expectf(t, err == nil, "savestate_test: ROM を読み込めません: %v", err)
+	if err != nil {
+		return
+	}
+	defer delete(data)
+
+	emu := new(core.Emulator)
+	defer free(emu)
+	defer core.bus_destroy(&emu.bus)
+	loaded := core.emulator_load_rom(emu, data)
+	testing.expect(t, loaded)
+	if !loaded {
+		return
+	}
+	testing.expectf(t, emu.bus.mode == .Cgb, "savestate_test: cgb-acid2.gbc は Cgb モードで起動するはず")
+
+	for _ in 0 ..< CGB_MILESTONE_N_FRAMES {
+		core.emulator_run_frame(emu)
+	}
+	hash_at_save := framebuffer_hash(emu)
+
+	saved := core.savestate_write(emu)
+	defer delete(saved)
+
+	for _ in 0 ..< CGB_MILESTONE_M_FRAMES {
+		core.emulator_run_frame(emu)
+	}
+	hash_after_first_replay := framebuffer_hash(emu)
+
+	testing.expect(
+		t,
+		hash_after_first_replay != hash_at_save,
+		"savestate_test: 選んだフレーム区間で画面が変化していない(CGBテストが無意味になっている)",
+	)
+
+	load_err := core.savestate_read(emu, saved)
+	testing.expect(t, load_err == .None)
+
+	for _ in 0 ..< CGB_MILESTONE_M_FRAMES {
+		core.emulator_run_frame(emu)
+	}
+	hash_after_second_replay := framebuffer_hash(emu)
+
+	testing.expectf(
+		t,
+		hash_after_first_replay == hash_after_second_replay,
+		"savestate_test: CGB復元後の再生がハッシュ不一致(パレットRAM/VRAMバンク1/WRAMバンク等の保存漏れの疑い): got=0x%016X expected=0x%016X",
+		hash_after_second_replay,
+		hash_after_first_replay,
+	)
+}
