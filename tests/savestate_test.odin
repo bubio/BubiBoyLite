@@ -1,10 +1,15 @@
 package tests
 
+import "core:fmt"
+import "core:hash"
+import "core:mem"
+import "core:os"
 import "core:testing"
 import core "bbl:core"
 
 // src/core/savestate.odin の単体テスト(T7-1/T7-2)。
-// T7-5 では同じファイルにテストROMを使った決定性の統合テストを追加する。
+// T7-5(フェーズ7のマイルストーン)はテストROMを使った決定性の統合テスト
+// (test_savestate_deterministic_replay_after_restore、ファイル末尾)を同じファイルに追加する。
 
 // make_savestate_test_rom は type=0x03(MBC1+RAM+BATTERY)のヘッダを持つ合成ROMを作る
 // (mbc3_test.odin の make_mbc3_rtc_rom と同じ流儀)。MBC1 を使うのは savestate 側の
@@ -203,4 +208,97 @@ test_savestate_read_rejects_too_small :: proc(t: ^testing.T) {
 	tiny := saved[:4]
 	err2 := core.savestate_read(emu, tiny)
 	testing.expect(t, err2 == .Too_Small)
+}
+
+// --- T7-5: フェーズ7のマイルストーン(テストROMを使った決定性の統合テスト) ---
+//
+// testing.md「単体テストの方針」どおり ROM 未取得時はスキップする(fetch_test_roms.sh
+// 未実行のローカル環境を壊さない)。
+//
+// ROM/フレーム数の選び方(advisor助言): 「save した瞬間の画面が既に静止している」テストは
+// 保存漏れフィールドがあっても両方のハッシュが偶然一致してしまい、何も検証しないに等しい。
+// Blargg cpu_instrs個別テスト 01-special.gb はタイトル画面が数フレームかけて描画される
+// (frame0-3:無地→frame4-8:テキスト描画中に複数回変化→frame8以降で一旦静止)ことを
+// 事前に確認済み(scratchpadでの調査、検証ログ参照)。そこで N=2(まだ無地)で保存し、
+// M=6(frame2→8、画面が実際に動いている区間)を「保存直後に一度実行して基準ハッシュを記録」
+// →「同じ保存データから復元してもう一度同じM フレームを実行」という手順で完全一致を見る。
+@(private = "file")
+SAVESTATE_MILESTONE_ROM_PATH :: "tests/roms/blargg/cpu_instrs/individual/01-special.gb"
+
+@(private = "file")
+SAVESTATE_MILESTONE_N_FRAMES :: 2 // 保存前に実行するフレーム数(まだ画面が静止していない時点)
+@(private = "file")
+SAVESTATE_MILESTONE_M_FRAMES :: 6 // 保存後、ハッシュ記録までに実行するフレーム数(画面が変化する区間)
+
+@(private = "file")
+framebuffer_hash :: proc(emu: ^core.Emulator) -> u64 {
+	fb := mem.byte_slice(&emu.bus.ppu.framebuffer, size_of(emu.bus.ppu.framebuffer))
+	return hash.fnv64a(fb)
+}
+
+@(test)
+test_savestate_deterministic_replay_after_restore :: proc(t: ^testing.T) {
+	if !os.exists(SAVESTATE_MILESTONE_ROM_PATH) {
+		fmt.printfln(
+			"savestate_test: ROM 未取得のためスキップ: %s (./scripts/fetch_test_roms.sh を実行してください)",
+			SAVESTATE_MILESTONE_ROM_PATH,
+		)
+		return
+	}
+
+	data, err := os.read_entire_file(SAVESTATE_MILESTONE_ROM_PATH, context.allocator)
+	testing.expectf(t, err == nil, "savestate_test: ROM を読み込めません: %v", err)
+	if err != nil {
+		return
+	}
+	defer delete(data)
+
+	emu := new(core.Emulator)
+	defer free(emu)
+	defer core.bus_destroy(&emu.bus)
+	defer delete(emu.bus.serial_log) // Blarggが結果をシリアルへ書くため確保される(rom_runner.odinと同じ後始末)
+	loaded := core.emulator_load_rom(emu, data)
+	testing.expect(t, loaded)
+	if !loaded {
+		return
+	}
+
+	for _ in 0 ..< SAVESTATE_MILESTONE_N_FRAMES {
+		core.emulator_run_frame(emu)
+	}
+	hash_at_save := framebuffer_hash(emu)
+
+	saved := core.savestate_write(emu)
+	defer delete(saved)
+
+	// 1回目: 保存直後からMフレーム実行して基準ハッシュを記録する。
+	for _ in 0 ..< SAVESTATE_MILESTONE_M_FRAMES {
+		core.emulator_run_frame(emu)
+	}
+	hash_after_first_replay := framebuffer_hash(emu)
+
+	// 画面が実際に動いている区間を選んだことの確認(落とし穴チェック: ここが等しいままだと
+	// 「常に同じハッシュになるだけの無意味なテスト」になってしまう)。
+	testing.expect(
+		t,
+		hash_after_first_replay != hash_at_save,
+		"savestate_test: 選んだフレーム区間で画面が変化していない(テストが無意味になっている)",
+	)
+
+	// 2回目: 同じ保存データから復元し、同じMフレームをもう一度実行する。
+	load_err := core.savestate_read(emu, saved)
+	testing.expect(t, load_err == .None)
+
+	for _ in 0 ..< SAVESTATE_MILESTONE_M_FRAMES {
+		core.emulator_run_frame(emu)
+	}
+	hash_after_second_replay := framebuffer_hash(emu)
+
+	testing.expectf(
+		t,
+		hash_after_first_replay == hash_after_second_replay,
+		"savestate_test: 復元後の再生がハッシュ不一致(保存漏れフィールドの疑い): got=0x%016X expected=0x%016X",
+		hash_after_second_replay,
+		hash_after_first_replay,
+	)
 }
