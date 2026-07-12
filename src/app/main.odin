@@ -160,22 +160,22 @@ run_rom_window :: proc(opts: Options, cfg: Config) {
 				if input_is_fullscreen_toggle(event.key) {
 					video_toggle_fullscreen(&video)
 				}
-				input_handle_key_event(emu, event.key, true)
+				input_handle_key_event(emu, cfg.key_map, event.key, true)
 				// 落とし穴(T7-4): 保存/復元はメインループのフレーム境界で行う。ここは
 				// このイテレーションでまだ emulator_run_frame を呼んでいない時点なので、
 				// 直接処理してよい(次のフレーム実行の「外」であることが保証される)。
 				action := input_handle_shortcut_key(&input_state, event.key)
 				handle_shortcut_action(action, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
 			case .KEYUP:
-				input_handle_key_event(emu, event.key, false)
+				input_handle_key_event(emu, cfg.key_map, event.key, false)
 			case .CONTROLLERDEVICEADDED:
 				controller_manager_handle_added(&controllers, event.cdevice.which)
 			case .CONTROLLERDEVICEREMOVED:
 				controller_manager_handle_removed(&controllers, sdl.JoystickID(event.cdevice.which))
 			case .CONTROLLERBUTTONDOWN:
-				input_handle_controller_button_event(emu, default_pad_map(), event.cbutton, true)
+				input_handle_controller_button_event(emu, cfg.pad_map, event.cbutton, true)
 			case .CONTROLLERBUTTONUP:
-				input_handle_controller_button_event(emu, default_pad_map(), event.cbutton, false)
+				input_handle_controller_button_event(emu, cfg.pad_map, event.cbutton, false)
 			case .CONTROLLERAXISMOTION:
 				input_handle_controller_axis_event(emu, event.caxis)
 			}

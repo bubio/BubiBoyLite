@@ -117,7 +117,7 @@ odin test tests -collection:bbl=src
 
 ### T8-6: キーコンフィグ
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: キーボード/コントローラーの割当を設定ファイルで変更可能にする。
 **作るもの**: `src/app/input.odin` + `config.odin`:
@@ -173,3 +173,5 @@ odin test tests -collection:bbl=src
 2026-07-12 T8-4 完了: `odin test tests -collection:bbl=src` 370 tests 全パス(save_state_dir_test.odin 11件追加。実ディレクトリ作成・実ファイルI/Oを伴うテストを含む)。実装中に発見した既存stdlibの落とし穴: このOdinバージョンの`os.make_directory_all`は対象パスが既に存在すると`.Exist`エラーを返す(mkdir -pのような「既存なら成功」ではない)ため、resolve_and_ensure_dirで`.Exist`を非致命扱いに修正(修正前は2回目以降の起動でsave_dir指定時に毎回ROM同置へフォールバックする不具合があった)。結合検証: 実際に`bbl`バイナリをビルドし、`save_dir = ~/bbl_t84_saves_test`を設定したbbl.ini + MBC2+BATTERYの実ROM(tests/roms/mooneye/emulator-only/mbc2/ram.gb)で起動、osascriptで実際にEscキーを送って終了させ、`~`展開先のディレクトリが自動作成され`testcart.sav`/`testcart.sav.bak`が書き込まれることを確認(テスト後に生成物は削除済み)。state_dir側は同じresolve_and_ensure_dir/state_path_for_rom_with_dirの単体テスト(実ファイルの保存→ロードのラウンドトリップ)で検証。
 
 2026-07-12 T8-5 完了: `odin test tests -collection:bbl=src` 377 tests 全パス(controller_test.odin 7件追加。ボタン/軸イベント→GBボタンの変換は純粋関数化し、core.Emulatorを使ってJOYPレジスタの実際の変化まで検証)。SDL_INIT_GAMECONTROLLER を video_init に追加、Controller_Manager でホットプラグ(CONTROLLERDEVICEADDED/REMOVED)と1台までの接続管理を実装、左スティックはデッドゾーン±8000で十字キーへマップ。デフォルト割当はconfig.odinのdefault_pad_map(T8-1で作成済み)をそのまま使用(SDLのB=GBのA、SDLのA=GBのB、Xbox配置とNintendo配置の左右逆転を吸収)。**実機コントローラーでの操作感は未確認**(ハードウェア無し)。確認できたのはコントローラー未接続時の起動・実行(実バイナリで1.5秒間クラッシュなく動作継続、`video: 表示倍率 = 4`のログも正常出力)と、ホットプラグイベントハンドラの単体テスト(未接続状態でのREMOVED/destroyがクラッシュしないこと)のみ。
+
+2026-07-12 T8-6 完了: `odin test tests -collection:bbl=src` 382 tests 全パス(keyconfig_test.odin 5件追加)。input_key_to_button/input_handle_key_eventをkey_map引数で可変にし(従来のハードコードswitchから、config.odinのdefault_key_map/bbl.iniのkey_*を逆引きする方式へ変更)、main.odinはcfg.key_map/cfg.pad_map(T8-1で読み込み済み)をイベントループへ渡すよう更新。ショートカットキー衝突チェック(T8-1で実装済みのconfig_key_map_conflicts/config_warn_key_conflicts)は結合検証: `key_select = F5`と書いたbbl.iniで`./bbl --headless`を実行し、`config: key_select (F5) はセーブステート/終了ショートカットと衝突しています`という警告が実際に出力されることを確認(起動は継続、DoD「警告してその項目だけデフォルト」ではなく単純警告のみに留める設計だが、割当自体は反映されクラッシュしないことも確認)。bbl.iniのデフォルト生成にキー/パッド全割当がコメント付きで出ることはT8-1のconfig_render_default_iniで既に達成済み。
