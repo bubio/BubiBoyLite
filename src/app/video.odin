@@ -81,6 +81,11 @@ video_present :: proc(video: ^Video, framebuffer: []u32) {
 	sdl.RenderPresent(video.renderer)
 }
 
+// video_set_title はウィンドウタイトルを更新する(T7-4: セーブステート操作の結果表示)。
+video_set_title :: proc(video: ^Video, title: string) {
+	sdl.SetWindowTitle(video.window, fmt.ctprintf("%s", title))
+}
+
 video_destroy :: proc(video: ^Video) {
 	sdl.DestroyTexture(video.texture)
 	sdl.DestroyRenderer(video.renderer)

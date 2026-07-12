@@ -121,6 +121,9 @@ run_rom_window :: proc(opts: Options) {
 	LOG_INTERVAL_FRAMES :: 300
 	frames_executed := 0
 
+	// セーブステートショートカット(T7-4)のスロット状態。F1-F4でここのstate_slotが変わる。
+	input_state := input_state_default()
+
 	running := true
 	for running {
 		event: sdl.Event
@@ -133,6 +136,11 @@ run_rom_window :: proc(opts: Options) {
 					running = false
 				}
 				input_handle_key_event(emu, event.key, true)
+				// 落とし穴(T7-4): 保存/復元はメインループのフレーム境界で行う。ここは
+				// このイテレーションでまだ emulator_run_frame を呼んでいない時点なので、
+				// 直接処理してよい(次のフレーム実行の「外」であることが保証される)。
+				action := input_handle_shortcut_key(&input_state, event.key)
+				handle_shortcut_action(action, emu, &video, &audio, opts.rom_path, &input_state)
 			case .KEYUP:
 				input_handle_key_event(emu, event.key, false)
 			}
@@ -217,6 +225,55 @@ save_rtc_now :: proc(emu: ^core.Emulator, rtc_path: string) {
 	if !rtc_save(rtc_path, snapshot) {
 		fmt.eprintfln("RTCの書き込みに失敗しました: %s", rtc_path)
 	}
+}
+
+// handle_shortcut_action は input_handle_shortcut_key が返した Shortcut_Action を実行する
+// (T7-4)。保存/復元は core.Emulator 全体(APUのwave_ram等、オーディオコールバックスレッドが
+// 触れない領域とはいえ同じ Apu 構造体内のフィールドではある)を書き換えるため、
+// audio_run_frame_locked と同じ SDL_Lock/UnlockAudioDevice でオーディオコールバックスレッドと
+// 直列化する(T5-6 落とし穴の踏襲)。
+handle_shortcut_action :: proc(
+	action: Shortcut_Action,
+	emu: ^core.Emulator,
+	video: ^Video,
+	audio: ^Audio,
+	rom_path: string,
+	input_state: ^Input_State,
+) {
+	switch action {
+	case .None:
+	case .Select_Slot:
+		show_status(video, fmt.tprintf("Slot %d selected", input_state.state_slot))
+	case .Save_State:
+		sdl.LockAudioDevice(audio.device)
+		ok := state_save(emu, rom_path, input_state.state_slot)
+		sdl.UnlockAudioDevice(audio.device)
+		if ok {
+			show_status(video, fmt.tprintf("State saved to slot %d", input_state.state_slot))
+		} else {
+			show_status(video, fmt.tprintf("Failed to save state to slot %d", input_state.state_slot))
+		}
+	case .Load_State:
+		sdl.LockAudioDevice(audio.device)
+		err, load_ok := state_load(emu, rom_path, input_state.state_slot)
+		sdl.UnlockAudioDevice(audio.device)
+		if !load_ok {
+			show_status(video, fmt.tprintf("No state in slot %d", input_state.state_slot))
+		} else if err != .None {
+			show_status(
+				video,
+				fmt.tprintf("Failed to load slot %d: %s", input_state.state_slot, state_load_error_message(err)),
+			)
+		} else {
+			show_status(video, fmt.tprintf("State loaded from slot %d", input_state.state_slot))
+		}
+	}
+}
+
+// show_status は実行結果を stderr とウィンドウタイトルの両方に表示する(T7-4)。
+show_status :: proc(video: ^Video, message: string) {
+	fmt.eprintln(message)
+	video_set_title(video, message)
 }
 
 // run_test_pattern_window は ROM 未指定 & TUI 未実装の間、テストパターンを表示する

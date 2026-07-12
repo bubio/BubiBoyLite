@@ -11,6 +11,16 @@ USAGE :: `使用法: bbl [options] game.gbc
   --fullscreen      フルスクリーン表示 (--scale は無視される)
   --shader KIND     シェーダー: nearest, smooth (デフォルト nearest)
   --recent          最近使ったファイルを表示して選択
+
+キーボードショートカット(ROM実行中):
+  矢印キー          十字キー
+  Z / X             B / A
+  Enter             Start
+  右Shift           Select
+  F1-F4             セーブステートのスロット選択 (1-4、デフォルト 1)
+  F5                現在のスロットへセーブステートを保存
+  F7                現在のスロットからセーブステートを復元
+  Esc               終了
 `
 
 print_usage :: proc() {

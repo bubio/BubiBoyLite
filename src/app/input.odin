@@ -47,3 +47,55 @@ input_handle_key_event :: proc(emu: ^core.Emulator, event: sdl.KeyboardEvent, pr
 	}
 	core.joypad_set_button(&emu.bus, button, pressed)
 }
+
+// --- セーブステートのショートカット(T7-4) ---
+// BluePrint「キーボードショートカットで操作」に沿う割当: F5=保存、F7=復元、
+// F1-F4=スロット選択(<ROM名>.state1〜.state4、デフォルトスロット1、state_path_for_romの
+// 「slot==1のときは.state1ではなく.state」規則と対応する)。
+// input_handle_shortcut_key は「どのアクションが要求されたか」を判定するだけの純粋関数に
+// とどめ、実際のファイルI/O(state_save/state_load)はmain.odin側でフレーム境界において行う
+// (落とし穴: run_frameの外でフラグ処理する。ここでイベントを受け取った時点でまだ次の
+// run_frameは呼ばれていないので、この判定自体はどのタイミングで呼んでも安全)。
+
+Shortcut_Action :: enum {
+	None,
+	Select_Slot,
+	Save_State,
+	Load_State,
+}
+
+Input_State :: struct {
+	state_slot: int, // 1-4。デフォルト1(input_state_default)
+}
+
+input_state_default :: proc() -> Input_State {
+	return Input_State{state_slot = 1}
+}
+
+// input_handle_shortcut_key は KEYDOWN イベント1件を解釈する。スロット選択(F1-F4)は
+// ここで即座に state.state_slot へ反映する。input_handle_key_event と同じくキーリピートは
+// 無視する。
+input_handle_shortcut_key :: proc(state: ^Input_State, event: sdl.KeyboardEvent) -> Shortcut_Action {
+	if event.repeat != 0 {
+		return .None
+	}
+	#partial switch event.keysym.sym {
+	case .F1:
+		state.state_slot = 1
+		return .Select_Slot
+	case .F2:
+		state.state_slot = 2
+		return .Select_Slot
+	case .F3:
+		state.state_slot = 3
+		return .Select_Slot
+	case .F4:
+		state.state_slot = 4
+		return .Select_Slot
+	case .F5:
+		return .Save_State
+	case .F7:
+		return .Load_State
+	}
+	return .None
+}
