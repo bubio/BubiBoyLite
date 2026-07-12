@@ -66,7 +66,11 @@ main :: proc() {
 
 // run_rom_window は ROM を読み込み実際にエミュレーションを実行しながら SDL2 ウィンドウへ
 // 描画するメインループ(T3-6)。Esc またはウィンドウクローズで終了する。
-run_rom_window :: proc(opts: Options, cfg: Config) {
+// standalone_terminal: true(デフォルト、`bbl rom.gb` のような直接起動)ならこの関数自身が
+// ターミナルのraw mode(T9-5のホットキー用)を有効化/復元する。false(run_tui経由)なら
+// 既にTUI側がraw modeを持っている(tui_suspend_for_game済み)ため何もしない
+// (T9-2落とし穴と対称: 二重にtcgetattrすると復元用スナップショットが壊れる)。
+run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) {
 	rom_data, read_err := os.read_entire_file(opts.rom_path, context.allocator)
 	if read_err != nil {
 		fmt.eprintfln("ROM を読み込めません: %s (%v)", opts.rom_path, read_err)
@@ -122,10 +126,37 @@ run_rom_window :: proc(opts: Options, cfg: Config) {
 	defer video_destroy(&video)
 
 	audio: Audio
-	if !audio_init(&audio, emu) {
+	if !audio_init(&audio, emu, cfg.volume) {
 		os.exit(1)
 	}
 	defer audio_destroy(&audio)
+
+	// T9-5: 直接起動(`bbl rom.gb`)時はここでraw modeを有効化する(TUI経由なら
+	// standalone_terminal=falseで既にraw mode済み)。tui_game_terminal_begin と
+	// context.assertion_failure_proc の代入は「同じ関数の中で」行う必要がある
+	// (tui_enter/tui_game_terminal_begin のコメント参照: 代入は呼び出し元には伝播しない)。
+	owns_terminal := false
+	if standalone_terminal {
+		owns_terminal = tui_game_terminal_begin()
+		if owns_terminal {
+			context.assertion_failure_proc = tui_assertion_failure
+		}
+	}
+	defer if owns_terminal {
+		tui_exit()
+	}
+
+	// T9-4: 実行中ステータス表示。standalone_terminal(直接起動)かTUI経由かに関わらず、
+	// stderr が TTY なら表示する(T9-4「TUI経由でない起動でもTTYなら表示」)。
+	status_line := status_line_init(opts.rom_path, emu.bus.cart.info)
+	defer status_line_destroy(&status_line)
+
+	// T9-5: ターミナルからのホットキー読み取り用(非ブロッキング)。raw modeが有効な場合
+	// (TUI経由 or owns_terminal)だけ実際に何か読める。無効なら tui_plat_read が常に0を
+	// 返すだけで実害は無い(ただし念のため hotkeys_available で読み取り自体をスキップする)。
+	hotkeys_available := !standalone_terminal || owns_terminal
+	game_kr: Key_Reader
+	paused := false
 
 	// オーディオ駆動ペーシング(T5-6、T3-6の壁時計ペーシングを置換): オーディオバッファ残量が
 	// 目標(3フレーム分)を下回っている間だけ emulator_run_frame を回し、満杯なら1ms待つ
@@ -191,14 +222,44 @@ run_rom_window :: proc(opts: Options, cfg: Config) {
 			}
 		}
 
-		if audio_buffered_pairs(&audio) < AUDIO_TARGET_BUFFERED_PAIRS {
+		if hotkeys_available {
+			ev, ok := key_reader_poll(&game_kr)
+			if ok {
+				action, slot := game_key_to_action(ev)
+				#partial switch action {
+				case .Volume_Up:
+					v := audio_adjust_volume(&audio, AUDIO_VOLUME_STEP)
+					status_line_set_message(&status_line, fmt.tprintf("Volume %d%%", v))
+				case .Volume_Down:
+					v := audio_adjust_volume(&audio, -AUDIO_VOLUME_STEP)
+					status_line_set_message(&status_line, fmt.tprintf("Volume %d%%", v))
+				case .Select_Slot:
+					input_state.state_slot = slot
+					msg := handle_shortcut_action(.Select_Slot, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+					status_line_set_message(&status_line, msg)
+				case .Save_State:
+					msg := handle_shortcut_action(.Save_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+					status_line_set_message(&status_line, msg)
+				case .Load_State:
+					msg := handle_shortcut_action(.Load_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+					status_line_set_message(&status_line, msg)
+				case .Toggle_Pause:
+					paused = !paused
+					status_line_set_message(&status_line, paused ? "Paused" : "Resumed")
+				}
+			}
+		}
+
+		underrun_before := audio.underrun_events
+		if !paused && audio_buffered_pairs(&audio) < AUDIO_TARGET_BUFFERED_PAIRS {
 			audio_run_frame_locked(&audio)
 			// 表示は最新フレームのみ(中間フレームの描画スキップは行わない実装だが、
 			// バッファが目標未満の間は毎回1フレームずつ生成するため実質最新フレーム表示になる)。
 			video_present(&video, emu.bus.ppu.framebuffer[:])
 			frames_executed += 1
+			status_line_record_frame(&status_line)
 
-			if frames_executed % LOG_INTERVAL_FRAMES == 0 {
+			if !status_line.enabled && frames_executed % LOG_INTERVAL_FRAMES == 0 {
 				fmt.eprintfln(
 					"audio: frames=%d buffered=%d underrun_events=%d underrun_samples=%d",
 					frames_executed,
@@ -222,8 +283,10 @@ run_rom_window :: proc(opts: Options, cfg: Config) {
 				}
 			}
 		} else {
-			sdl.Delay(1)
+			sdl.Delay(paused ? 16 : 1)
 		}
+		underrun_now := audio.underrun_events > underrun_before
+		status_line_tick(&status_line, audio.volume, input_state.state_slot, emu.bus.double_speed, paused, underrun_now)
 	}
 
 	if audio.underrun_events > 0 {
@@ -277,6 +340,9 @@ save_rtc_now :: proc(emu: ^core.Emulator, rtc_path: string) {
 // 触れない領域とはいえ同じ Apu 構造体内のフィールドではある)を書き換えるため、
 // audio_run_frame_locked と同じ SDL_Lock/UnlockAudioDevice でオーディオコールバックスレッドと
 // 直列化する(T5-6 落とし穴の踏襲)。
+// 戻り値 message は実行結果の説明文(T9-5: ターミナルホットキー経由の呼び出し元が
+// status_line_set_message へそのまま渡せるようにするため。SDLショートカット経由の
+// 呼び出し元は従来通り show_status 済みなので無視してよい)。.None の時は ""。
 handle_shortcut_action :: proc(
 	action: Shortcut_Action,
 	emu: ^core.Emulator,
@@ -285,35 +351,41 @@ handle_shortcut_action :: proc(
 	rom_path: string,
 	state_dir: string,
 	input_state: ^Input_State,
+) -> (
+	message: string,
 ) {
 	switch action {
 	case .None:
+		return ""
 	case .Select_Slot:
-		show_status(video, fmt.tprintf("Slot %d selected", input_state.state_slot))
+		message = fmt.tprintf("Slot %d selected", input_state.state_slot)
 	case .Save_State:
 		sdl.LockAudioDevice(audio.device)
 		ok := state_save_with_dir(emu, rom_path, input_state.state_slot, state_dir)
 		sdl.UnlockAudioDevice(audio.device)
 		if ok {
-			show_status(video, fmt.tprintf("State saved to slot %d", input_state.state_slot))
+			message = fmt.tprintf("State saved to slot %d", input_state.state_slot)
 		} else {
-			show_status(video, fmt.tprintf("Failed to save state to slot %d", input_state.state_slot))
+			message = fmt.tprintf("Failed to save state to slot %d", input_state.state_slot)
 		}
 	case .Load_State:
 		sdl.LockAudioDevice(audio.device)
 		err, load_ok := state_load_with_dir(emu, rom_path, input_state.state_slot, state_dir)
 		sdl.UnlockAudioDevice(audio.device)
 		if !load_ok {
-			show_status(video, fmt.tprintf("No state in slot %d", input_state.state_slot))
+			message = fmt.tprintf("No state in slot %d", input_state.state_slot)
 		} else if err != .None {
-			show_status(
-				video,
-				fmt.tprintf("Failed to load slot %d: %s", input_state.state_slot, state_load_error_message(err)),
+			message = fmt.tprintf(
+				"Failed to load slot %d: %s",
+				input_state.state_slot,
+				state_load_error_message(err),
 			)
 		} else {
-			show_status(video, fmt.tprintf("State loaded from slot %d", input_state.state_slot))
+			message = fmt.tprintf("State loaded from slot %d", input_state.state_slot)
 		}
 	}
+	show_status(video, message)
+	return message
 }
 
 // show_status は実行結果を stderr とウィンドウタイトルの両方に表示する(T7-4)。

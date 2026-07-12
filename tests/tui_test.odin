@@ -239,3 +239,60 @@ test_scan_rom_directory_lists_dirs_then_roms_sorted :: proc(t: ^testing.T) {
 	testing.expect(t, entries[4].name == "bgame.gb")
 	testing.expect(t, entries[4].info == "(ROM ONLY)")
 }
+
+// --- T9-4/T9-5: ステータス行・ホットキーの単体テスト ---
+
+@(test)
+test_status_cart_label :: proc(t: ^testing.T) {
+	no_ram := core.Cartridge_Info{mbc_kind = .Mbc1, ram_size = 0}
+	no_ram_label := app.status_cart_label(no_ram)
+	defer delete(no_ram_label)
+	testing.expect(t, no_ram_label == "MBC1")
+
+	with_ram := core.Cartridge_Info{mbc_kind = .Mbc5, ram_size = 8192}
+	with_ram_label := app.status_cart_label(with_ram)
+	defer delete(with_ram_label)
+	testing.expect(t, with_ram_label == "MBC5+RAM")
+}
+
+@(test)
+test_game_key_to_action_volume_and_pause :: proc(t: ^testing.T) {
+	up, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = '+'})
+	testing.expect(t, up == .Volume_Up)
+
+	down, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = '-'})
+	testing.expect(t, down == .Volume_Down)
+
+	pause, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = 'p'})
+	testing.expect(t, pause == .Toggle_Pause)
+}
+
+@(test)
+test_game_key_to_action_slots :: proc(t: ^testing.T) {
+	a1, s1 := app.game_key_to_action(app.Key_Event{key = .Char, ch = '1'})
+	testing.expect(t, a1 == .Select_Slot && s1 == 1)
+	a2, s2 := app.game_key_to_action(app.Key_Event{key = .Char, ch = '2'})
+	testing.expect(t, a2 == .Select_Slot && s2 == 2)
+	a3, s3 := app.game_key_to_action(app.Key_Event{key = .Char, ch = '3'})
+	testing.expect(t, a3 == .Select_Slot && s3 == 3)
+	a4, s4 := app.game_key_to_action(app.Key_Event{key = .Char, ch = '4'})
+	testing.expect(t, a4 == .Select_Slot && s4 == 4)
+}
+
+@(test)
+test_game_key_to_action_save_load :: proc(t: ^testing.T) {
+	save, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = 's'})
+	testing.expect(t, save == .Save_State)
+
+	load, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = 'l'})
+	testing.expect(t, load == .Load_State)
+}
+
+@(test)
+test_game_key_to_action_unmapped_key_is_none :: proc(t: ^testing.T) {
+	action, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = 'z'})
+	testing.expect(t, action == .None)
+
+	arrow_action, _ := app.game_key_to_action(app.Key_Event{key = .Up})
+	testing.expect(t, arrow_action == .None, "矢印キー等はゲームホットキーとしては未割当")
+}

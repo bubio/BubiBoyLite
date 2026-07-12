@@ -7,6 +7,7 @@ import "core:path/filepath"
 import "core:slice"
 import "core:strings"
 import "core:terminal"
+import "core:time"
 import core "bbl:core"
 
 // tui.odin: Claude Code 風 TUI の基盤(T9-1)。
@@ -300,7 +301,10 @@ tui_force_restore :: proc "contextless" () {
 
 // tui_assertion_failure は context.assertion_failure_proc として設定される。panic()/assert()
 // が呼ばれた瞬間、デフォルトの trap 処理に入る前に端末を復元する。
-@(private = "file")
+// (package外には出さないが、main.odin(同じpackage)から run_rom_window 側で直接
+// `context.assertion_failure_proc = tui_assertion_failure` する必要がある(T9-5、直接起動時の
+// ターミナルホットキー用にrun_rom_window自身がraw modeを持つ場合)ため private="file" は付けない
+// (tui_enter側コメントの「代入は呼び出し元自身の関数本体で行う必要がある」を参照)。
 tui_assertion_failure :: proc(prefix, message: string, loc: runtime.Source_Code_Location) -> ! {
 	tui_force_restore()
 	runtime.default_assertion_failure_proc(prefix, message, loc)
@@ -362,6 +366,39 @@ tui_resume_from_game :: proc() {
 	tui_plat_write_raw(ALT_SCREEN_ENTER)
 	tui_plat_write_raw(CURSOR_HIDE)
 	tui_plat_set_read_timeout_deciseconds(1)
+}
+
+// --- 直接起動(TUI非経由)時のターミナル機能(T9-4/T9-5) ---
+// `bbl rom.gb` のように TUI を経由せず直接 ROM を起動した場合、raw mode はまだ誰も
+// 有効化していない。ステータス行(T9-4)は raw mode 不要(stderr への書き込みだけ)だが、
+// ホットキー(T9-5、Enterキー入力無しの1文字読み取りが要る)には raw mode が要る。
+// alt screen には切り替えない(SDLウィンドウが主役であって代替スクリーンを表示する対象の
+// 画面が無い。tui_suspend_for_game 後の状態と同じ「raw modeのみ有効」)。
+
+// tui_game_terminal_available は標準入力と標準エラー出力の両方がTTYかを返す
+// (ステータス行はstderr、ホットキー読み取りはstdinを使うため両方必要)。
+tui_game_terminal_available :: proc() -> bool {
+	return terminal.is_terminal(os.stdin) && terminal.is_terminal(os.stderr)
+}
+
+// tui_game_terminal_begin は直接起動経路でホットキーを使えるようにする。成功したら
+// true を返す(呼び出し側は対になる tui_exit() を必ず呼ぶこと)。TUI経由の場合はこの関数を
+// 呼ばないこと(既にtui_enterでraw modeが有効なため、ここで再度tcgetattrすると
+// 復元用に保存した「本来の端末状態」を上書きしてしまう)。
+// 落とし穴(tui_enterのコメント参照): `context.assertion_failure_proc` の代入はこの関数の
+// 中で行っても呼び出し元には伝播しないため、呼び出し側(run_rom_window)自身の関数本体で
+// `context.assertion_failure_proc = tui_assertion_failure` を設定すること。
+tui_game_terminal_begin :: proc() -> bool {
+	if !tui_game_terminal_available() {
+		return false
+	}
+	if !tui_plat_enable_raw() {
+		return false
+	}
+	tui_restored = false
+	tui_plat_install_crash_restore()
+	tui_plat_set_read_timeout_deciseconds(0) // 完全ノンブロッキング(T9-5「メインループを止めない」)
+	return true
 }
 
 // --- 端末サイズ ---
@@ -876,7 +913,7 @@ run_tui :: proc(opts: Options, cfg: Config) {
 		tui_suspend_for_game()
 		game_opts := opts
 		game_opts.rom_path = rom_path
-		run_rom_window(game_opts, cfg)
+		run_rom_window(game_opts, cfg, standalone_terminal = false)
 		tui_resume_from_game()
 
 		// T9-3「ROM起動成功のたびに更新」。run_rom_window がここまで戻ってきた時点で
@@ -885,4 +922,159 @@ run_tui :: proc(opts: Options, cfg: Config) {
 			recent_record_launch(config_dir, rom_path)
 		}
 	}
+}
+
+// --- 実行中ステータス表示(T9-4) ---
+// BluePrint「TUIを活かすアイデアがあると助かります」。1行ステータスを stderr へ `\r` 上書きで
+// 出す(落とし穴: stdout はシリアル出力等のログと衝突しうる)。TUI経由・直接起動どちらでも
+// stderr が TTY なら表示する(T9-4「TUI経由でない起動でもTTYなら表示」)。
+
+// status_cart_label は "MBC5+RAM" のようなラベルを作る(純粋関数)。
+status_cart_label :: proc(info: core.Cartridge_Info, allocator := context.allocator) -> string {
+	kind := mbc_kind_label(info.mbc_kind)
+	if info.ram_size > 0 {
+		return fmt.aprintf("%s+RAM", kind, allocator = allocator)
+	}
+	return strings.clone(kind, allocator)
+}
+
+Status_Line :: struct {
+	enabled:      bool,
+	rom_name:     string, // 所有(basename)
+	cart_label:   string, // 所有("MBC5+RAM"等)
+	window_start: time.Time, // 直近のfps計測窓の開始時刻
+	frame_count:  int, // 窓内での実フレーム数
+	warn:         bool, // 窓内でアンダーランが発生したか(T9-4「アンダーラン発生時は警告色」相当)
+	last_message: string, // 所有。直前の操作結果(T9-5)。""なら無し
+}
+
+// status_line_init は rom_path のベース名と cart_info から Status_Line を組み立てる。
+// stderr が TTY でなければ enabled=false になり、以降の tick は何もしない(T9-4「非TTYなら
+// 出さない」)。
+status_line_init :: proc(rom_path: string, cart_info: core.Cartridge_Info) -> Status_Line {
+	return Status_Line {
+		enabled = terminal.is_terminal(os.stderr),
+		rom_name = strings.clone(filepath.base(rom_path)),
+		cart_label = status_cart_label(cart_info),
+		window_start = time.now(),
+	}
+}
+
+status_line_destroy :: proc(s: ^Status_Line) {
+	delete(s.rom_name)
+	delete(s.cart_label)
+	delete(s.last_message)
+	// ステータス行(\rで行頭に戻ったまま終わっている)の後にシェルのプロンプト等が
+	// そのまま続くと読みにくいので、有効だった場合だけ改行して終える。
+	if s.enabled {
+		fmt.eprintln()
+	}
+}
+
+// status_line_set_message は直前の操作結果(T9-5: 音量変更/スロット選択/セーブ/ロード/
+// 一時停止など)をステータス行に反映する。次の status_line_tick の描画時に一緒に出す
+// (操作のたびに別行を eprintln すると `\r` の1行更新と競合して表示が乱れるため)。
+status_line_set_message :: proc(s: ^Status_Line, msg: string) {
+	if !s.enabled {
+		return
+	}
+	delete(s.last_message)
+	s.last_message = strings.clone(msg)
+}
+
+STATUS_LINE_INTERVAL_SECONDS :: 1.0
+
+// status_line_tick は毎フレーム呼ぶ(落とし穴: architecture.md「フレーム毎のアロケーション
+// 禁止」を守るため、1秒の窓が満了した時だけ文字列を組み立てて書き出す。それ以外は
+// frame_count のインクリメントのみでアロケーションなし)。
+// status_line_record_frame は実フレームが1枚描画されるたびに呼ぶ(fps計測用のカウンタ加算
+// のみ。バッファが目標を超えていて描画をスキップしたループ反復ではこれを呼ばないこと)。
+status_line_record_frame :: proc(s: ^Status_Line) {
+	if !s.enabled {
+		return
+	}
+	s.frame_count += 1
+}
+
+status_line_tick :: proc(s: ^Status_Line, volume: int, slot: int, double_speed: bool, paused: bool, underrun_now: bool) {
+	if !s.enabled {
+		return
+	}
+	if underrun_now {
+		s.warn = true
+	}
+
+	elapsed_secs := time.duration_seconds(time.since(s.window_start))
+	if elapsed_secs < STATUS_LINE_INTERVAL_SECONDS {
+		return
+	}
+	fps := f64(s.frame_count) / elapsed_secs
+
+	icon := paused ? "⏸" : "▶"
+	speed_label := double_speed ? " | 双速" : ""
+	// T9-4「オーディオアンダーラン発生時は警告色」。ANSIの黄色前景色(\x1b[33m)で挟む
+	// (色が出ない端末でも "⚠" 自体がテキストとして意味を持つのでフォールバックになる)。
+	warn_marker := s.warn ? " \x1b[33m⚠ underrun\x1b[0m" : ""
+	msg_suffix := s.last_message != "" ? fmt.tprintf(" | %s", s.last_message) : ""
+
+	line := fmt.tprintf(
+		"%s %s | %.1f fps | vol %d%% | slot %d | %s%s%s%s",
+		icon,
+		s.rom_name,
+		fps,
+		volume,
+		slot,
+		s.cart_label,
+		speed_label,
+		warn_marker,
+		msg_suffix,
+	)
+	// "\x1b[K": カーソル位置から行末までクリアしてから書く(前回より短い行になった場合に
+	// 古い文字が右側に残るのを防ぐ)。行末に改行は付けない(次回も同じ行を上書きするため)。
+	fmt.eprintf("\r\x1b[K%s", line)
+
+	s.frame_count = 0
+	s.window_start = time.now()
+	s.warn = false
+}
+
+// --- ゲーム実行中のターミナルホットキー(T9-5) ---
+
+Game_Action :: enum {
+	None,
+	Volume_Up,
+	Volume_Down,
+	Select_Slot,
+	Save_State,
+	Load_State,
+	Toggle_Pause,
+}
+
+// game_key_to_action は T9-5 のホットキー(+/-音量、1-4スロット、s保存、l復元、p一時停止)を
+// 解釈する純粋関数(単体テスト対象)。slot は .Select_Slot の時だけ意味を持つ(1-4)。
+game_key_to_action :: proc(ev: Key_Event) -> (action: Game_Action, slot: int) {
+	if ev.key != .Char {
+		return .None, 0
+	}
+	switch ev.ch {
+	case '+':
+		return .Volume_Up, 0
+	case '-':
+		return .Volume_Down, 0
+	case '1':
+		return .Select_Slot, 1
+	case '2':
+		return .Select_Slot, 2
+	case '3':
+		return .Select_Slot, 3
+	case '4':
+		return .Select_Slot, 4
+	case 's':
+		return .Save_State, 0
+	case 'l':
+		return .Load_State, 0
+	case 'p':
+		return .Toggle_Pause, 0
+	}
+	return .None, 0
 }

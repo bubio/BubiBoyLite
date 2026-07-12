@@ -24,12 +24,19 @@ Audio :: struct {
 	emu:              ^core.Emulator, // コールバックが apu_drain_samples を呼ぶために保持(borrow)
 	underrun_events:  u64, // コールバックが要求分を満たせなかった回数(診断ログ用)
 	underrun_samples: u64, // 無音で埋めた i16 要素の累計
+	volume:           int, // T9-5: 0-100。audio_callback が各サンプルへ掛けるゲイン。
 }
+
+AUDIO_VOLUME_MIN :: 0
+AUDIO_VOLUME_MAX :: 100
+AUDIO_VOLUME_STEP :: 5 // T9-5: ターミナルの +/- 1回あたりの増減幅
 
 // audio_callback は SDL のオーディオスレッドから呼ばれる(architecture.md: SDL2依存はapp側)。
 // "c" 呼び出し規約が必須(AudioCallbackの型)。apu_drain_samples で埋まらなかった分は無音(0)で
 // 埋め、アンダーランを記録する(T5-6落とし穴: ここでのメモリ競合はSDL_Lock/UnlockAudioDeviceで
 // main側と直列化する前提。詳細はrun_rom_windowのコメント参照)。
+// T9-5: 音量(0-100)を各サンプルへ掛ける。100の時は掛け算を省略する(無音区間も含め
+// 毎コールバックで浮動小数点演算をしないための軽い最適化)。
 audio_callback :: proc "c" (userdata: rawptr, stream: [^]u8, len: c.int) {
 	context = runtime.default_context()
 	audio := cast(^Audio)userdata
@@ -44,13 +51,25 @@ audio_callback :: proc "c" (userdata: rawptr, stream: [^]u8, len: c.int) {
 		audio.underrun_events += 1
 		audio.underrun_samples += u64(n_i16 - got)
 	}
+
+	if audio.volume < AUDIO_VOLUME_MAX {
+		// i16 × (0..100) を i32 で計算してから100で割るので、volumeがAUDIO_VOLUME_MAX以下なら
+		// 絶対値が元のサンプルを超えることは無い(クランプ不要)。
+		v := i32(audio.volume)
+		for i in 0 ..< got {
+			dst[i] = i16((i32(dst[i]) * v) / 100)
+		}
+	}
 }
 
 // audio_init は SDL_OpenAudioDevice を 48000Hz/AUDIO_S16SYS/2ch/samples=1024 で開く。
 // audio は呼び出し側が確保した安定アドレスを渡すこと(SDLのuserdataとして長期間保持される
 // ため、戻り値を値渡しするAPIにはできない。video_initとの違いはここ)。
-audio_init :: proc(audio: ^Audio, emu: ^core.Emulator) -> bool {
+// initial_volume は bbl.ini の volume(T8-1で追加済みだったが、これまでどこにも適用されて
+// いなかった。T9-5で実際に音量制御を実装する)。
+audio_init :: proc(audio: ^Audio, emu: ^core.Emulator, initial_volume: int) -> bool {
 	audio.emu = emu
+	audio.volume = clamp(initial_volume, AUDIO_VOLUME_MIN, AUDIO_VOLUME_MAX)
 
 	if sdl.InitSubSystem(sdl.INIT_AUDIO) != 0 {
 		fmt.eprintfln("SDL_InitSubSystem(AUDIO) に失敗しました: %s", sdl.GetError())
@@ -89,6 +108,22 @@ audio_buffered_pairs :: proc(audio: ^Audio) -> int {
 	n := audio.emu.bus.apu.ring_count
 	sdl.UnlockAudioDevice(audio.device)
 	return n
+}
+
+// audio_set_volume は音量(0-100にクランプ)を設定し、実際に適用された値を返す(T9-5)。
+// audio.volume はオーディオコールバックスレッドが毎コールバック読むため、書き込みは
+// audio_buffered_pairs 等と同じく SDL_Lock/UnlockAudioDevice で保護する。
+audio_set_volume :: proc(audio: ^Audio, volume: int) -> int {
+	v := clamp(volume, AUDIO_VOLUME_MIN, AUDIO_VOLUME_MAX)
+	sdl.LockAudioDevice(audio.device)
+	audio.volume = v
+	sdl.UnlockAudioDevice(audio.device)
+	return v
+}
+
+// audio_adjust_volume は現在値から delta だけ増減する(T9-5「+/-音量」)。
+audio_adjust_volume :: proc(audio: ^Audio, delta: int) -> int {
+	return audio_set_volume(audio, audio.volume + delta)
 }
 
 // audio_run_frame_locked は emulator_run_frame を SDL_Lock/UnlockAudioDevice で挟んで実行する。
