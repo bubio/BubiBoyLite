@@ -75,8 +75,9 @@ run_rom_window :: proc(opts: Options, cfg: Config) {
 	}
 	defer core.bus_destroy(&emu.bus)
 
-	// バッテリーセーブ(.sav)のロード(T4-6)。BluePrint: 保存先はROMと同じ場所がデフォルト。
-	save_path := save_ram_path_for_rom(opts.rom_path)
+	// バッテリーセーブ(.sav)のロード(T4-6)。BluePrint: 保存先はROMと同じ場所がデフォルト、
+	// bbl.ini の save_dir で変更可能(T8-4)。
+	save_path := save_ram_path_for_rom_with_dir(opts.rom_path, cfg.save_dir)
 	if save_data, load_ok := save_ram_load(save_path); load_ok {
 		defer delete(save_data)
 		if !core.mbc_import_ram(&emu.bus.cart, save_data) {
@@ -92,7 +93,7 @@ run_rom_window :: proc(opts: Options, cfg: Config) {
 	// 処理をそのまま再利用する。落とし穴: 停止ビット(DH bit6)が立っていれば加算されない)。
 	// .rtc が無い(初回起動)場合や RTC非搭載カートリッジでも emulator_set_wall_clock 自体は
 	// 無害(mbc_sync_wall_clock 内で has_rtc ガードされる)なので、常に一度呼んで基準点を打つ。
-	rtc_path := rtc_path_for_rom(opts.rom_path)
+	rtc_path := rtc_path_for_rom_with_dir(opts.rom_path, cfg.save_dir) // .rtcもsave_dirを共有する(T8-4)
 	if rtc_snapshot, rtc_load_ok := rtc_load(rtc_path); rtc_load_ok {
 		core.mbc_import_rtc(
 			&emu.bus.cart,
@@ -158,7 +159,7 @@ run_rom_window :: proc(opts: Options, cfg: Config) {
 				// このイテレーションでまだ emulator_run_frame を呼んでいない時点なので、
 				// 直接処理してよい(次のフレーム実行の「外」であることが保証される)。
 				action := input_handle_shortcut_key(&input_state, event.key)
-				handle_shortcut_action(action, emu, &video, &audio, opts.rom_path, &input_state)
+				handle_shortcut_action(action, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
 			case .KEYUP:
 				input_handle_key_event(emu, event.key, false)
 			}
@@ -256,6 +257,7 @@ handle_shortcut_action :: proc(
 	video: ^Video,
 	audio: ^Audio,
 	rom_path: string,
+	state_dir: string,
 	input_state: ^Input_State,
 ) {
 	switch action {
@@ -264,7 +266,7 @@ handle_shortcut_action :: proc(
 		show_status(video, fmt.tprintf("Slot %d selected", input_state.state_slot))
 	case .Save_State:
 		sdl.LockAudioDevice(audio.device)
-		ok := state_save(emu, rom_path, input_state.state_slot)
+		ok := state_save_with_dir(emu, rom_path, input_state.state_slot, state_dir)
 		sdl.UnlockAudioDevice(audio.device)
 		if ok {
 			show_status(video, fmt.tprintf("State saved to slot %d", input_state.state_slot))
@@ -273,7 +275,7 @@ handle_shortcut_action :: proc(
 		}
 	case .Load_State:
 		sdl.LockAudioDevice(audio.device)
-		err, load_ok := state_load(emu, rom_path, input_state.state_slot)
+		err, load_ok := state_load_with_dir(emu, rom_path, input_state.state_slot, state_dir)
 		sdl.UnlockAudioDevice(audio.device)
 		if !load_ok {
 			show_status(video, fmt.tprintf("No state in slot %d", input_state.state_slot))

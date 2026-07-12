@@ -165,3 +165,167 @@ rtc_load :: proc(rtc_path: string) -> (s: Rtc_Snapshot, ok: bool) {
 wall_clock_now :: proc() -> i64 {
 	return time.to_unix_seconds(time.now())
 }
+
+// --- 保存先ディレクトリの設定(T8-4) ---
+// BluePrint/CLAUDE.md「セーブ、ステートファイルの場所」: デフォルトはROMと同じ場所、
+// bbl.ini の save_dir/state_dir で変更可能。ここでは .sav/.rtc/.state 共通で使う
+// 「設定ディレクトリを解決する」ロジックをまとめる(statefile.odin もこのファイルの
+// resolve_and_ensure_dir/rom_stem/rom_dir を利用する)。
+
+// rom_dir は rom_path のディレクトリ部分を返す(末尾セパレータ無し)。ディレクトリ部分が
+// 無ければ"."を返す(カレントディレクトリ、os.dirと同じ規約)。
+rom_dir :: proc(rom_path: string) -> string {
+	last_slash := strings.last_index(rom_path, "/")
+	last_backslash := strings.last_index(rom_path, "\\")
+	last_sep := max(last_slash, last_backslash)
+	if last_sep < 0 {
+		return "."
+	}
+	return rom_path[:last_sep]
+}
+
+// rom_stem は rom_path からディレクトリ部分と拡張子を除いたファイル名(拡張子無し)を返す
+// (例: "/roms/game.gbc" -> "game")。save_ram_path_for_rom と同じ
+// 「パス区切りより後ろの最後の"."だけを拡張子とみなす」規則に従う。
+rom_stem :: proc(rom_path: string) -> string {
+	last_slash := strings.last_index(rom_path, "/")
+	last_backslash := strings.last_index(rom_path, "\\")
+	last_sep := max(last_slash, last_backslash)
+	last_dot := strings.last_index(rom_path, ".")
+	name_start := last_sep + 1 // last_sepが-1でも0になり先頭から
+
+	if last_dot > last_sep {
+		return rom_path[name_start:last_dot]
+	}
+	return rom_path[name_start:]
+}
+
+// get_home_dir は "~" 展開に使うホームディレクトリを返す(T8-4「落とし穴」: HOME
+// (Windowsは USERPROFILE) 環境変数で行う)。両方未設定ならok=false。
+@(private = "file")
+get_home_dir :: proc() -> (string, bool) {
+	if v, ok := os.lookup_env("HOME", context.temp_allocator); ok && v != "" {
+		return v, true
+	}
+	if v, ok := os.lookup_env("USERPROFILE", context.temp_allocator); ok && v != "" {
+		return v, true
+	}
+	return "", false
+}
+
+@(private = "file")
+is_env_name_char :: proc(c: u8) -> bool {
+	return(
+		(c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_' \
+	)
+}
+
+// expand_env_vars は文字列中の "$NAME" / "${NAME}" を環境変数の値へ置換する
+// (未定義の環境変数は空文字に置換する。Windowsの "%NAME%" 形式は対応しないが、
+// $NAME 形式はどのOSでも同じ書き方で使える)。戻り値は常に新規確保された文字列
+// (context.allocator)。
+@(private = "file")
+expand_env_vars :: proc(s: string) -> string {
+	b: strings.Builder
+	strings.builder_init(&b)
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c == '$' && i + 1 < len(s) {
+			if s[i + 1] == '{' {
+				rel_end := strings.index_byte(s[i + 2:], '}')
+				if rel_end >= 0 {
+					name := s[i + 2:i + 2 + rel_end]
+					if val, ok := os.lookup_env(name, context.temp_allocator); ok {
+						strings.write_string(&b, val)
+					}
+					i = i + 2 + rel_end + 1
+					continue
+				}
+			} else {
+				j := i + 1
+				for j < len(s) && is_env_name_char(s[j]) {
+					j += 1
+				}
+				if j > i + 1 {
+					name := s[i + 1:j]
+					if val, ok := os.lookup_env(name, context.temp_allocator); ok {
+						strings.write_string(&b, val)
+					}
+					i = j
+					continue
+				}
+			}
+		}
+		strings.write_byte(&b, c)
+		i += 1
+	}
+	return strings.to_string(b)
+}
+
+// expand_path は先頭の "~" をホームディレクトリへ、"$VAR"/"${VAR}" を環境変数値へ展開する
+// (T8-4「~ と環境変数を展開」)。戻り値は常に新規確保された文字列(context.allocator)なので
+// 呼び出し側で delete すること。
+expand_path :: proc(path: string) -> string {
+	p := path
+	if len(p) > 0 && p[0] == '~' {
+		if home, home_ok := get_home_dir(); home_ok {
+			p = fmt.tprintf("%s%s", home, p[1:])
+		}
+	}
+	return expand_env_vars(p)
+}
+
+// resolve_and_ensure_dir は configured_dir(bbl.iniのsave_dir/state_dir)を展開し、
+// 無ければ作成を試みる。configured_dir が空文字なら rom_path と同じディレクトリを返す
+// (BluePrintのデフォルト仕様)。ディレクトリの作成に失敗したら警告してROMと同じ
+// ディレクトリへフォールバックする(T8-4「落とし穴」、起動は止めない)。
+// 戻り値は常に新規確保された文字列(context.allocator)なので呼び出し側で delete すること。
+resolve_and_ensure_dir :: proc(configured_dir: string, rom_path: string) -> string {
+	if strings.trim_space(configured_dir) == "" {
+		return strings.clone(rom_dir(rom_path))
+	}
+
+	expanded := expand_path(configured_dir)
+	// 落とし穴: このOdinバージョンの os.make_directory_all は「パスが既に存在する」場合
+	// .Exist エラーを返す(mkdir -p のように「既存なら成功扱い」にはならない)。
+	// T8-4の仕様は「存在しなければ作成を試みる」なので、既存ディレクトリはここでは
+	// エラー扱いにしない。既存パスがディレクトリではなくファイルだった場合は、その後の
+	// 実際のファイル書き込み(save_ram_write_atomic等)側でエラーになり、そちらで検知される。
+	if err := os.make_directory_all(expanded); err != nil && err != .Exist {
+		fmt.eprintfln(
+			"config: 保存先ディレクトリを作成できませんでした(ROMと同じ場所にフォールバックします): %s (%v)",
+			expanded,
+			err,
+		)
+		delete(expanded)
+		return strings.clone(rom_dir(rom_path))
+	}
+	return expanded
+}
+
+// save_ram_path_for_rom_with_dir は configured_save_dir を考慮した .sav パスを返す
+// (T8-4)。空文字なら既存の save_ram_path_for_rom と完全に同じ結果になる(デフォルト動作を
+// 変えない)。
+save_ram_path_for_rom_with_dir :: proc(rom_path: string, configured_save_dir: string) -> string {
+	if strings.trim_space(configured_save_dir) == "" {
+		return save_ram_path_for_rom(rom_path)
+	}
+	dir := resolve_and_ensure_dir(configured_save_dir, rom_path)
+	defer delete(dir)
+	return fmt.tprintf("%s/%s.sav", dir, rom_stem(rom_path))
+}
+
+// rtc_path_for_rom_with_dir は save_ram_path_for_rom_with_dir と同じ規約の .rtc 版
+// (T8-4: .rtc も save_dir を共有する)。
+rtc_path_for_rom_with_dir :: proc(rom_path: string, configured_save_dir: string) -> string {
+	if strings.trim_space(configured_save_dir) == "" {
+		return rtc_path_for_rom(rom_path)
+	}
+	dir := resolve_and_ensure_dir(configured_save_dir, rom_path)
+	defer delete(dir)
+	return fmt.tprintf("%s/%s.rtc", dir, rom_stem(rom_path))
+}

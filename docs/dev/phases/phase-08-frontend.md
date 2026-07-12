@@ -78,7 +78,7 @@ odin test tests -collection:bbl=src
 
 ### T8-4: セーブ先ディレクトリ設定
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: BluePrint 仕様「セーブファイルは ROM と同じ場所がデフォルト、場所は設定ファイルで変更可能」を完成させる。
 **作るもの**: `src/app/saveram.odin` / `statefile.odin` 変更:
@@ -169,3 +169,5 @@ odin test tests -collection:bbl=src
 2026-07-12 T8-2 完了: `odin test tests -collection:bbl=src` 359 tests 全パス(video_layout_test.odin 5件、input_shortcut_test.odinにAlt/Cmd+Enterトグル判定5件を追加)。video_compute_layoutを純粋関数として切り出し、min(display_w/160, display_h/144)の整数倍率算出とレターボックス中央寄せを単体テストで検証(4Kディスプレイ相当3840x2160でも整数倍率になることを確認)。実機目視: `--scale 3`のウィンドウ表示と`--fullscreen`(実行環境の3440x1440ディスプレイ)をscreencapture+Readツールで確認。フルスクリーン時のログ`video: 表示倍率 = 10 (出力サイズ 3440x1440)`(=min(21,10))を確認し、スクリーンショットで画面全体を覆う黒レターボックス+中央寄せされた10倍表示を確認(画像は開発機のスクリーンショットのため作業記録にのみ使用しコミットはしない)。Alt+Enter/Cmd+Enterのトグル自体はキー判定ロジックの単体テストのみで、実キー入力によるライブトグルは未確認(TUIなし・対話的キー入力不可のため)。
 
 2026-07-12 T8-3 完了: `odin test tests -collection:bbl=src` 359 tests 全パス(T8-2と同一の video_layout_test.odin を共有、追加の専用単体テストは無し。中間テクスチャ生成/SetRenderTarget切替はSDL依存でapp側の統合コードのため純粋関数化していない)。実機目視: `--scale 6 --shader nearest` と `--shader smooth` をそれぞれ起動しscreencaptureで同一座標を撮影、色境界(オレンジ色ブロックと背景グラデーションの境目)を8倍ズームして比較。nearestは1px単位でハードエッジ、smoothは境界に中間色のブレンドされたピクセル列が確認でき、sharp-bilinearの効果を視覚的に確認した。`--scale 1 --shader smooth`(中間倍率2倍未満でスムース処理をスキップするフォールバック経路)でもクラッシュしないことを確認。レンダーターゲット切替の戻し忘れは無い(video_present内でSetRenderTarget(renderer, video.intermediate)の直後に必ずnilへ戻すコードパスのみで、早期returnが無いことをコードレビューで確認)。
+
+2026-07-12 T8-4 完了: `odin test tests -collection:bbl=src` 370 tests 全パス(save_state_dir_test.odin 11件追加。実ディレクトリ作成・実ファイルI/Oを伴うテストを含む)。実装中に発見した既存stdlibの落とし穴: このOdinバージョンの`os.make_directory_all`は対象パスが既に存在すると`.Exist`エラーを返す(mkdir -pのような「既存なら成功」ではない)ため、resolve_and_ensure_dirで`.Exist`を非致命扱いに修正(修正前は2回目以降の起動でsave_dir指定時に毎回ROM同置へフォールバックする不具合があった)。結合検証: 実際に`bbl`バイナリをビルドし、`save_dir = ~/bbl_t84_saves_test`を設定したbbl.ini + MBC2+BATTERYの実ROM(tests/roms/mooneye/emulator-only/mbc2/ram.gb)で起動、osascriptで実際にEscキーを送って終了させ、`~`展開先のディレクトリが自動作成され`testcart.sav`/`testcart.sav.bak`が書き込まれることを確認(テスト後に生成物は削除済み)。state_dir側は同じresolve_and_ensure_dir/state_path_for_rom_with_dirの単体テスト(実ファイルの保存→ロードのラウンドトリップ)で検証。

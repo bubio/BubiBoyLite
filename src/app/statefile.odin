@@ -56,6 +56,50 @@ state_load :: proc(emu: ^core.Emulator, rom_path: string, slot: int) -> (err: co
 	return err, true
 }
 
+// state_path_for_rom_with_dir は configured_state_dir(bbl.iniのstate_dir)を考慮した
+// .state パスを返す(T8-4)。空文字なら既存の state_path_for_rom と完全に同じ結果になる
+// (デフォルト動作を変えない)。dir解決とディレクトリ作成は saveram.odin の
+// resolve_and_ensure_dir を .sav/.rtc と共通で使う。
+state_path_for_rom_with_dir :: proc(rom_path: string, slot: int, configured_state_dir: string) -> string {
+	if strings.trim_space(configured_state_dir) == "" {
+		return state_path_for_rom(rom_path, slot)
+	}
+	dir := resolve_and_ensure_dir(configured_state_dir, rom_path)
+	defer delete(dir)
+	if slot == 1 {
+		return fmt.tprintf("%s/%s.state", dir, rom_stem(rom_path))
+	}
+	return fmt.tprintf("%s/%s.state%d", dir, rom_stem(rom_path), slot)
+}
+
+// state_save_with_dir / state_load_with_dir は state_save / state_load の
+// configured_state_dir 対応版(T8-4)。main.odin はこちらを呼ぶ。
+state_save_with_dir :: proc(emu: ^core.Emulator, rom_path: string, slot: int, configured_state_dir: string) -> bool {
+	data := core.savestate_write(emu)
+	defer delete(data)
+	path := state_path_for_rom_with_dir(rom_path, slot, configured_state_dir)
+	return save_ram_write_atomic(path, data)
+}
+
+state_load_with_dir :: proc(
+	emu: ^core.Emulator,
+	rom_path: string,
+	slot: int,
+	configured_state_dir: string,
+) -> (
+	err: core.Load_Error,
+	ok: bool,
+) {
+	path := state_path_for_rom_with_dir(rom_path, slot, configured_state_dir)
+	data, load_ok := save_ram_load(path)
+	if !load_ok {
+		return .None, false
+	}
+	defer delete(data)
+	err = core.savestate_read(emu, data)
+	return err, true
+}
+
 // state_load_error_message は core.Load_Error を app 側表示用の文字列に変換する
 // (cartridge_error_message と同じ位置づけ)。
 state_load_error_message :: proc(err: core.Load_Error) -> string {
