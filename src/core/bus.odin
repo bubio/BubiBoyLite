@@ -11,16 +11,19 @@ TAC_ADDR :: 0xFF07
 IF_ADDR :: 0xFF0F
 DMA_ADDR :: 0xFF46
 VBK_ADDR :: 0xFF4F // T6-2: [CGB] VRAM バンク切替(bit0 のみ有効)
+SVBK_ADDR :: 0xFF70 // T6-3: [CGB] WRAM バンク切替(bit2-0、1-7。0指定は1扱い)
 
 OAM_SIZE :: 160
 VRAM_BANK_SIZE :: 8192
+WRAM_BANK_SIZE :: 4096
 
 Bus :: struct {
 	mode:                      Gb_Mode, // T6-1: ヘッダのCGBフラグから決まる実行モード(emulator_load_romが設定)
 	cart:                      Cartridge, // ヘッダ情報・ROM(借用)・外部RAM(所有)・MBC状態(T4-2、cartridge.odin/mbc.odin)
 	vram:                      [2][VRAM_BANK_SIZE]u8, // T6-2: バンク0=DMG互換、バンク1=CGB属性/追加タイルデータ
 	vram_bank:                 u8, // FF4F(VBK) bit0。DMGモードでは常に0固定(書き込み無視)
-	wram:                      [8192]u8,
+	wram:                      [8][WRAM_BANK_SIZE]u8, // T6-3: C000-CFFFはバンク0固定、D000-DFFFはこのうちwram_bankを使う
+	wram_bank:                 u8, // D000-DFFF が使う解決済みバンク番号(1-7)。bus_power_onで1初期化、SVBK書込みで更新(0→1読み替え済み)
 	oam:                       [160]u8,
 	hram:                      [127]u8,
 	io:                        [128]u8, // FF00-FF7F の生バックストア(個別実装されたレジスタ以外は読み出し時 0xFF)
@@ -127,6 +130,32 @@ bus_vram_read_bank :: proc(bus: ^Bus, bank: u8, addr: u16) -> u8 {
 	return bus.vram[bank & 1][addr - 0x8000]
 }
 
+// wram_active_bank は D000-DFFF(およびそのエコー)が実際に使う解決済みバンク番号(1-7)を返す
+// (T6-3)。SVBK に 0 が書かれた場合の「0指定は1扱い」を書き込み時ではなくここで解決するため、
+// bus_power_on を呼ばない生の Bus{}(テストで多用、T2-3等の既存慣習)でも常に正しく動く。
+@(private)
+wram_active_bank :: proc(bus: ^Bus) -> u8 {
+	b := bus.wram_bank & 0x07
+	return b == 0 ? 1 : b
+}
+
+// wram_locate はCPUアドレス(C000-DFFF または E000-FDFFのエコー)を実バンク番号とバンク内
+// オフセットへ変換する(T6-3)。エコーRAMはC000-DDFFだけをミラーする(DE00-DFFFはミラー
+// されない、実機のOAM領域との兼ね合いによる仕様どおりの範囲)。
+// DMGモードではSVBKが無視され常に1が有効バンクなので(wram_active_bank参照)、
+// 「C000-DFFF直結の2バンク相当」の落とし穴要件を自然に満たす。
+@(private)
+wram_locate :: proc(bus: ^Bus, addr: u16) -> (bank: u8, offset: u16) {
+	a := addr
+	if a >= 0xE000 {
+		a -= 0x2000
+	}
+	if a <= 0xCFFF {
+		return 0, a - 0xC000
+	}
+	return wram_active_bank(bus), a - 0xD000
+}
+
 // bus_read は CPU からの読み出し経路。OAM DMA 中は HRAM(FF80-FFFE)以外を読むと
 // 0xFF になる(実バス競合の簡易モデル、T2-5)。DMA 自身の内部読み出しは
 // この制限を受けない bus_read_raw を直接使う。
@@ -146,10 +175,11 @@ bus_read_raw :: proc(bus: ^Bus, addr: u16) -> u8 {
 		return bus.vram[bus.vram_bank][addr - 0x8000]
 	case addr <= 0xBFFF:
 		return mbc_read(&bus.cart, addr)
-	case addr <= 0xDFFF:
-		return bus.wram[addr - 0xC000]
 	case addr <= 0xFDFF:
-		return bus.wram[addr - 0xE000] // エコーRAM: WRAM のミラー
+		// C000-CFFFはバンク0固定、D000-DFFFはSVBK選択バンク、E000-FDFFはC000-DDFFのエコー
+		// (T6-3、wram_locateが3領域まとめて解決する)。
+		bank, offset := wram_locate(bus, addr)
+		return bus.wram[bank][offset]
 	case addr <= 0xFE9F:
 		return bus.oam[addr - 0xFE00]
 	case addr <= 0xFEFF:
@@ -171,10 +201,9 @@ bus_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 		bus.vram[bus.vram_bank][addr - 0x8000] = value
 	case addr <= 0xBFFF:
 		mbc_write(&bus.cart, addr, value) // 外部RAM(T4-2)
-	case addr <= 0xDFFF:
-		bus.wram[addr - 0xC000] = value
 	case addr <= 0xFDFF:
-		bus.wram[addr - 0xE000] = value
+		bank, offset := wram_locate(bus, addr)
+		bus.wram[bank][offset] = value
 	case addr <= 0xFE9F:
 		bus.oam[addr - 0xFE00] = value
 	case addr <= 0xFEFF:
@@ -223,6 +252,11 @@ bus_io_read :: proc(bus: ^Bus, addr: u16) -> u8 {
 			return 0xFF
 		}
 		return 0xFE | bus.vram_bank
+	case SVBK_ADDR:
+		if bus.mode != .Cgb {
+			return 0xFF
+		}
+		return 0xF8 | wram_active_bank(bus) // 0指定は1扱いなので読み出しも解決済みバンクを返す
 	case:
 		return 0xFF
 	}
@@ -257,6 +291,11 @@ bus_io_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 		// 落とし穴(phase-06): DMG モードでは VBK 書き込みを無視しバンク0固定のままにする。
 		if bus.mode == .Cgb {
 			bus.vram_bank = value & 0x01
+		}
+	case SVBK_ADDR:
+		// 落とし穴(phase-06): DMG モードでは SVBK 書き込みを無視する。
+		if bus.mode == .Cgb {
+			bus.wram_bank = value & 0x07 // 0→1読み替えは読み出し/アドレス解決側(wram_active_bank)で行う
 		}
 	case:
 		bus.io[addr - 0xFF00] = value

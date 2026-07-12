@@ -49,8 +49,11 @@ run_rom_window :: proc(opts: Options) {
 	}
 	defer delete(rom_data)
 
-	emu: core.Emulator
-	if !core.emulator_load_rom(&emu, rom_data) {
+	// T6-3: WRAM 8バンク化でEmulator構造体が大きくなりスタック確保が危険域(コンパイラ警告)に
+	// なったため、ヒープ確保に切り替える(値ではなくポインタとして扱う。以下emuは^Emulator)。
+	emu := new(core.Emulator)
+	defer free(emu)
+	if !core.emulator_load_rom(emu, rom_data) {
 		message := core.cartridge_error_message(emu.bus.cart_load_error, emu.bus.cart.info.type_code)
 		fmt.eprintfln("ROM のロードに失敗しました: %s (%s)", opts.rom_path, message)
 		os.exit(1)
@@ -76,7 +79,7 @@ run_rom_window :: proc(opts: Options) {
 	defer video_destroy(&video)
 
 	audio: Audio
-	if !audio_init(&audio, &emu) {
+	if !audio_init(&audio, emu) {
 		os.exit(1)
 	}
 	defer audio_destroy(&audio)
@@ -112,9 +115,9 @@ run_rom_window :: proc(opts: Options) {
 				if event.key.keysym.sym == .ESCAPE {
 					running = false
 				}
-				input_handle_key_event(&emu, event.key, true)
+				input_handle_key_event(emu, event.key, true)
 			case .KEYUP:
-				input_handle_key_event(&emu, event.key, false)
+				input_handle_key_event(emu, event.key, false)
 			}
 		}
 
@@ -142,7 +145,7 @@ run_rom_window :: proc(opts: Options) {
 			} else if save_pending {
 				save_idle_frames += 1
 				if save_idle_frames >= SAVE_IDLE_FRAMES {
-					save_ram_now(&emu, save_path)
+					save_ram_now(emu, save_path)
 					save_pending = false
 					save_idle_frames = 0
 				}
@@ -162,7 +165,7 @@ run_rom_window :: proc(opts: Options) {
 
 	// 終了時セーブ(T4-6)。バッテリー無し/外部RAM無しカートリッジでは save_ram_now が
 	// 何もせず戻る(core.mbc_export_ram の ok=false)。
-	save_ram_now(&emu, save_path)
+	save_ram_now(emu, save_path)
 }
 
 // save_ram_now はカートリッジの外部RAMをエクスポートし、.sav へアトミック書き込みする。
@@ -186,8 +189,9 @@ run_test_pattern_window :: proc(opts: Options) {
 	}
 	defer video_destroy(&video)
 
-	emu: core.Emulator
-	core.emulator_render_test_pattern(&emu)
+	emu := new(core.Emulator) // T6-3: run_rom_window と同じ理由でヒープ確保(スタックオーバーフロー警告回避)
+	defer free(emu)
+	core.emulator_render_test_pattern(emu)
 
 	running := true
 	for running {

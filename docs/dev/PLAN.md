@@ -21,7 +21,7 @@ BubiBoyLite（実行ファイル名 `bbl`）の開発計画のマスタードキ
 | 3 | PPU (DMG) | 🟢 2026-07-11 | 8/8 | dmg-acid2 のフレームバッファハッシュ一致 + ROM-only ゲームが起動・操作可能 | [詳細](phases/phase-03-ppu.md) |
 | 4 | カートリッジ / MBC | 🟢 2026-07-11 | 7/7 | cpu_instrs 統合版パス、Mooneye MBC 系パス、.sav が再起動後も残る | [詳細](phases/phase-04-cartridge.md) |
 | 5 | APU・同期 | 🟢 2026-07-12 | 7/7 | Blargg dmg_sound 対象パス、実ゲームで音割れなく実機速度を維持 | [詳細](phases/phase-05-apu.md) |
-| 6 | GBC 機能 | 🟡 | 2/8 | cgb-acid2 ハッシュ一致、GBC 専用ゲームがフルカラーで動作 | [詳細](phases/phase-06-cgb.md) |
+| 6 | GBC 機能 | 🟡 | 3/8 | cgb-acid2 ハッシュ一致、GBC 専用ゲームがフルカラーで動作 | [詳細](phases/phase-06-cgb.md) |
 | 7 | セーブステート | ⚪ | 0/5 | save→load で完全再現、MBC3 RTC がプロセス再起動をまたいで進む | [詳細](phases/phase-07-savestate.md) |
 | 8 | フロントエンド完成 | ⚪ | 0/7 | BluePrint 記載の全 CLI オプションが仕様どおり + 初回起動で設定ファイル自動生成 | [詳細](phases/phase-08-frontend.md) |
 | 9 | TUI | ⚪ | 0/6 | `bbl` 引数なし起動で TUI → ROM 選択 → 起動 → 終了が完結、`--recent` が仕様どおり | [詳細](phases/phase-09-tui.md) |
