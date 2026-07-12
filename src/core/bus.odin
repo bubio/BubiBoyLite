@@ -12,6 +12,11 @@ IF_ADDR :: 0xFF0F
 DMA_ADDR :: 0xFF46
 KEY1_ADDR :: 0xFF4D // T6-6: [CGB] ダブルスピード切替(bit7=現速度読取, bit0=切替準備書込)
 VBK_ADDR :: 0xFF4F // T6-2: [CGB] VRAM バンク切替(bit0 のみ有効)
+HDMA1_ADDR :: 0xFF51 // T6-7: [CGB] VRAM DMA ソース上位バイト
+HDMA2_ADDR :: 0xFF52 // T6-7: [CGB] VRAM DMA ソース下位バイト(下位4bit無視)
+HDMA3_ADDR :: 0xFF53 // T6-7: [CGB] VRAM DMA 宛先上位バイト(上位3bitマスク、常に0x80起点)
+HDMA4_ADDR :: 0xFF54 // T6-7: [CGB] VRAM DMA 宛先下位バイト(下位4bit無視)
+HDMA5_ADDR :: 0xFF55 // T6-7: [CGB] VRAM DMA 開始/状態(bit7=0:GDMA即時, 1:HDMA毎HBlank)
 BCPS_ADDR :: 0xFF68 // T6-4: [CGB] BG パレットRAM インデックス(bit7=オートインクリメント)
 BCPD_ADDR :: 0xFF69 // T6-4: [CGB] BG パレットRAM データ
 OCPS_ADDR :: 0xFF6A // T6-4: [CGB] OBJ パレットRAM インデックス
@@ -38,6 +43,14 @@ Bus :: struct {
 	hw_cycles:                 u64, // 累計 T-cycle(PPU/APU側=実時間クロック。T6-6、emulator_run_frameのフレーム境界はこちらで数える)
 	double_speed:              bool, // T6-6: KEY1 bit7相当。trueの間CPU/Timer/シリアルは2倍速、PPU/APUは等速
 	speed_switch_prepared:     bool, // T6-6: KEY1 bit0相当(書込み)。STOP実行時にtrueなら速度反転してfalseに戻す
+
+	// T6-7: HDMA/GDMA(VRAM DMA)。
+	hdma_source:               u16, // HDMA1:HDMA2(下位4bitは書込み時に既にマスク済み)
+	hdma_destination:          u16, // HDMA3:HDMA4。常に0x8000起点、下位4bit・上位3bit(0x9FFF超え)はマスク済み
+	hdma_remaining:            int, // 残りブロック数(16バイト単位、1-128)。0=非アクティブ
+	hdma_active:               bool, // true の間 HDMA(HBlank毎転送)が進行中。GDMAは即時完了するのでtrueにならない
+	hdma_aborted:              bool, // 直近にHDMA中断(bit7=0書込み)が起きたか(FF55読み出し値の決定に使う)
+	hdma_aborted_remaining:    int, // 中断時点で残っていたブロック数(FF55読み出し用のスナップショット)
 	serial_log:                [dynamic]u8, // シリアル出力キャプチャ(T1-7、serial.odin)
 	div_counter:               u16, // DIV の内部カウンタ(上位8bitがDIVとして読める。timer.odin)
 	tima:                      u8, // 0xFF05
@@ -150,6 +163,61 @@ dma_tick_one_mcycle :: proc(bus: ^Bus) {
 		if bus.dma_index >= OAM_SIZE {
 			bus.dma_active = false
 		}
+	}
+}
+
+// hdma_copy_block は現在の hdma_source/hdma_destination から16バイトを VRAM(現在の VBK
+// バンク)へコピーし、両アドレスを次のブロックへ進める(T6-7)。宛先は0x1FF0でマスクした
+// オフセットに折り返す(BubiBoy Bus.fs のHdma.copyBlock方式、VRAM境界を超えない)。
+// ソース読み出しは bus_read_raw を再利用する(ROM/WRAM/VRAM等どの領域でも読める。
+// dma_active によるバス競合0xFF化は受けない、OAM DMAと同じ扱い)。
+@(private)
+hdma_copy_block :: proc(bus: ^Bus) {
+	dest_base := int(bus.hdma_destination - 0x8000)
+	for offset in 0 ..< 16 {
+		value := bus_read_raw(bus, bus.hdma_source + u16(offset))
+		bus.vram[bus.vram_bank][dest_base + offset] = value
+	}
+	bus.hdma_source += 0x10
+	bus.hdma_destination = 0x8000 | ((bus.hdma_destination + 0x10 - 0x8000) & 0x1FF0)
+}
+
+// hdma_run_general は GDMA(HDMA5 bit7=0)を実行する: (n+1)*16バイトを即座に全転送する。
+// 「CPU停止時間も加算」(phase-06-cgb.md)を、転送1ブロックあたり8 T-cycleのbus_tickで
+// 表現する(Pan Docs実測値相当、ダブルスピードでも同じT-cycle数を消費する=hw_cycles換算で
+// 半分になりPPU/APU側は等速に見える。T6-6のbus_tick経由なので自動的にそうなる)。
+@(private)
+hdma_run_general :: proc(bus: ^Bus) {
+	for bus.hdma_remaining > 0 {
+		hdma_copy_block(bus)
+		bus.hdma_remaining -= 1
+		bus_tick(bus, 8)
+	}
+	bus.hdma_active = false
+}
+
+// hdma_start_or_cancel は HDMA5(FF55)への書き込みを処理する(T6-7)。
+// 進行中のHDMA(HBlank毎転送)にbit7=0を書くと中断し、残りブロック数を記録して以後の
+// FF55読み出しに反映する(落とし穴)。それ以外は新しい転送を開始する: bit7=1ならHDMA
+// (HBlank毎に16バイト、ppu.odinのHBlank遷移フックが進める)、bit7=0ならGDMA(即時全転送)。
+@(private)
+hdma_start_or_cancel :: proc(bus: ^Bus, value: u8) {
+	if bus.hdma_active && value & 0x80 == 0 {
+		bus.hdma_aborted = true
+		bus.hdma_aborted_remaining = bus.hdma_remaining
+		bus.hdma_active = false
+		return
+	}
+
+	length := int(value & 0x7F) + 1
+	bus.hdma_remaining = length
+	bus.hdma_aborted = false
+
+	if value & 0x80 != 0 {
+		bus.hdma_active = true // HDMA: HBlank毎にppu.odin側から1ブロックずつ進む
+	} else {
+		bus.hdma_active = false
+		hdma_run_general(bus) // GDMA: ここで即時に全ブロック転送する
 	}
 }
 
@@ -295,6 +363,26 @@ bus_io_read :: proc(bus: ^Bus, addr: u16) -> u8 {
 			return 0xFF
 		}
 		return 0xFE | bus.vram_bank
+	case HDMA1_ADDR, HDMA2_ADDR, HDMA3_ADDR, HDMA4_ADDR:
+		// HDMA1-4は書き込み専用として扱う(BubiBoy Bus.fs同様、読み出しは他の未実装レジスタと
+		// 同じ0xFF。実機ではソース/宛先レジスタの読み出しは仕様上未定義/使われない)。
+		if bus.mode != .Cgb {
+			return 0xFF
+		}
+		return 0xFF
+	case HDMA5_ADDR:
+		if bus.mode != .Cgb {
+			return 0xFF
+		}
+		if bus.hdma_active {
+			// 落とし穴: bit7は「非アクティブ」を表すので進行中は0のまま、下位7bitに残りブロック-1。
+			return u8(bus.hdma_remaining - 1)
+		}
+		if bus.hdma_aborted {
+			// 中断直後は残っていたブロック数-1をbit7=1つきで読める(BubiBoy Bus.fs方式)。
+			return u8(bus.hdma_aborted_remaining - 1) | 0x80
+		}
+		return 0xFF // 非アクティブ(GDMA完了後・未使用時)
 	case SVBK_ADDR:
 		if bus.mode != .Cgb {
 			return 0xFF
@@ -372,6 +460,29 @@ bus_io_write :: proc(bus: ^Bus, addr: u16, value: u8) {
 		// 落とし穴(phase-06): DMG モードでは VBK 書き込みを無視しバンク0固定のままにする。
 		if bus.mode == .Cgb {
 			bus.vram_bank = value & 0x01
+		}
+	case HDMA1_ADDR:
+		if bus.mode == .Cgb {
+			bus.hdma_source = (u16(value) << 8) | (bus.hdma_source & 0x00F0)
+		}
+	case HDMA2_ADDR:
+		// 落とし穴: 下位4bitは無視(常に0)。
+		if bus.mode == .Cgb {
+			bus.hdma_source = (bus.hdma_source & 0xFF00) | u16(value & 0xF0)
+		}
+	case HDMA3_ADDR:
+		// 落とし穴: 上位3bitはマスクされ常に0x8000起点(VRAM内)になる。
+		if bus.mode == .Cgb {
+			bus.hdma_destination = 0x8000 | (u16(value & 0x1F) << 8) | (bus.hdma_destination & 0x00F0)
+		}
+	case HDMA4_ADDR:
+		// 落とし穴: 下位4bitは無視(常に0)。
+		if bus.mode == .Cgb {
+			bus.hdma_destination = 0x8000 | (bus.hdma_destination & 0x1F00) | u16(value & 0xF0)
+		}
+	case HDMA5_ADDR:
+		if bus.mode == .Cgb {
+			hdma_start_or_cancel(bus, value)
 		}
 	case SVBK_ADDR:
 		// 落とし穴(phase-06): DMG モードでは SVBK 書き込みを無視する。

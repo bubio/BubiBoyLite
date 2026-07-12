@@ -127,7 +127,7 @@ odin test tests -collection:bbl=src   # cgb_acid2 が PASS
 
 ### T6-7: HDMA / GDMA
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: VRAM への高速 DMA を実装する。
 **作るもの**: bus.odin:
@@ -257,3 +257,19 @@ KEY1準備→STOP→bit7反転+DIVリセット、往復切替、prepared無しST
 という落とし穴に最初にはまり、書き込み先をWRAMへ変更して解決した)。
 `odin test tests -collection:bbl=src` 298 tests 全パス(既存294+新規4、dmg-acid2ハッシュ含め
 リグレッションなし)。
+
+2026-07-12 T6-7 完了: bus.odin に HDMA1-4(FF51-54、ソース下位4bit無視・宛先0x8000起点+
+上位3bit/下位4bitマスク)とHDMA5(FF55)を実装。`hdma_start_or_cancel`がFF55書込みを処理:
+進行中(hdma_active)にbit7=0を書くと中断(残りブロック数を`hdma_aborted_remaining`に記録し、
+以後のFF55読み出しは`(残り-1)|0x80`を返す)。それ以外はbit7=1でHDMA(hdma_activeを立てて
+HBlank待ち)、bit7=0でGDMA(`hdma_run_general`が(n+1)*16バイトを即時に`hdma_copy_block`で
+転送)。「CPU停止時間も加算」は1ブロックごとに`bus_tick(bus,8)`を呼ぶことで表現した
+(T6-6のbus_tick経由なのでダブルスピード中もPPU/APU側は自動的に等速のまま)。HDMA中の
+FF55読み出しはbit7=0(進行中)固定・下位=残りブロック-1、非アクティブ時は0xFF
+(中断直後を除く)。ppu.odinのppu_tick、モード3→0(HBlank)遷移フックに`hdma_active`なら
+`hdma_copy_block`を1回(16バイト)呼ぶ処理を追加。「LCD off中のHDMAは進まない」は
+ppu_tickがLCDC bit7=0で早期returnする既存実装により自然に満たされる(このタスクでは
+特別な分岐を追加していない)ことを確認した。単体テスト5件追加(tests/cgb_hdma_test.odin):
+GDMA全量転送とCPU停止時間、HDMAのHBlank毎16バイト進行、中断とFF55読み値、LCD off中の停止、
+DMGモードでの無視。`odin test tests -collection:bbl=src` 303 tests 全パス(既存298+新規5、
+dmg-acid2ハッシュ含めリグレッションなし)。

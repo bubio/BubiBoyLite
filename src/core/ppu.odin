@@ -314,6 +314,17 @@ ppu_tick :: proc(bus: ^Bus, t_cycles: int) {
 		}
 		if prev_mode == .Draw && p.mode == .HBlank {
 			ppu_render_scanline(bus)
+
+			// T6-7: HDMA(HBlank毎16バイト転送)のフック。LCD off中はppu_tick自体が早期returnする
+			// ため(このprocの先頭を参照)、この分岐に到達すること自体がない=「LCD off中のHDMAは
+			// 進まない」が自然に満たされる(落とし穴として明記されている要件)。
+			if bus.mode == .Cgb && bus.hdma_active {
+				hdma_copy_block(bus)
+				bus.hdma_remaining -= 1
+				if bus.hdma_remaining <= 0 {
+					bus.hdma_active = false
+				}
+			}
 		}
 
 		// STAT blocking: 条件の OR が変化しうるのは LYC 一致・モードが変わった瞬間だけだが、
