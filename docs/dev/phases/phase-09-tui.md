@@ -39,7 +39,7 @@ odin test tests -collection:bbl=src   # recent 履歴の単体テスト PASS
 
 ### T9-1: ターミナル制御基盤
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: raw mode・ANSI 描画・リサイズ対応の TUI 基盤を作る。
 **作るもの**: `src/app/tui.odin`:
@@ -56,7 +56,14 @@ odin test tests -collection:bbl=src   # recent 履歴の単体テスト PASS
 ./bbl -v            # TUI を経由せず従来どおり
 echo | ./bbl        # 非 TTY: エラーメッセージ + exit 1
 ```
-**落とし穴**: 復元漏れするとユーザーのターミナルが壊れる。異常終了パスでも必ず復元する（Odin の defer はパニックでも走るが、os.exit は defer を飛ばすので TUI 起動中の exit は復元関数経由にする）。Windows 10 の古いコンソールでは VT 処理の有効化が必須。
+**落とし穴**: 復元漏れするとユーザーのターミナルが壊れる。異常終了パスでも必ず復元する。
+**【実装時の訂正】** 当初の記述「Odin の defer はパニックでも走る」は誤り(実装中に検証: panic()/assert() は
+アンワインドせず即 trap するため defer は一切実行されない)。正しくは `context.assertion_failure_proc` を
+上書きして panic 直前にフックする方式を使う(tui.odin 冒頭コメント参照)。また index out-of-range 等の
+境界チェック違反は assertion_failure_proc すら経由せず `runtime.trap()`(実測 SIGTRAP)へ直行するため、
+SIGINT/TERM/HUP に加えて SIGILL/SIGTRAP/SIGSEGV/SIGBUS/SIGABRT/SIGFPE のシグナルハンドラも必須
+(これらもセーフティネットとして実装・検証済み)。os.exit は defer を飛ばすので TUI 起動中の exit は
+tui_exit_process() 経由にする。Windows 10 の古いコンソールでは VT 処理の有効化が必須(Windows 実機未検証、検証ログ参照)。
 **依存**: なし
 
 ---
@@ -157,3 +164,32 @@ odin test tests -collection:bbl=src
 ## 検証ログ
 
 （タスク完了ごとに 1 行追記）
+
+2026-07-12 T9-1 完了: `odin build src/app -collection:bbl=src -out:bbl -debug` 成功、
+`odin test tests -collection:bbl=src` 395件全パス(純粋関数のtui単体テスト13件追加)。
+DoDコマンド3点実行: `./bbl -v`(TUI経由せず従来通り表示)、`echo | ./bbl`(非TTYでエラー+exit 1)、
+`./bbl --headless`(TUI経路に影響なし)。
+目視できないデモ画面(枠+カーソル移動+q復元)は、Python(`pty.openpty`)で疑似端末を確保し
+子プロセスとしてbblを起動、矢印キー(down,down,up)とqのバイト列を送り込んで検証した:
+(1) 描画されたANSIバッファを文字列として解析し、カーソルマーカー(▸)が期待した行
+(down,down,up後は項目2)に来ていることを確認、(2) `termios.tcgetattr`でraw mode化前後の
+端末属性が起動前後で完全一致(ECHO/ICANON含む全フィールド)することを確認(stty -gの
+プログラム的等価チェック)。Ctrl+C(SIGINT)・意図的なpanic()・意図的なindex out-of-range
+(境界チェック違反、assertion_failure_procを経由しないruntime.trap経路)の3パターンでも
+同様にpty経由で強制終了させ、いずれも端末状態(termios全フィールド)が起動前と一致することを
+確認した(検証用の一時的なテストキーはコミット前に削除済み)。
+**実装中に発見した2件のバグと修正**:
+(1) `tui_plat_disable_raw`で`tcsetattr(..., .TCSAFLUSH, ...)`を使うと「未転送出力の
+drainを待つ」ため、端末側の読み出しが止まっている瞬間に呼ぶと無期限にブロックする
+(pty経由の自動テストで再現)。復元時はdrain不要なので`.TCSANOW`に変更して解消。
+(2) デモループが毎回(アイドル中も)全画面writeしていたため高頻度出力になり、上記(1)と
+組み合わさると出力バッファが溢れて固まりやすかった。「状態が変化した時だけ描画」する
+dirtyフラグ方式に変更(ちらつき防止の本来の意図にも合致)。
+また `context.assertion_failure_proc` の代入を`tui_enter()`内で行っていたところ、
+Odinの暗黙contextは「代入したprocの残り実行+呼び出し先」にしか伝播せず、呼び出し元
+(run_tui)がtui_enter()から戻った後には効かないというOdinの仕様上のバグを実装中に発見・修正
+(呼び出し元run_tui自身で代入するよう変更)。上記の訂正内容は本ファイルのT9-1「落とし穴」欄にも反映した。
+**未確認**: Windows(SetConsoleMode/ConsoleCtrlHandler経路)は開発機にWindows環境が無いため
+実機ビルド・実行未確認(tui_windows.odinのコメントに明記)。実際のターミナルウィンドウでの
+目視上の表示崩れ有無(全角文字の折り返し、実端末フォントでの罫線文字の見え方等)も未確認
+(pty経由の自動検証はバイト列の構造的検証に留まる)。

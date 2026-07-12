@@ -51,7 +51,10 @@ main :: proc() {
 		return
 	}
 
-	run_test_pattern_window(opts, cfg)
+	// T9-1: ROM未指定時はTUIを起動する(BluePrint「Claude Codeなどに見られるTUIも提供する」)。
+	// 非TTYの場合は run_tui 内で「TUIを起動できません」+ exit 1 になる(以前あった
+	// run_test_pattern_window 呼び出しはTUIに置き換わったことで到達不能になったため削除)。
+	run_tui(opts, cfg)
 }
 
 // run_rom_window は ROM を読み込み実際にエミュレーションを実行しながら SDL2 ウィンドウへ
@@ -312,37 +315,3 @@ show_status :: proc(video: ^Video, message: string) {
 	video_set_title(video, message)
 }
 
-// run_test_pattern_window は ROM 未指定 & TUI 未実装の間、テストパターンを表示する
-// イベントループ。Esc またはウィンドウクローズで終了する。
-run_test_pattern_window :: proc(opts: Options, cfg: Config) {
-	video, video_ok := video_init(cfg.scale, cfg.fullscreen, cfg.shader)
-	if !video_ok {
-		os.exit(1)
-	}
-	defer video_destroy(&video)
-
-	emu := new(core.Emulator) // T6-3: run_rom_window と同じ理由でヒープ確保(スタックオーバーフロー警告回避)
-	defer free(emu)
-	core.emulator_render_test_pattern(emu)
-
-	running := true
-	for running {
-		event: sdl.Event
-		for sdl.PollEvent(&event) {
-			#partial switch event.type {
-			case .QUIT:
-				running = false
-			case .KEYDOWN:
-				if event.key.keysym.sym == .ESCAPE {
-					running = false
-				}
-				if input_is_fullscreen_toggle(event.key) {
-					video_toggle_fullscreen(&video)
-				}
-			}
-		}
-
-		video_present(&video, emu.framebuffer[:])
-		sdl.Delay(16)
-	}
-}
