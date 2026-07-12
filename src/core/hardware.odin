@@ -8,11 +8,20 @@ SCREEN_HEIGHT :: 144
 CPU_HZ :: 4194304
 CYCLES_PER_FRAME :: 70224
 
-// Gb_Mode はエミュレート対象のハードウェアモード(T6-1)。DMG 互換モード(ヘッダ0x0143=0x80の
-// ROMがCGB機能を使わない場合)は内部的には単に Cgb のまま(実行時にゲームが CGB 機能を
-// 使わないだけ)なので、内部モードは2値で足りる。ただし「CGBハードでDMGソフト」を動かす際の
-// 互換パレット適用はT6-8で別途扱う(cgb_flag が Dmg_Only のときに固定グレーパレットを
-// パレットRAMへ書く、という形でPpuの色決定ロジック自体は変えない)。
+// Gb_Mode はエミュレート対象のハードウェアモード(T6-1)。ヘッダのCGBフラグが0x80/0xC0の
+// ROMはCgb、それ以外(Dmg_Only)はDmgで起動する。内部モードはこの2値で足りる。
+//
+// T6-8の方針(DMG互換パレット): 実 BIOS(ブートROM)を読み込まない方針(BluePrint/CLAUDE.md)
+// のため、本物のCGBがブートROM内でタイトルハッシュを見て互換パレットを選ぶ処理は実装しない。
+// 代わりに、DMGソフト(cgb_flag=Dmg_Only)は「CGBハードでDMGソフトを互換パレットで動かす」
+// 特別なモードを持たず、単純にDmgモードのまま起動し続ける設計にした
+// (gb_mode_from_cgb_flagがDmg_Onlyのときに .Dmg を返すことがそのまま実装であり、
+// これ以上の分岐は存在しない)。つまりDMGソフトは実質フェーズ3までのDMGモード
+// (BGP/OBP0/OBP1によるグレー4階調、ppu.odinのdmg_shade)で動き続け、CGBパレットRAM
+// (T6-4、bg_palette_ram/obj_palette_ram)には一切触れない。「グレー4階調を固定パレットとして
+// 設定する」という要件は、この経路がそもそもBGP/OBPのグレー4階調(dmg_shade)を使い続けることで
+// 自動的に満たされる(architecture.md「core と app の分離」・「スコープ外」節の実BIOS非対応方針に
+// 準拠した最小実装)。
 Gb_Mode :: enum {
 	Dmg,
 	Cgb,

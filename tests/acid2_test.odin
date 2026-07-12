@@ -66,3 +66,65 @@ test_dmg_acid2_framebuffer_hash :: proc(t: ^testing.T) {
 		ACID2_EXPECTED_HASH,
 	)
 }
+
+// cgb-acid2(T6-8)のフレームバッファハッシュ判定。手順はdmg-acid2と同じ(testing.md「acid2 方式」)。
+// 期待値の決め方: 一時ツール(scratchpad、リポジトリ非収録)でこのテストと全く同じ手順
+// (emulator_load_rom→emulator_run_frame x100→bus.ppu.framebuffer)でBMPを生成し、
+// mattcurrie/cgb-acid2 公式リポジトリ同梱の img/reference.png(reference-cgb.pngとして
+// tests/roms/acid2/に取得済み)とPythonのPillowでピクセル単位比較(diff pixels: 0/23040、
+// maxdiff: 0)、さらにReadツールで両画像を目視確認して完全一致を確認した
+// (顔の輪郭・目のハイライト・眉のカーブ・鼻・口・"HELLO WORLD!"の文字色・ロゴテキストすべて
+// 一致、崩れなし)。そのときのハッシュをここに固定する(以後はリグレッションガードとして機能する)。
+
+@(private = "file")
+CGB_ACID2_ROM_PATH :: "tests/roms/acid2/cgb-acid2.gbc"
+
+// 2026-07-12 に目視確認のうえ固定(上記の手順で生成したBMPをPillowでピクセル差分0を確認、
+// さらにReadツールでreference-cgb.pngと目視比較。以後はリグレッションガードとして機能する)。
+@(private = "file")
+CGB_ACID2_EXPECTED_HASH :: u64(0x8C0A422078D38470)
+
+@(private = "file")
+CGB_ACID2_FRAME_COUNT :: 100
+
+@(test)
+test_cgb_acid2_framebuffer_hash :: proc(t: ^testing.T) {
+	if !os.exists(CGB_ACID2_ROM_PATH) {
+		fmt.printfln(
+			"acid2_test: ROM 未取得のためスキップ: %s (./scripts/fetch_test_roms.sh を実行してください)",
+			CGB_ACID2_ROM_PATH,
+		)
+		return
+	}
+
+	data, err := os.read_entire_file(CGB_ACID2_ROM_PATH, context.allocator)
+	if err != nil {
+		testing.fail_now(t, fmt.tprintf("acid2_test: ROM を読み込めません: %v", err))
+	}
+	defer delete(data)
+
+	emu := new(core.Emulator)
+	defer free(emu)
+	defer core.bus_destroy(&emu.bus)
+	loaded := core.emulator_load_rom(emu, data)
+	testing.expectf(t, loaded, "acid2_test: ROM のロードに失敗しました: %s", CGB_ACID2_ROM_PATH)
+	if !loaded {
+		return
+	}
+	testing.expectf(t, emu.bus.mode == .Cgb, "acid2_test: cgb-acid2.gbc は Cgb モードで起動するはず(ヘッダ0xC0)")
+
+	for _ in 0 ..< CGB_ACID2_FRAME_COUNT {
+		core.emulator_run_frame(emu)
+	}
+
+	framebuffer_bytes := mem.byte_slice(&emu.bus.ppu.framebuffer, size_of(emu.bus.ppu.framebuffer))
+	got_hash := hash.fnv64a(framebuffer_bytes)
+
+	testing.expectf(
+		t,
+		got_hash == CGB_ACID2_EXPECTED_HASH,
+		"acid2_test: cgb-acid2 フレームバッファハッシュ不一致: got=0x%016X expected=0x%016X(CGB PPU描画にリグレッションの可能性)",
+		got_hash,
+		CGB_ACID2_EXPECTED_HASH,
+	)
+}

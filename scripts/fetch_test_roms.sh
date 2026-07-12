@@ -245,5 +245,16 @@ fetch_direct() {
 fetch_direct "$ACID2_ROM_URL" "$ACID2_DIR/dmg-acid2.gb"
 fetch_direct "$ACID2_REFERENCE_PNG_URL" "$ACID2_DIR/reference-dmg.png"
 
+# --- cgb-acid2 (T6-8) ---
+# testing.md: mattcurrie/cgb-acid2 リリースから取得する。ROM本体はリリースタグ(v1.1)の
+# 添付アセット(不変URL)、参照PNG画像は目視比較用にコミットハッシュ固定でraw取得する
+# (2026-07時点のmasterのHEAD。リリースタグにはPNGが含まれないためcommit固定が必要、dmg-acid2と同じ理由)。
+CGB_ACID2_COMMIT="04c6ca40cf75b6a93513fe596de4ab797efaff97"
+CGB_ACID2_ROM_URL="https://github.com/mattcurrie/cgb-acid2/releases/download/v1.1/cgb-acid2.gbc"
+CGB_ACID2_REFERENCE_PNG_URL="https://raw.githubusercontent.com/mattcurrie/cgb-acid2/$CGB_ACID2_COMMIT/img/reference.png"
+
+fetch_direct "$CGB_ACID2_ROM_URL" "$ACID2_DIR/cgb-acid2.gbc"
+fetch_direct "$CGB_ACID2_REFERENCE_PNG_URL" "$ACID2_DIR/reference-cgb.png"
+
 echo "fetch_test_roms.sh: 完了。配置先: $ROMS_DIR"
 exit 0
