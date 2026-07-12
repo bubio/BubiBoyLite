@@ -65,3 +65,36 @@ test_shortcut_key_repeat_is_ignored :: proc(t: ^testing.T) {
 	action := app.input_handle_shortcut_key(&state, make_key_event(.F5, 1))
 	testing.expect(t, action == .None, "キーリピートは無視するはず")
 }
+
+// input_is_fullscreen_toggle (T8-2) の単体テスト。
+
+@(private = "file")
+make_key_event_with_mod :: proc(sym: sdl.Keycode, mod: sdl.Keymod, repeat: u8 = 0) -> sdl.KeyboardEvent {
+	return sdl.KeyboardEvent{keysym = sdl.Keysym{sym = sym, mod = mod}, repeat = repeat}
+}
+
+@(test)
+test_fullscreen_toggle_alt_enter :: proc(t: ^testing.T) {
+	testing.expect(t, app.input_is_fullscreen_toggle(make_key_event_with_mod(.RETURN, sdl.KMOD_LALT)))
+	testing.expect(t, app.input_is_fullscreen_toggle(make_key_event_with_mod(.RETURN, sdl.KMOD_RALT)))
+}
+
+@(test)
+test_fullscreen_toggle_cmd_enter_on_macos :: proc(t: ^testing.T) {
+	testing.expect(t, app.input_is_fullscreen_toggle(make_key_event_with_mod(.RETURN, sdl.KMOD_LGUI)))
+}
+
+@(test)
+test_fullscreen_toggle_requires_return :: proc(t: ^testing.T) {
+	testing.expect(t, !app.input_is_fullscreen_toggle(make_key_event_with_mod(.z, sdl.KMOD_LALT)))
+}
+
+@(test)
+test_fullscreen_toggle_plain_enter_is_not_toggle :: proc(t: ^testing.T) {
+	testing.expect(t, !app.input_is_fullscreen_toggle(make_key_event_with_mod(.RETURN, {})))
+}
+
+@(test)
+test_fullscreen_toggle_ignores_key_repeat :: proc(t: ^testing.T) {
+	testing.expect(t, !app.input_is_fullscreen_toggle(make_key_event_with_mod(.RETURN, sdl.KMOD_LALT, 1)))
+}

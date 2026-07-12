@@ -150,6 +150,9 @@ run_rom_window :: proc(opts: Options, cfg: Config) {
 				if event.key.keysym.sym == .ESCAPE {
 					running = false
 				}
+				if input_is_fullscreen_toggle(event.key) {
+					video_toggle_fullscreen(&video)
+				}
 				input_handle_key_event(emu, event.key, true)
 				// 落とし穴(T7-4): 保存/復元はメインループのフレーム境界で行う。ここは
 				// このイテレーションでまだ emulator_run_frame を呼んでいない時点なので、
@@ -314,6 +317,9 @@ run_test_pattern_window :: proc(opts: Options, cfg: Config) {
 			case .KEYDOWN:
 				if event.key.keysym.sym == .ESCAPE {
 					running = false
+				}
+				if input_is_fullscreen_toggle(event.key) {
+					video_toggle_fullscreen(&video)
 				}
 			}
 		}

@@ -72,6 +72,20 @@ input_state_default :: proc() -> Input_State {
 	return Input_State{state_slot = 1}
 }
 
+// input_is_fullscreen_toggle は Alt+Enter(macOSは Cmd+Enter も)かどうかを判定する(T8-2)。
+// GUIキー(Windowsキー/Cmdキー)はどのOSでもEnterとの組み合わせが他機能と衝突しないため、
+// プラットフォーム分岐せず両方受け付ける。純粋関数(SDL初期化非依存)。
+input_is_fullscreen_toggle :: proc(event: sdl.KeyboardEvent) -> bool {
+	if event.repeat != 0 {
+		return false
+	}
+	if event.keysym.sym != .RETURN && event.keysym.sym != .KP_ENTER {
+		return false
+	}
+	alt_or_gui := (event.keysym.mod & sdl.KMOD_ALT) != {} || (event.keysym.mod & sdl.KMOD_GUI) != {}
+	return alt_or_gui
+}
+
 // input_handle_shortcut_key は KEYDOWN イベント1件を解釈する。スロット選択(F1-F4)は
 // ここで即座に state.state_slot へ反映する。input_handle_key_event と同じくキーリピートは
 // 無視する。
