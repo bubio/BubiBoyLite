@@ -79,6 +79,10 @@ expected_failures := [?]string {
 	"mooneye/acceptance/timer/rapid_toggle",
 	// oam_dma/reg_read はdisable_ppu_safe待ちは解消したが、DMA転送中のレジスタ読み出し値が
 	// 期待と異なりFAILのまま(T3-2完了時点で判明、T3-8でも未解決。フェーズ4以降で再調査)。
+	// 2026-07-16: この根本原因(bus_readのdma_active競合モデルが実機の粒度と不一致)が
+	// 市販GBCゲームの実プレイでクラッシュ(無限RST 38ループ→スタック破壊)として実際に
+	// 顕在化することを確認した。詳細はdocs/dev/phases/phase-02-timing.md T2-7検証ログ
+	// (2026-07-16追記分)を参照。
 	"mooneye/acceptance/oam_dma/reg_read",
 	// T5-7: dmg_sound 09/10/12(ch3動作中のwave RAMアクセス制限)は、T5-3の時点では
 	// 未実装なので許可リスト入りを想定していたが、実際にT5-7でROMを取得して実行したところ
