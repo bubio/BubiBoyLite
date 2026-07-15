@@ -214,3 +214,14 @@ x86 が x64 ホストからの同一 OS 内クロスとして成立するかは 
   BluePrint の対応表（RPi armhf・FreeBSD）を狭めるか、Odin 側の対応を待つか、Odin をソースビルドする
   追加タスクを起こすかはユーザー判断に委ねる。
 
+2026-07-16 T10-6 未完了（依存タスク T10-5 がブロックされているため DoD 未達）: README に CI バッジを追加
+（`.github/workflows/build-linux.yml` / `build-macos.yml` / `build-windows.yml` の 3 つ。GitHub remote 未設定のため
+`OWNER/BubiBoyLite` はプレースホルダ、実 URL への差し替えは remote 設定後に必要）。
+`fetch_test_roms.sh`（actions/cache 付き）→ `odin test tests -collection:bbl=src` の組み込みは
+build-linux.yml・build-macos.yml の作成時（T10-2/T10-3）に併せて実施済み（x64 のみ build-windows.yml にも実施済み）。
+全 workflow（linux/macos/windows）に `paths` フィルタ（各自の `src/**`・`tests/**`・該当スクリプト・
+自 workflow ファイル自身）を設定済み。`docs/**`・`*.md` はどの `paths` にも含まれないため、
+**docs のみの変更ではどの build workflow もトリガーされない設計になっている**（目視確認、実際の push による
+トリガー未検証テストは GitHub remote が無いため未実施）。
+RPi/FreeBSD workflow が存在しないため「全 build workflow がグリーン」の DoD は原理的に達成不能
+（T10-5 のブロックが解消されるまで）。
