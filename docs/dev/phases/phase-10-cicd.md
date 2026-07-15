@@ -182,3 +182,17 @@ BluePrint どおり別バイナリ（ユニバーサル禁止）。x86_64 クロ
 `MACOSX_DEPLOYMENT_TARGET=13.5` を env に設定。`file ./bbl` で universal でないことを確認するステップを含む。
 構文検証: actionlint exit=0、yaml.safe_load OK。**実際の CI 実行は未実施。**
 
+2026-07-16 T10-4 一部ブロック・未完了: `scripts/build_win.ps1` に `--release`・`-Architecture x86|x64|arm64` を実装、
+`scripts/build_sdl2_static.ps1`（SDL2 を `-DSDL_FORCE_STATIC_VCRT=ON` で静的ビルド）を新規作成、
+`.github/workflows/build-windows.yml` を作成（matrix: x86/x64 のみ）。
+**arm64 は 🔴 ブロック**: 上記の実機調査で `odin build <pkg> -target:"?"` の対応ターゲット一覧に
+`windows_arm64` が存在しないことを確認済み（windows は `windows_i386`/`windows_amd64` の 2 つのみ）。
+これは「クロス未対応」以前に**ターゲット自体が実装されていない**ため、ワークフロー側の工夫では回避不可能。
+`build_win.ps1` は arm64 選択時に上記理由を表示して即 `exit 1` する（将来 Odin が対応した際に外せる形でコメント）。
+BluePrint の対応表（Windows arm64）を狭めるか、Odin の対応を待つかはユーザー判断に委ねる。
+x86/x64 レグ: PowerShell 構文チェックのみ実施（`brew install powershell` で `pwsh` を用意し、
+`[System.Management.Automation.Language.Parser]::ParseFile` でパース OK を確認）。
+x86 が x64 ホストからの同一 OS 内クロスとして成立するかは Windows 環境が無く未検証。
+静的 SDL2 の実リンクも MSVC 環境が無く未検証。actionlint / yaml.safe_load はどちらも OK。
+**実際の CI 実行は未実施。**
+
