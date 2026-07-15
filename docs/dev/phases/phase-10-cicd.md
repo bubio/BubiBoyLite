@@ -196,3 +196,21 @@ x86 が x64 ホストからの同一 OS 内クロスとして成立するかは 
 静的 SDL2 の実リンクも MSVC 環境が無く未検証。actionlint / yaml.safe_load はどちらも OK。
 **実際の CI 実行は未実施。**
 
+2026-07-16 T10-5 未完了・🔴 ブロック（ワークフローファイルは作成せず）:
+- **RPi armhf**: 上記の実機調査で macOS→`linux_arm32` のクロスリンクが `not yet supported` で
+  即エラーになることを確認したが、これは OS 跨ぎ（macOS→Linux）を含むテストであり、実際の CI シナリオ
+  （Linux x86_64 ホスト→`linux_arm32`、同一 OS 内クロス）を直接検証できる Linux 環境がこのセッションにはない。
+  ただし `odin build --help` に sysroot 相当のクロスターゲット設定オプションが存在しないこと、
+  darwin の成功例が Apple SDK 固有の multi-arch バンドルに起因すること（ELF クロスには同じ仕組みがない）から、
+  同じ制限に当たる可能性が高いと判断した。**確証はなく、Linux 環境での実地検証が別途必要。**
+- **FreeBSD amd64**: `gh api` で odin-lang/Odin の直近 4 リリースを確認した結果、FreeBSD 向けバイナリが
+  一度も配布されていないことを確認した（上記の実機調査ログ参照）。mise の `github:odin-lang/Odin` バックエンドは
+  GitHub Release のアセットを直接取得する方式のため、**この方式では FreeBSD に Odin 自体をインストールできない**
+  （Odin をソースからビルドする、または将来 Odin が FreeBSD バイナリを配布するのを待つ必要がある。
+  いずれも本フェーズのスコープを超える）。これは確証のある技術的ブロックと判断した。
+- 上記の理由により、`build-rpi.yml` / `build-freebsd.yml` / `scripts/build_freebsd.sh` の実体は作成した
+  （`scripts/build_freebsd.sh` は `build_linux.sh` への薄いラッパーとして実装済み、`sh -n` 構文チェック OK）が、
+  ワークフローファイル自体は「作成しても初回 CI で確実に失敗する」と判断されるため意図的に作成を見送った。
+  BluePrint の対応表（RPi armhf・FreeBSD）を狭めるか、Odin 側の対応を待つか、Odin をソースビルドする
+  追加タスクを起こすかはユーザー判断に委ねる。
+

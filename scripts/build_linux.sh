@@ -54,9 +54,17 @@ if [ "$RELEASE" = "1" ]; then
 	# オーディオ/ビデオドライバのシステムライブラリ（ALSA, X11/Wayland, dbus 等）は
 	# SDL2 静的ライブラリが依存する動的ライブラリのままで正しい（architecture.md 参照）。
 	ARCH="$(uname -m)"
-	"$SCRIPT_DIR/build_sdl2_static.sh" linux "$ARCH"
+	case "$(uname -s)" in
+	Linux) PLATFORM="linux" ;;
+	FreeBSD) PLATFORM="freebsd" ;;
+	*)
+		echo "Error: 未対応の OS です（検出: $(uname -s)）"
+		exit 1
+		;;
+	esac
+	"$SCRIPT_DIR/build_sdl2_static.sh" "$PLATFORM" "$ARCH"
 
-	SDL2_DIR="$PROJECT_ROOT/build/sdl2/linux-$ARCH"
+	SDL2_DIR="$PROJECT_ROOT/build/sdl2/$PLATFORM-$ARCH"
 	SDL2_LIB="$SDL2_DIR/lib/libSDL2.a"
 	if [ ! -f "$SDL2_LIB" ]; then
 		echo "Error: 静的 SDL2 のビルドに失敗しました: $SDL2_LIB が見つかりません"
