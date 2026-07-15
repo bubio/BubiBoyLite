@@ -33,7 +33,7 @@ gh workflow list && gh run list --limit 10   # 全 build-*.yml がグリーン
 
 ### T10-1: SDL2 静的リンクの確立（リリースビルドモード）
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: 配布用の静的リンクビルドをローカルスクリプトで再現可能にする。全 build workflow の前提。
 **作るもの**:
@@ -144,3 +144,10 @@ gh run list --limit 10   # 全グリーン
 ## 検証ログ
 
 （タスク完了ごとに 1 行追記）
+
+2026-07-16 T10-1 完了: `./scripts/build_macos.sh --release && otool -L ./bbl | grep -i sdl` がヒット 0、`./bbl -v` で `bbl 0.1.0` 出力（macOS arm64 実機で検証）。
+SDL2 2.30.9 をソースから `scripts/build_sdl2_static.sh` で静的ビルドし `build/sdl2/macos-arm64/` にキャッシュ。
+リンクは `-Wl,-force_load,<libSDL2.a>` + `-Wl,-dead_strip_dylibs` + framework 群（architecture.md に方式を追記済み）。
+`scripts/build_linux.sh --release` / `scripts/build_sdl2_static.sh linux <arch>` も実装したが、
+**この開発環境（macOS）には Linux 実行環境がなく、Linux 側の実リンク・実行検証は未実施**
+（`sh -n` によるシェル構文チェックのみ実施、OK）。macOS x86_64 クロスビルドも本タスクでは未実施（T10-3 の範囲）。

@@ -77,6 +77,35 @@ BubiBoyLite/
     各プラットフォームで SDL2 静的ライブラリを用意し、リンカフラグで指定する（phase-10 のタスクで確立）。
   - この「開発=動的 / 配布=静的」の二段構えは意図的な決定。ビルドスクリプトに `--release` 相当の分岐を持たせる。
 
+### SDL2 静的リンクの実現方法（T10-1 で確立、macOS で実機検証済み）
+
+`vendor:sdl2` の `sdl2.odin` は非 Windows で `foreign import lib "system:SDL2"` と書かれており、
+これは最終的にリンカへ `-lSDL2` を渡す。この import 文自体は変更せず（vendor コードは変更禁止）、
+`odin build ... -extra-linker-flags:"..."` でリンク先だけ静的ライブラリへ差し替える。
+
+- **SDL2 本体の取得**: `scripts/build_sdl2_static.sh <platform> <arch>` が SDL2 2.30.9 のソースを
+  取得し、CMake (`-DSDL_STATIC=ON -DSDL_SHARED=OFF`) でビルドして `build/sdl2/<platform>-<arch>/`
+  にインストール・キャッシュする（`build/` は .gitignore 対象、CI では `actions/cache` を想定）。
+- **macOS (ld64)**: 単純に `-L` で静的ライブラリのディレクトリを探索パスに加えるだけでは、
+  Odin 本体が既定でリンカに渡す `-L/opt/homebrew/lib -L/usr/local/lib`（`odin` バイナリに
+  埋め込まれている）が先に評価され、Homebrew 等でインストール済みの `libSDL2*.dylib` が
+  優先されてしまう（`-Wl,-search_paths_first` を足しても解決しなかった＝実機で確認済み）。
+  代わりに `-Wl,-force_load,<libSDL2.a への絶対パス>` で静的アーカイブの全シンボルを強制的に
+  取り込み、`-Wl,-dead_strip_dylibs` で「取り込み済みシンボルにより結果的に不要になった」
+  `-lSDL2` 由来の dylib 参照をリンク後に除去する。フレームワーク（CoreVideo, Cocoa, IOKit,
+  ForceFeedback, Carbon, CoreAudio, AudioToolbox, AVFoundation, Foundation は通常、
+  GameController/Metal/QuartzCore/CoreHaptics は `-weak_framework`）は
+  静的ビルドした `sdl2-config --static-libs` の出力に合わせて明示的に渡す。
+  検証: `otool -L ./bbl` に `SDL2` の動的依存が 0 件（`scripts/build_macos.sh --release` で自動化）。
+- **Linux/FreeBSD (GNU ld/lld)**: ld64 の `force_load`/`dead_strip_dylibs` に相当する機能はないため、
+  同じ方式は使えない。代わりに `-L<静的ビルドの prefix>/lib`（このディレクトリには `.so` を置かない）
+  + `-Wl,-Bstatic -lSDL2 -Wl,-Bdynamic` で `-lSDL2` の解決先を静的アーカイブに固定し、
+  `sdl2-config --static-libs` が返す ALSA/X11/Wayland/dbus 等のシステム動的ライブラリ一覧を
+  追加で渡す（これらは意図的に動的のままで正しい。上記「開発=動的/配布=静的」の注記参照）。
+  **この Linux 側の実装は macOS 環境ではリンク・実行の実機検証ができていない**
+  （検証には Linux ランナー/VM が必要。phase-10 検証ログに記録）。
+- Windows / RPi / FreeBSD の詳細は T10-4/T10-5 実装時にこの節へ追記する。
+
 ## 型と表現の決定事項
 
 | 項目 | 決定 |
