@@ -1,0 +1,105 @@
+name: Build macOS (x86_64/arm64, separate binaries)
+
+# BluePrint により macOS はユニバーサルではなく別バイナリを配布する。
+# GitHub 提供の Apple Silicon ランナー上での x86_64 クロスビルドは
+# scripts/build_sdl2_static.sh のクロス検証（Xcode の -arch x86_64 サポートに
+# 依存）が本セッションでは未実施のため、確実性を優先しネイティブ 2 ランナー
+# 構成にする（phase-10-cicd.md T10-3 の落とし穴欄が許容する切替）。
+# 2026-07 時点で macos-13 (Intel) ランナーは廃止済みのため macos-15-intel を使う
+# （actions/runner-images README で確認: macos-14 系は deprecated、macos-13 は掲載なし）。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "scripts/build_macos.sh"
+      - "scripts/build_sdl2_static.sh"
+      - "scripts/fetch_test_roms.sh"
+      - "mise.toml"
+      - ".github/workflows/build-macos.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "scripts/build_macos.sh"
+      - "scripts/build_sdl2_static.sh"
+      - "scripts/fetch_test_roms.sh"
+      - "mise.toml"
+      - ".github/workflows/build-macos.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+permissions:
+  contents: read
+
+env:
+  MACOSX_DEPLOYMENT_TARGET: "13.5"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runs-on: macos-15
+          - arch: x86_64
+            runs-on: macos-15-intel
+
+    runs-on: ${{ matrix.runs-on }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mise (Odin toolchain, pinned by mise.toml)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+
+      - name: Cache static SDL2 build
+        uses: actions/cache@v4
+        with:
+          path: build/sdl2
+          key: sdl2-static-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('scripts/build_sdl2_static.sh') }}
+
+      - name: Cache test ROMs
+        uses: actions/cache@v4
+        with:
+          path: tests/roms
+          key: test-roms-${{ hashFiles('scripts/fetch_test_roms.sh') }}
+
+      - name: Fetch test ROMs
+        run: ./scripts/fetch_test_roms.sh
+
+      - name: Build (release, static SDL2) and test
+        run: ./scripts/build_macos.sh --release --test
+
+      - name: Verify SDL2 is statically linked and single-arch (not universal)
+        run: |
+          if otool -L ./bbl | grep -i sdl; then
+            echo "Error: bbl is dynamically linked against SDL2" >&2
+            exit 1
+          fi
+          echo "OK: no dynamic SDL2 dependency"
+          file ./bbl
+          if file ./bbl | grep -qi universal; then
+            echo "Error: bbl is a universal binary; BluePrint requires separate arch binaries" >&2
+            exit 1
+          fi
+
+      - name: Version smoke test
+        run: ./bbl -v
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbl-macos-${{ matrix.arch }}
+          path: bbl
+          if-no-files-found: error
