@@ -157,6 +157,7 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 	hotkeys_available := !standalone_terminal || owns_terminal
 	game_kr: Key_Reader
 	paused := false
+	stop_reported := false
 
 	// オーディオ駆動ペーシング(T5-6、T3-6の壁時計ペーシングを置換): オーディオバッファ残量が
 	// 目標(3フレーム分)を下回っている間だけ emulator_run_frame を回し、満杯なら1ms待つ
@@ -250,8 +251,16 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 			}
 		}
 
+		if emu.cpu.stopped && !stop_reported {
+			// core側は不正/未実装オペコードをstderrへログ済み(1回のみ、emulator_run_frame
+			// がstopped後は呼ばれなくなったため)。ここではユーザーに気付けるようステータス行
+			// にも表示する。フレーム実行自体はこれ以降行わない(画面は最後の状態で静止する)。
+			status_line_set_message(&status_line, "CPU halted (illegal/unimplemented opcode)")
+			stop_reported = true
+		}
+
 		underrun_before := audio.underrun_events
-		if !paused && audio_buffered_pairs(&audio) < AUDIO_TARGET_BUFFERED_PAIRS {
+		if !paused && !emu.cpu.stopped && audio_buffered_pairs(&audio) < AUDIO_TARGET_BUFFERED_PAIRS {
 			audio_run_frame_locked(&audio)
 			// 表示は最新フレームのみ(中間フレームの描画スキップは行わない実装だが、
 			// バッファが目標未満の間は毎回1フレームずつ生成するため実質最新フレーム表示になる)。

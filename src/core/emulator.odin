@@ -50,9 +50,12 @@ emulator_step :: proc(emu: ^Emulator) -> int {
 // で数える。ダブルスピード中はCPUが2倍速で回るため、bus.cyclesで70224を数えるとPPU的には
 // 半フレームしか進んでいないのに打ち切ってしまう(落とし穴)。単一速度時はhw_cycles==cyclesなので
 // この変更はDMG/等速時の挙動に影響しない。
+// cpu.stopped(不正/未実装オペコード実行、T1-6)が立った後は cpu_step を呼ばない。
+// 呼び続けるとヘッダ領域などコードでないバイト列を延々命令として解釈し続け、
+// 不正オペコードログをフレーム毎に無限出力してしまう(落とし穴)。
 emulator_run_frame :: proc(emu: ^Emulator) {
 	frame_end := emu.bus.hw_cycles + CYCLES_PER_FRAME
-	for emu.bus.hw_cycles < frame_end {
+	for emu.bus.hw_cycles < frame_end && !emu.cpu.stopped {
 		cpu_step(&emu.cpu, &emu.bus)
 	}
 }
