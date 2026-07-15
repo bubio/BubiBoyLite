@@ -151,3 +151,26 @@ SDL2 2.30.9 をソースから `scripts/build_sdl2_static.sh` で静的ビルド
 `scripts/build_linux.sh --release` / `scripts/build_sdl2_static.sh linux <arch>` も実装したが、
 **この開発環境（macOS）には Linux 実行環境がなく、Linux 側の実リンク・実行検証は未実施**
 （`sh -n` によるシェル構文チェックのみ実施、OK）。macOS x86_64 クロスビルドも本タスクでは未実施（T10-3 の範囲）。
+
+2026-07-16 Odin（mise 固定 `dev-2026-07`）のクロスコンパイル制約を実機調査（全タスクに影響するため先に記録）:
+- `odin build <pkg> -target:linux_arm32 -show-system-calls`（macOS arm64 ホストから実行）→
+  `Linking for cross compilation for this platform is not yet supported (linux arm32)` で即エラー。
+  同様に `-target:freebsd_amd64`・`-target:linux_amd64` も macOS ホストからは同一メッセージで即エラー。
+- 一方 `-target:darwin_amd64`（同一 OS・異なる arch、macOS arm64 ホストから）は実際に `clang -target x86_64-apple-macosx ...` のリンクコマンドまで到達した（`-show-system-calls` で確認）。
+  → Odin の「クロスコンパイル未対応」制限は **OS をまたぐクロスで発動する**ことを確認（Apple SDK が multi-arch を単一 SDK にバンドルしているための例外的成功で、ELF ターゲットには同じ仕組みがない）。
+- `gh api repos/odin-lang/Odin/releases/tags/<tag>` を dev-2026-07/dev-2026-07a/dev-2026-06/dev-2026-05 で確認: アセットは
+  `odin-linux-amd64` / `odin-linux-arm64` / `odin-macos-amd64` / `odin-macos-arm64` / `odin-windows-amd64` の 5 種のみ。
+  **FreeBSD 向けバイナリは一度も配布されていない**（mise の `github:odin-lang/Odin` バックエンドでは FreeBSD に Odin 自体をインストールできない）。
+- `odin build --help` に sysroot 相当のクロスターゲット設定オプションは存在しない。
+- これらから T10-4（Windows arm64）・T10-5（RPi armhf・FreeBSD）の実現可能性を判断した（各タスクの記載を参照）。
+
+2026-07-16 T10-2 未完了（CI 未検証、GitHub remote 不在のため）: `.github/workflows/build-linux.yml` を作成。
+matrix: amd64（ubuntu-22.04・ネイティブ） / arm64（ubuntu-22.04-arm・ネイティブ、クロスコンパイルではない）。
+`scripts/build_linux.sh --release --test` を呼び、`fetch_test_roms.sh`（actions/cache 付き）→ビルド→`odin test`→
+`ldd | grep -i libsdl2` で静的リンク確認→`-v` スモーク→`actions/upload-artifact` の順。
+構文検証: `actionlint .github/workflows/build-linux.yml` exit=0、`python3 -c "import yaml; yaml.safe_load(...)"` OK
+（両方実施、区別して記録: actionlint はワークフロースキーマ検証、yaml.safe_load は YAML 構文のみ）。
+**実際の CI 実行（グリーン確認）は GitHub remote が無いため未実施。**
+既存 `.github/workflows/ci.yml`（フェーズ0の最小 CI）はこの workflow と build-macos.yml に統合する判断をし削除した
+（重複したテスト実行を避けるため。PLAN.md 依存グラフの「0 の最小 CI → 10 CI/CD 拡張」が意図する置き換えと解釈）。
+
