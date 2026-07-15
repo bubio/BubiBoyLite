@@ -1,0 +1,103 @@
+name: Build Linux (amd64/arm64)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "scripts/build_linux.sh"
+      - "scripts/build_sdl2_static.sh"
+      - "scripts/fetch_test_roms.sh"
+      - "mise.toml"
+      - ".github/workflows/build-linux.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "scripts/build_linux.sh"
+      - "scripts/build_sdl2_static.sh"
+      - "scripts/fetch_test_roms.sh"
+      - "mise.toml"
+      - ".github/workflows/build-linux.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-22.04 でビルドすることで glibc 依存が 22.04+ に留まる
+          # （新しいランナーでビルドすると古い OS で動かなくなる）。
+          - arch: amd64
+            runs-on: ubuntu-22.04
+          - arch: arm64
+            runs-on: ubuntu-22.04-arm
+
+    runs-on: ${{ matrix.runs-on }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mise (Odin toolchain, pinned by mise.toml)
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+
+      - name: Install SDL2 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config \
+            libasound2-dev libpulse-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxinerama-dev libxss-dev libxfixes-dev \
+            libwayland-dev libxkbcommon-dev \
+            libdbus-1-dev libudev-dev \
+            libgl1-mesa-dev libegl1-mesa-dev
+
+      - name: Cache static SDL2 build
+        uses: actions/cache@v4
+        with:
+          path: build/sdl2
+          key: sdl2-static-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('scripts/build_sdl2_static.sh') }}
+
+      - name: Cache test ROMs
+        uses: actions/cache@v4
+        with:
+          path: tests/roms
+          key: test-roms-${{ hashFiles('scripts/fetch_test_roms.sh') }}
+
+      - name: Fetch test ROMs
+        run: ./scripts/fetch_test_roms.sh
+
+      - name: Build (release, static SDL2) and test
+        run: ./scripts/build_linux.sh --release --test
+
+      - name: Verify SDL2 is statically linked
+        run: |
+          if ldd ./bbl | grep -i libsdl2; then
+            echo "Error: bbl is dynamically linked against libSDL2" >&2
+            exit 1
+          fi
+          echo "OK: no dynamic libSDL2 dependency"
+
+      - name: Version smoke test
+        run: ./bbl -v
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbl-linux-${{ matrix.arch }}
+          path: bbl
+          if-no-files-found: error
