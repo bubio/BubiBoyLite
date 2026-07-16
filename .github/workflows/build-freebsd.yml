@@ -58,14 +58,18 @@ jobs:
           sync: rsync
           # SDL2 のビルド依存パッケージ名は devel/sdl20 の freshports 依存欄に合わせた
           # （x11-toolkits/sdl2 という pkg 名ではなく devel/sdl20 が正式名）。
-          # libusb: SDL2 の CMakeLists.txt は *BSD だと HIDAPI を libusb 専用にする
-          # ハードコードされた分岐があり（`if(FREEBSD OR NETBSD OR ...) set(HIDAPI_ONLY_LIBUSB TRUE)`）、
-          # -DSDL_HIDAPI_LIBUSB=OFF を渡しても `CACHE BOOL "" FORCE` で ON に上書きされ無効
-          # （実機確認済み）。ベースシステムの /usr/lib/libusb.so だけでは
-          # libusb_get_string_descriptor 等が未定義シンボルになりリンクに失敗したため、
-          # devel/libusb を明示的に入れる（build-freebsd.yml 初回・2回目の CI 実行で再現・特定済み）。
+          # 既知の未解決問題(libusbリンクエラー): SDL2のCMakeLists.txtは*BSDだとHIDAPIをlibusb
+          # 専用にするハードコードされた分岐があり（`if(FREEBSD OR NETBSD OR ...)
+          # set(HIDAPI_ONLY_LIBUSB TRUE)`）、-DSDL_HIDAPI_LIBUSB=OFFを渡しても
+          # `CACHE BOOL "" FORCE`でONに上書きされ無効（実機確認済み）。cmake configureのログには
+          # `Found libusb-1.0, version 1.0.16`と出ており、ベースシステムにlibusb自体は存在するが、
+          # 最終リンク時に`libusb_get_string_descriptor`等が未定義シンボルになる
+          # （純粋なリンク解決の問題であり、パッケージ不足ではない）。`pkg install libusb`は
+          # 存在しないパッケージ名で試行しCI自体が失敗したため削除済み（詳細は
+          # docs/dev/phases/phase-10-cicd.md T10-5検証ログ参照。実FreeBSD環境での
+          # 対話的デバッグが必要、次回セッションへ持ち越し）。
           prepare: |
-            pkg install -y odin-lang cmake pkgconf bash curl libusb \
+            pkg install -y odin-lang cmake pkgconf bash curl \
               libX11 libXcursor libXext libXi libXfixes libXrandr libXScrnSaver \
               wayland wayland-protocols libxkbcommon evdev-proto
           run: |
