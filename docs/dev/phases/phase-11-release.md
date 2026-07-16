@@ -65,7 +65,7 @@ unzip -l bbl-*-macos-arm64.zip
 
 ### T11-3: リリース発行 workflow
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: release published イベントで全成果物を zip 化して Release に添付する。
 **作るもの**: `.github/workflows/publish-release-assets.yml`（`workflow_call` の再利用 workflow）:
@@ -141,3 +141,14 @@ gh release view v0.1.0
 `./scripts/package_zip.sh ./bbl macos arm64` → `unzip -l bbl-0.1.0-macos-arm64.zip` で
 `bbl`/`LICENSE`/`README.md` の 3 ファイル・階層なしを確認。展開後 `bbl` に実行権限が保持され
 （`-rwxr-xr-x`）、`./bbl -v` が正常動作することも確認済み（macOS arm64 実機）。
+
+2026-07-16 T11-3 完了: `.github/workflows/publish-release-assets.yml`（`workflow_call` 再利用 workflow）
+を作成。`actions/download-artifact` で生バイナリ artifact を回収 → artifact 名（`bbl-<platform>-<arch>`）
+から platform/arch を切り出し `scripts/package_zip.sh` で正式 zip を生成 → `gh release upload --clobber`。
+`build-linux.yml`・`build-macos.yml` それぞれに `publish-release` ジョブ（`needs: build`、
+`if: github.event_name == 'release'`、`permissions: contents: write` はこのジョブのみ）を追加し
+この再利用 workflow を呼ぶ。ユーザー承認のうえ実際に `gh release create v0.1.0-rc1 --prerelease` で
+検証: release イベントで両 workflow が自動発火し、`gh release view v0.1.0-rc1` で
+`bbl-0.1.0-linux-amd64.zip`・`bbl-0.1.0-linux-arm64.zip`・`bbl-0.1.0-macos-arm64.zip`・
+`bbl-0.1.0-macos-x86_64.zip` の 4 種が自動添付されたことを確認（`unzip -l` で中身 3 ファイル・
+階層なしも確認）。検証後 `gh release delete v0.1.0-rc1` でプレリリースとタグを削除済み。
