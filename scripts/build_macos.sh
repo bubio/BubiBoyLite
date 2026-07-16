@@ -69,11 +69,18 @@ if [ "$RELEASE" = "1" ]; then
 		exit 1
 	fi
 
-	# force_load で libSDL2.a のシンボルを全て取り込み、dead_strip_dylibs で
-	# vendor:sdl2 の foreign import が要求する -lSDL2（動的解決）由来の未使用
-	# dylib 参照を除去する。これにより system:SDL2 の import 文はそのままに
-	# リンク先だけ静的ライブラリへ差し替えられる（architecture.md 参照）。
-	EXTRA_LINKER_FLAGS="-Wl,-force_load,$SDL2_LIB -Wl,-dead_strip_dylibs"
+	# vendor:sdl2 の foreign import は暗黙に -lSDL2 をリンカへ渡す。odin は
+	# ユーザーの -extra-linker-flags より前に -L/opt/homebrew/lib を追加する
+	# ため、-L を渡さないと Homebrew に SDL2 が入っている環境でだけ偶然
+	# 解決されてしまい（dylib 由来）、Homebrew に SDL2 が無い環境（GitHub
+	# Actions ランナー等）では `ld: library 'SDL2' not found` で即失敗する
+	# （実際に build-macos.yml の初回 CI 実行で再現・特定済み）。
+	# 自前でビルドした静的アーカイブのディレクトリを -L で明示的に追加し、
+	# -lSDL2 がこちらへ解決されるようにする。force_load で libSDL2.a の
+	# シンボルを全て取り込み、dead_strip_dylibs で万一動的解決された場合の
+	# 未使用 dylib 参照も除去する（両対策を併用し二重に静的化を保証する）。
+	SDL2_LIB_DIR="$(dirname "$SDL2_LIB")"
+	EXTRA_LINKER_FLAGS="-L$SDL2_LIB_DIR -Wl,-force_load,$SDL2_LIB -Wl,-dead_strip_dylibs"
 	EXTRA_LINKER_FLAGS="$EXTRA_LINKER_FLAGS -framework CoreVideo -framework Cocoa -framework IOKit"
 	EXTRA_LINKER_FLAGS="$EXTRA_LINKER_FLAGS -framework ForceFeedback -framework Carbon -framework CoreAudio"
 	EXTRA_LINKER_FLAGS="$EXTRA_LINKER_FLAGS -framework AudioToolbox -framework AVFoundation -framework Foundation"

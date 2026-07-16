@@ -190,6 +190,23 @@ BluePrint どおり別バイナリ（ユニバーサル禁止）。x86_64 クロ
 (arm64大型)の4種(`actions/runner-images`の`macos-26-Readme.md`で確認)。
 構文再検証: actionlint exit=0、yaml.safe_load OK。**実際の CI 実行は依然未実施。**
 
+2026-07-16 T10-3 初回実 CI 実行で失敗を検出・修正: ユーザーが GitHub remote(`bubio/BubiBoyLite`、
+Public)を作成しpush、build-macos.ymlを`workflow_dispatch`で手動実行したところ両arch
+(`macos-26`/`macos-26-intel`)とも`Build (release, static SDL2) and test`ステップで失敗。
+ログ(`gh run view --log`)を取得したところ原因は`ld: library 'SDL2' not found`。
+根本原因: `scripts/build_macos.sh`はvendor:sdl2のforeign importが暗黙に要求する
+`-lSDL2`を解決する`-L`パスを渡していなかった。ローカル(このセッションの開発機)では
+odinが暗黙に追加する`-L/opt/homebrew/lib`にHomebrew版SDL2(`sdl2-compat`)のdylibが
+たまたま存在したため`-lSDL2`が解決され、`-force_load`+`-dead_strip_dylibs`で結果的に
+静的化されて「たまたま動いていた」に過ぎなかった(T10-1完了時点のローカル検証は
+この点でクリーンルームでなかったことが判明)。GitHub Actionsのランナーには
+Homebrew版SDL2が入っておらず`-lSDL2`が解決不能で即失敗していた。
+修正: `SDL2_LIB_DIR="$(dirname "$SDL2_LIB")"; EXTRA_LINKER_FLAGS="-L$SDL2_LIB_DIR ..."`
+を追加し、自前でビルドした静的アーカイブのディレクトリを明示的にリンカ検索パスへ
+入れることで、Homebrewの有無に関わらず`-lSDL2`が自前のピン止めビルドへ解決される
+ようにした。ローカルで再ビルドし回帰なしを確認(`otool -L`ヒット0、`./bbl -v`動作)。
+CI側の再検証はこのコミットのpush後にユーザー側で実行予定。
+
 2026-07-16 T10-4 一部ブロック・未完了: `scripts/build_win.ps1` に `--release`・`-Architecture x86|x64|arm64` を実装、
 `scripts/build_sdl2_static.ps1`（SDL2 を `-DSDL_FORCE_STATIC_VCRT=ON` で静的ビルド）を新規作成、
 `.github/workflows/build-windows.yml` を作成（matrix: x86/x64 のみ）。
