@@ -178,7 +178,7 @@ grep "mise install" README.md
 
 ### T0-8: 最小 CI
 
-- [ ] 完了
+- [x] 完了（フェーズ10へ統合。下記検証ログ参照）
 
 **目的**: ubuntu と macos でビルド + テストを回す最小の GitHub Actions を作る。以後の全フェーズのリグレッションガード。
 **作るもの**: `.github/workflows/ci.yml`:
@@ -207,3 +207,11 @@ grep "mise install" README.md
 2026-07-11 T0-6 完了: DISPLAY= ./bbl --headless => "headless: nothing to do" exit=0
 2026-07-11 T0-7 完了: head -1 LICENSE => "MIT License"、grep "mise install" README.md ヒット確認
 2026-07-11 T0-8: workflow 作成済み（.github/workflows/ci.yml, scripts/fetch_test_roms.sh）。python yaml.safe_load と actionlint で構文検証 OK（exit=0）。scripts/fetch_test_roms.sh はローカルで実行し exit=0 を確認。GitHub リモート未設定のため CI 実行（グリーン確認）は保留。チェックボックスは未付与
+
+2026-07-16 T0-8 完了扱いに変更: フェーズ10（T10-2/T10-3）で `.github/workflows/build-linux.yml`・
+`build-macos.yml` を新設した際、当初の `ci.yml`（ubuntu+macos の最小 CI）は重複したテスト実行を
+避けるため削除し、この2つの workflow に統合する判断をした（PLAN.md 依存グラフの「0 の最小 CI →
+10 CI/CD 拡張」が意図する置き換えと解釈。詳細は phase-10-cicd.md T10-2 検証ログ参照）。
+統合後の両 workflow は実 CI（GitHub Actions）で green を確認済み（phase-10-cicd.md T10-1/T10-6
+検証ログ参照）。T0-8 が本来求めていた「ubuntu と macos でビルド+テストを回す最小 CI」という
+機能自体は満たされているため、統合済みとしてここで完了扱いにする。

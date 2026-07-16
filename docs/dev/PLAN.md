@@ -15,7 +15,7 @@ BubiBoyLite（実行ファイル名 `bbl`）の開発計画のマスタードキ
 
 | # | フェーズ | 状態 | タスク | マイルストーン（検証可能な完了条件） | 詳細 |
 |---|---------|:---:|:---:|--------------------------------------|------|
-| 0 | 骨格・CLI・SDL2窓 | 🟡 | 7/8 | `bbl -v` が版数表示、`bbl --scale 2` でテストパターン窓、`odin test tests` 成功、最小 CI グリーン | [詳細](phases/phase-00-skeleton.md) |
+| 0 | 骨格・CLI・SDL2窓 | 🟢 2026-07-16 | 8/8 | `bbl -v` が版数表示、`bbl --scale 2` でテストパターン窓、`odin test tests` 成功、最小 CI グリーン | [詳細](phases/phase-00-skeleton.md) |
 | 1 | CPU・バス | 🟢 2026-07-11 | 9/9 | Blargg cpu_instrs **個別 11 本**全パス + instr_timing パス | [詳細](phases/phase-01-cpu.md) |
 | 2 | 割り込み・タイマー | 🟡 | 6/7 | Mooneye acceptance の timer/ と intr 系テスト全パス | [詳細](phases/phase-02-timing.md) |
 | 3 | PPU (DMG) | 🟢 2026-07-11 | 8/8 | dmg-acid2 のフレームバッファハッシュ一致 + ROM-only ゲームが起動・操作可能 | [詳細](phases/phase-03-ppu.md) |
