@@ -193,12 +193,24 @@ video_set_title :: proc(video: ^Video, title: string) {
 	sdl.SetWindowTitle(video.window, fmt.ctprintf("%s", title))
 }
 
+// 落とし穴(実機検証で発見、T9-6): HomebrewのSDL2は実体がsdl2-compat(SDL2 APIをSDL3上に
+// 実装する互換シム)であり、libSDL3.0.dylibも同時にロードされる(otool -Lで確認)。
+// SDL_HideWindow等でウィンドウを隠さずいきなりDestroyWindow+Quitすると、Cocoa側が
+// ウィンドウの消去処理をイベントループに1周も回さないまま終了し、画面上にウィンドウの
+// 見た目だけが「幽霊」として残ってマウスカーソルが回り続ける不具合を実機で確認した
+// (アプリ自体はSDL_Quit後も正常にTUIへ戻り応答していたため、アプリ側のイベントループの
+// 停止ではなくWindowServer側の後片付け不足と判明)。HideWindow → PumpEvents で
+// Cocoaに消去処理を1周させてからDestroy/Quitする。
 video_destroy :: proc(video: ^Video) {
+	sdl.HideWindow(video.window)
+	sdl.PumpEvents()
+
 	if video.intermediate != nil {
 		sdl.DestroyTexture(video.intermediate)
 	}
 	sdl.DestroyTexture(video.texture)
 	sdl.DestroyRenderer(video.renderer)
 	sdl.DestroyWindow(video.window)
+	sdl.PumpEvents()
 	sdl.Quit()
 }
