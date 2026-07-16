@@ -102,3 +102,10 @@ jobs:
           name: bbl-macos-${{ matrix.arch }}
           path: bbl
           if-no-files-found: error
+
+  publish-release:
+    needs: build
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-release-assets.yml

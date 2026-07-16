@@ -1,0 +1,55 @@
+name: Publish Release Assets
+
+# build-linux.yml / build-macos.yml の release イベント発火時に呼ばれる再利用 workflow。
+# ビルド成果物（生バイナリ artifact）を scripts/package_zip.sh で正式な配布 zip
+# （bbl + LICENSE + README.md、階層なし）に詰め直してから Release に添付する。
+# contents: write はこのジョブだけに限定する（build ジョブは read のまま）。
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Package and upload release zips
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "Error: RELEASE_TAG が空です（release イベント以外から呼ばれた？）" >&2
+            exit 1
+          fi
+
+          # artifact 名は build-*.yml の規約で bbl-<platform>-<arch>（例: bbl-linux-amd64）。
+          for dir in release-assets/bbl-*; do
+            name="$(basename "$dir")"
+            rest="${name#bbl-}"
+            platform="${rest%-*}"
+            arch="${rest##*-}"
+            chmod +x "$dir/bbl"
+            ./scripts/package_zip.sh "$dir/bbl" "$platform" "$arch"
+          done
+
+          shopt -s nullglob
+          zips=(bbl-*.zip)
+          if [ "${#zips[@]}" -eq 0 ]; then
+            echo "Error: 生成された zip がありません。" >&2
+            exit 1
+          fi
+
+          gh release upload "$RELEASE_TAG" "${zips[@]}" --clobber
