@@ -15,3 +15,5 @@ dist/
 *.state
 bbl.ini
 bbl_recent.txt
+bbl_recent.txt.bak
+*.bak
