@@ -81,6 +81,11 @@ if [ "$RELEASE" = "1" ]; then
 	EXTRA_LINKER_FLAGS="$EXTRA_LINKER_FLAGS -weak_framework QuartzCore -weak_framework CoreHaptics"
 
 	set -- "$@" "-extra-linker-flags:$EXTRA_LINKER_FLAGS"
+	# odin のデフォルトは -minimum-os-version:11.0.0 で、指定しないとリンカが
+	# ホストの OS バージョンをそのまま LC_BUILD_VERSION の minos に埋め込んでしまう
+	# （実機確認: 指定なしでビルドすると minos がビルドホストの OS バージョンになった）。
+	# BluePrint の macOS 13.5+ 要件を満たすため明示する。
+	set -- "$@" "-minimum-os-version:$MACOSX_DEPLOYMENT_TARGET"
 fi
 
 echo "=== BubiBoyLite macOS build ==="

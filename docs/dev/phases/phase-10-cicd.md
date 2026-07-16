@@ -196,32 +196,65 @@ x86 が x64 ホストからの同一 OS 内クロスとして成立するかは 
 静的 SDL2 の実リンクも MSVC 環境が無く未検証。actionlint / yaml.safe_load はどちらも OK。
 **実際の CI 実行は未実施。**
 
-2026-07-16 T10-5 未完了・🔴 ブロック（ワークフローファイルは作成せず）:
-- **RPi armhf**: 上記の実機調査で macOS→`linux_arm32` のクロスリンクが `not yet supported` で
-  即エラーになることを確認したが、これは OS 跨ぎ（macOS→Linux）を含むテストであり、実際の CI シナリオ
-  （Linux x86_64 ホスト→`linux_arm32`、同一 OS 内クロス）を直接検証できる Linux 環境がこのセッションにはない。
-  ただし `odin build --help` に sysroot 相当のクロスターゲット設定オプションが存在しないこと、
-  darwin の成功例が Apple SDK 固有の multi-arch バンドルに起因すること（ELF クロスには同じ仕組みがない）から、
-  同じ制限に当たる可能性が高いと判断した。**確証はなく、Linux 環境での実地検証が別途必要。**
-- **FreeBSD amd64**: `gh api` で odin-lang/Odin の直近 4 リリースを確認した結果、FreeBSD 向けバイナリが
-  一度も配布されていないことを確認した（上記の実機調査ログ参照）。mise の `github:odin-lang/Odin` バックエンドは
-  GitHub Release のアセットを直接取得する方式のため、**この方式では FreeBSD に Odin 自体をインストールできない**
-  （Odin をソースからビルドする、または将来 Odin が FreeBSD バイナリを配布するのを待つ必要がある。
-  いずれも本フェーズのスコープを超える）。これは確証のある技術的ブロックと判断した。
-- 上記の理由により、`build-rpi.yml` / `build-freebsd.yml` / `scripts/build_freebsd.sh` の実体は作成した
-  （`scripts/build_freebsd.sh` は `build_linux.sh` への薄いラッパーとして実装済み、`sh -n` 構文チェック OK）が、
-  ワークフローファイル自体は「作成しても初回 CI で確実に失敗する」と判断されるため意図的に作成を見送った。
-  BluePrint の対応表（RPi armhf・FreeBSD）を狭めるか、Odin 側の対応を待つか、Odin をソースビルドする
-  追加タスクを起こすかはユーザー判断に委ねる。
+2026-07-16 T10-5 未完了:
+- **RPi armhf（🔴 ブロック、`build-rpi.yml` は作成せず）**: 上記の実機調査で macOS→`linux_arm32` のクロスリンクが
+  `not yet supported` で即エラーになることを確認したが、これは OS 跨ぎ（macOS→Linux）を含むテストであり、
+  実際の CI シナリオ（Linux x86_64 ホスト→`linux_arm32`、同一 OS 内クロス）を直接検証できる Linux 環境が
+  このセッションにはない。ただし `odin build --help` に sysroot 相当のクロスターゲット設定オプションが
+  存在しないこと、darwin の成功例が Apple SDK 固有の multi-arch バンドルに起因すること
+  （ELF クロスには同じ仕組みがない）から、同じ制限に当たる可能性が高いと判断した。
+  **確証はなく、Linux 環境での実地検証が別途必要。** ビルドを試みても初回 CI で失敗する可能性が高いと
+  判断し、`build-rpi.yml` は意図的に作成を見送った。
+- **FreeBSD amd64（訂正: ブロックではなく、pkg 経由で実現可能と判明）**: 当初 `gh api` で
+  odin-lang/Odin の GitHub Release に FreeBSD バイナリが無いことのみを根拠に「インストール不可能」と
+  誤って結論していたが、これは **mise（`github:odin-lang/Odin` バックエンド）に限った話**であり、
+  FreeBSD 自体のパッケージ経路を未確認のまま拡大解釈していた誤りだった。改めて freshports.org で
+  確認したところ、**FreeBSD の pkg に `lang/odin`（`pkg install odin-lang`）が存在し、
+  ports バージョン `2026.07` が `dev-2026-07` タグ由来**（mise.toml の固定バージョンとほぼ一致）と分かった。
+  そのため `.github/workflows/build-freebsd.yml` を作成した（mise を使わず `pkg install odin-lang` で
+  Odin を導入する点だけ他プラットフォームと異なる。ワークフロー内にコメントで明記）。
+  **pkg のバージョンは mise.toml の固定バージョンと完全一致する保証がない**
+  （ports 追従のタイミング次第でずれ得る）ため、他プラットフォームとの版ずれが無いか
+  継続的な確認が必要（ユーザー判断事項として記録）。
+  SDL2 のビルド依存パッケージ名は freshports.org の `devel/sdl20` 依存欄
+  （`libX11`/`libXcursor`/`libXext`/`libXi`/`libXfixes`/`libXrandr`/`libXScrnSaver`/
+  `wayland`/`wayland-protocols`/`libxkbcommon`/`evdev-proto`）に合わせた。
+  `scripts/build_freebsd.sh`（`build_linux.sh` への薄いラッパー、`uname -s` で FreeBSD を判別）も実装済み。
+  **FreeBSD 環境がこのセッションにないため、pkg のパッケージ名の正確性・実ビルド・実リンクは未検証**
+  （actionlint / yaml.safe_load のみ実施、いずれも OK）。
+- BluePrint の対応表を狭めるか（RPi armhf のみ）、Odin の arm32 クロスリンク対応を待つか、
+  pkg 版と mise 版の Odin バージョン差異をどう扱うか（FreeBSD）はユーザー判断に委ねる。
 
-2026-07-16 T10-6 未完了（依存タスク T10-5 がブロックされているため DoD 未達）: README に CI バッジを追加
-（`.github/workflows/build-linux.yml` / `build-macos.yml` / `build-windows.yml` の 3 つ。GitHub remote 未設定のため
-`OWNER/BubiBoyLite` はプレースホルダ、実 URL への差し替えは remote 設定後に必要）。
+2026-07-16 T10-6 未完了（依存タスク T10-5 の RPi armhf レグがブロックされているため DoD 未達）: README に
+CI バッジを追加（`.github/workflows/build-linux.yml` / `build-macos.yml` / `build-windows.yml` の 3 つ。
+GitHub remote 未設定のため `OWNER/BubiBoyLite` はプレースホルダ、実 URL への差し替えは remote 設定後に必要）。
 `fetch_test_roms.sh`（actions/cache 付き）→ `odin test tests -collection:bbl=src` の組み込みは
 build-linux.yml・build-macos.yml の作成時（T10-2/T10-3）に併せて実施済み（x64 のみ build-windows.yml にも実施済み）。
-全 workflow（linux/macos/windows）に `paths` フィルタ（各自の `src/**`・`tests/**`・該当スクリプト・
+全 workflow（linux/macos/windows/freebsd）に `paths` フィルタ（各自の `src/**`・`tests/**`・該当スクリプト・
 自 workflow ファイル自身）を設定済み。`docs/**`・`*.md` はどの `paths` にも含まれないため、
 **docs のみの変更ではどの build workflow もトリガーされない設計になっている**（目視確認、実際の push による
 トリガー未検証テストは GitHub remote が無いため未実施）。
-RPi/FreeBSD workflow が存在しないため「全 build workflow がグリーン」の DoD は原理的に達成不能
-（T10-5 のブロックが解消されるまで）。
+RPi armhf の workflow のみ存在しないため「全 build workflow がグリーン」の DoD は原理的に達成不能
+（T10-5 の RPi armhf ブロックが解消されるまで）。
+
+2026-07-16 advisor レビューを受けて 3 点訂正・追記:
+1. **T10-5 の記述矛盾を修正**: 旧版のログが「`build-rpi.yml`/`build-freebsd.yml` の実体は作成した」
+   と「ワークフローファイル自体は…作成を見送った」を同じ段落内で両方書いており矛盾していた
+   （実際には両ファイルとも当初は作成していなかった）。上記 T10-5 のログ本文を書き直して解消。
+2. **FreeBSD の「ブロック」判定が誤りだったと判明**: mise 経由のインストール不可能性のみを根拠に
+   「FreeBSD は Odin 自体が使えない」と拡大解釈していたが、FreeBSD の pkg（`lang/odin`）で
+   `dev-2026-07` 相当が配布されていることを freshports.org で確認し、訂正した。
+   `.github/workflows/build-freebsd.yml` を新規作成し、README の CI バッジにも追加した
+   （build-freebsd.yml は actionlint / yaml.safe_load とも OK。FreeBSD 環境が無いため実ビルドは未検証）。
+3. **T10-1 の DoD を再検証し、`-minimum-os-version` の欠落を発見・修正**: `otool -l ./bbl` で
+   `LC_BUILD_VERSION` を確認したところ、`minos` がビルドホストの OS バージョン（26.0）になっており、
+   BluePrint の「macOS 13.5+」要件を満たしていなかった（odin のデフォルトは `-minimum-os-version:11.0.0` だが、
+   `-extra-linker-flags` 経由の静的リンクではこれが効かず、ホストの SDK バージョンがそのまま埋め込まれていた）。
+   `scripts/build_macos.sh` の `--release` 分岐に `-minimum-os-version:$MACOSX_DEPLOYMENT_TARGET`
+   （=13.5）を追加。再ビルドして `otool -l ./bbl | grep -A5 LC_BUILD_VERSION` で `minos 13.5` を確認、
+   `otool -L ./bbl | grep -i sdl` がヒット 0 のままであること、`./bbl -v` が動作することも再確認した
+   （T10-1 の DoD は元々「otool -L がヒット0 かつ -v 動作」のみを要求しており、この意味では元から
+   満たしていたが、BluePrint の実質要件により合致させるため追加修正した）。
+   リンク時に `ld: warning: building for macOS-13.5, but linking with dylib ... built for newer version 26.0`
+   という警告が出るが、`-Wl,-dead_strip_dylibs` で最終バイナリからは当該 dylib 参照ごと除去されるため
+   実害はない（`otool -L` で確認済み）。
