@@ -5,8 +5,8 @@ name: Build macOS (x86_64/arm64, separate binaries)
 # scripts/build_sdl2_static.sh のクロス検証（Xcode の -arch x86_64 サポートに
 # 依存）が本セッションでは未実施のため、確実性を優先しネイティブ 2 ランナー
 # 構成にする（phase-10-cicd.md T10-3 の落とし穴欄が許容する切替）。
-# 2026-07 時点で macos-13 (Intel) ランナーは廃止済みのため macos-15-intel を使う
-# （actions/runner-images README で確認: macos-14 系は deprecated、macos-13 は掲載なし）。
+# CLAUDE.md が想定する Xcode 26 世代に合わせ macos-26(arm64)/macos-26-intel(x64) を使う
+# （2026-02-26 に GA。actions/runner-images の macos-26-Readme.md で確認）。
 
 on:
   push:
@@ -49,9 +49,9 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runs-on: macos-15
+            runs-on: macos-26
           - arch: x86_64
-            runs-on: macos-15-intel
+            runs-on: macos-26-intel
 
     runs-on: ${{ matrix.runs-on }}
 

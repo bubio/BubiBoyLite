@@ -182,6 +182,14 @@ BluePrint どおり別バイナリ（ユニバーサル禁止）。x86_64 クロ
 `MACOSX_DEPLOYMENT_TARGET=13.5` を env に設定。`file ./bbl` で universal でないことを確認するステップを含む。
 構文検証: actionlint exit=0、yaml.safe_load OK。**実際の CI 実行は未実施。**
 
+2026-07-16 T10-3 追記（ユーザー指示によりランナー変更）: CLAUDE.md が想定する Xcode 26 世代に
+合わせ、ランナーを `macos-15`/`macos-15-intel` から `macos-26`（arm64）/`macos-26-intel`（x64）へ
+差し替えた。`macos-26` は2026-02-26にGA(WebSearchで`github.blog`のchangelog
+「macos-26 is now generally available for GitHub-hosted runners」を確認)、利用可能ラベルは
+`macos-26`(arm64標準)・`macos-26-intel`(x64標準)・`macos-26-large`(x64大型)・`macos-26-xlarge`
+(arm64大型)の4種(`actions/runner-images`の`macos-26-Readme.md`で確認)。
+構文再検証: actionlint exit=0、yaml.safe_load OK。**実際の CI 実行は依然未実施。**
+
 2026-07-16 T10-4 一部ブロック・未完了: `scripts/build_win.ps1` に `--release`・`-Architecture x86|x64|arm64` を実装、
 `scripts/build_sdl2_static.ps1`（SDL2 を `-DSDL_FORCE_STATIC_VCRT=ON` で静的ビルド）を新規作成、
 `.github/workflows/build-windows.yml` を作成（matrix: x86/x64 のみ）。
