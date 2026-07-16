@@ -52,6 +52,16 @@ package tests
 // 変化しないことを確認済み(同一の期待値のまま再テストしてPASS)。
 // oam_dma/reg_read はこの変更後も引き続きFAIL(disable_ppu_safe待ちは解消したが、DMA転送中の
 // レジスタ読み出し値が期待と異なる。フェーズ4以降で再調査)。
+//
+// 2026-07-16 T2-7で解消・削除済み: 根本原因はbus_read/bus_writeの「OAM DMA中はHRAM以外の
+// アクセスを一律0xFFにする」過剰なバス競合モデルだった。BubiBoy(前身プロジェクト)の
+// Bus.fs cpuReadByte/cpuWriteByte/oamDmaActiveを確認したところ、実機で本当にブロックされる
+// のはOAM領域(FE00-FE9F)自身へのアクセスだけで、IOレジスタやWRAM等は転送中も通常どおり
+// 読み書きできるとわかった。bus.odinのbus_read/bus_writeをこのモデルに合わせて修正した結果、
+// oam_dma/reg_readはPASSに転じた。これは市販GBCゲームの実プレイクラッシュ(無限RST 38ループ
+// →スタック破壊、HRAM内DMA待機ループを抜けた直後の通常コード領域フェッチが誤って0xFFを
+// 読んでいたことが原因)の根本原因でもあり、この修正で解消された。詳細はphase-02-timing.md
+// T2-7検証ログ参照。
 
 expected_failures := [?]string {
 	// 未解決(T2-7で深く調査したが解決できず。PPU非依存でありフェーズ3送りにできる
@@ -77,13 +87,6 @@ expected_failures := [?]string {
 	// docs/dev/phases/phase-02-timing.md の T2-7 検証ログを参照。次セッションでの
 	// 再挑戦時はそこから始めること。
 	"mooneye/acceptance/timer/rapid_toggle",
-	// oam_dma/reg_read はdisable_ppu_safe待ちは解消したが、DMA転送中のレジスタ読み出し値が
-	// 期待と異なりFAILのまま(T3-2完了時点で判明、T3-8でも未解決。フェーズ4以降で再調査)。
-	// 2026-07-16: この根本原因(bus_readのdma_active競合モデルが実機の粒度と不一致)が
-	// 市販GBCゲームの実プレイでクラッシュ(無限RST 38ループ→スタック破壊)として実際に
-	// 顕在化することを確認した。詳細はdocs/dev/phases/phase-02-timing.md T2-7検証ログ
-	// (2026-07-16追記分)を参照。
-	"mooneye/acceptance/oam_dma/reg_read",
 	// T5-7: dmg_sound 09/10/12(ch3動作中のwave RAMアクセス制限)は、T5-3の時点では
 	// 未実装なので許可リスト入りを想定していたが、実際にT5-7でROMを取得して実行したところ
 	// 3本ともPASSした(wave RAMアクセスを常時無制限に許可する簡易実装のままで、この3本の

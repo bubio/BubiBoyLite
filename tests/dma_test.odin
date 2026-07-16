@@ -45,15 +45,22 @@ test_dma_takes_160_mcycles_after_1_mcycle_delay :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_dma_blocks_non_hram_reads_while_active :: proc(t: ^testing.T) {
+test_dma_blocks_only_oam_reads_while_active :: proc(t: ^testing.T) {
+	// T2-7で修正: OAM DMA中にCPUからブロックされるのはOAM領域(FE00-FE9F)自身だけで、
+	// それ以外(ROM/RAM/VRAM/IOレジスタ/HRAM)は通常どおり読める(BubiBoy Bus.fsの
+	// cpuReadByte/oamDmaActiveを移植)。旧実装はHRAM以外を一律0xFFにしていたが、
+	// これはMooneye oam_dma/reg_readのFAILと実プレイクラッシュの原因だった
+	// (docs/dev/phases/phase-02-timing.md T2-7検証ログ参照)。
 	bus: core.Bus
 	core.bus_write(&bus, 0xC000, 0x11)
 	core.bus_write(&bus, 0xFF80, 0x22) // HRAM
+	core.bus_write(&bus, 0xFE00, 0x33) // OAM(DMA開始前に書いておく)
 	core.bus_write(&bus, 0xFF46, 0xC0)
 	core.bus_tick(&bus, 8) // 開始遅延を過ぎて転送中にする
 
-	testing.expect(t, core.bus_read(&bus, 0xC000) == 0xFF, "転送中はHRAM以外を読むと0xFF")
+	testing.expect(t, core.bus_read(&bus, 0xC000) == 0x11, "WRAMは転送中でも通常どおり読める")
 	testing.expect(t, core.bus_read(&bus, 0xFF80) == 0x22, "HRAMは転送中でも通常どおり読める")
+	testing.expect(t, core.bus_read(&bus, 0xFE00) == 0xFF, "OAM自身は転送中は0xFFになる")
 }
 
 @(test)

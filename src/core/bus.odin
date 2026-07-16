@@ -253,11 +253,16 @@ wram_locate :: proc(bus: ^Bus, addr: u16) -> (bank: u8, offset: u16) {
 	return wram_active_bank(bus), a - 0xD000
 }
 
-// bus_read は CPU からの読み出し経路。OAM DMA 中は HRAM(FF80-FFFE)以外を読むと
-// 0xFF になる(実バス競合の簡易モデル、T2-5)。DMA 自身の内部読み出しは
-// この制限を受けない bus_read_raw を直接使う。
+// bus_read は CPU からの読み出し経路。OAM DMA 中に CPU がブロックされるのは OAM
+// 領域(FE00-FE9F)自身への読み出しだけで、それ以外(ROM/RAM/VRAM/IOレジスタ/HRAM)は
+// 通常どおり読める(BubiBoy Bus.fs の cpuReadByte/oamDmaActive を移植。旧実装は
+// HRAM 以外を一律 0xFF にする過剰なバス競合モデルだったため、Mooneye
+// oam_dma/reg_read の FAIL、および HRAM 内 DMA 待機ループ直後の通常コード領域
+// フェッチが数サイクル 0xFF に化ける実プレイクラッシュの原因になっていた。
+// 詳細は docs/dev/phases/phase-02-timing.md T2-7 検証ログ参照)。
+// DMA 自身の内部読み出しはこの制限を受けない bus_read_raw を直接使う。
 bus_read :: proc(bus: ^Bus, addr: u16) -> u8 {
-	if bus.dma_active && !(addr >= 0xFF80 && addr <= 0xFFFE) {
+	if bus.dma_active && addr >= 0xFE00 && addr <= 0xFE9F {
 		return 0xFF
 	}
 	return bus_read_raw(bus, addr)
@@ -290,7 +295,12 @@ bus_read_raw :: proc(bus: ^Bus, addr: u16) -> u8 {
 	}
 }
 
+// bus_write も同じ理由(bus_read 参照)で OAM DMA 中は OAM 領域(FE00-FE9F)自身への
+// 書き込みだけを無視する(BubiBoy Bus.fs の cpuWriteByte を移植)。
 bus_write :: proc(bus: ^Bus, addr: u16, value: u8) {
+	if bus.dma_active && addr >= 0xFE00 && addr <= 0xFE9F {
+		return
+	}
 	switch {
 	case addr <= 0x7FFF:
 		mbc_write(&bus.cart, addr, value) // MBC バンク切替レジスタ(T4-2)
