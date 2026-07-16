@@ -2,18 +2,19 @@
 
 ## 前提
 
-- 依存フェーズ: 10（全プラットフォームのビルドがグリーン）
+- 依存フェーズ: 10（macOS/Linux のビルドがグリーン。2026-07-16、Windows/Raspberry Pi OS/FreeBSDは
+  ユーザー承認により対応対象外となった。docs/dev/phases/phase-10-cicd.md 参照）
 - BluePrint: 「頒布する形式は全てのプラットフォームで zip ファイルとし、この中に必要ならライセンスファイルも同梱する」
 
 ## ゴール
 
-GitHub Release の作成（タグ push）だけで、全プラットフォームの zip が自動的に添付される。
+GitHub Release の作成（タグ push）だけで、macOS/Linux の zip が自動的に添付される。
 
 ## フェーズ完了の検証コマンド
 
 ```sh
-gh release create v0.1.0 --title "v0.1.0" --notes "..." # → 全 zip が自動添付される
-gh release view v0.1.0   # bbl-0.1.0-<platform>-<arch>.zip × 9 種を確認
+gh release create v0.1.0 --title "v0.1.0" --notes "..." # → zip が自動添付される
+gh release view v0.1.0   # bbl-0.1.0-<platform>-<arch>.zip × 4 種を確認
 ```
 
 ---
@@ -45,10 +46,10 @@ gh release view v0.1.0   # bbl-0.1.0-<platform>-<arch>.zip × 9 種を確認
 - [ ] 完了
 
 **目的**: 配布 zip を作るスクリプトをローカル/CI 共通で用意する。
-**作るもの**: `scripts/package_zip.sh`（Windows 用は ps1 か、CI 上の bash で共通化）:
+**作るもの**: `scripts/package_zip.sh`:
 - 入力: バイナリパス・プラットフォーム名・arch。出力: `bbl-<version>-<platform>-<arch>.zip`
-- 同梱物: `bbl`(.exe) + `LICENSE` + `README.md`。**zip 内に余計なディレクトリ階層を作らない**（展開したらファイルが直接出る。M88M docs/CI.md の「二重ラップ回避」）
-- 命名規約: すべて小文字、platform ∈ {macos, windows, linux, rpi, freebsd}、arch ∈ {x86_64, arm64, x86, amd64, armhf}（BluePrint の対応表と一致させる）
+- 同梱物: `bbl` + `LICENSE` + `README.md`。**zip 内に余計なディレクトリ階層を作らない**（展開したらファイルが直接出る。M88M docs/CI.md の「二重ラップ回避」）
+- 命名規約: すべて小文字、platform ∈ {macos, linux}、arch ∈ {x86_64, arm64, amd64}（BluePrint の対応表と一致させる）
 **参照**: `~/dev/_Emu/M88M/docs/CI.md`（命名規約）、BluePrint「CI/CD」
 **完了条件 (DoD)**: ローカルで zip を作成し、`unzip -l` で内容 3 ファイル・階層なしを確認。
 **検証方法**:
@@ -57,7 +58,7 @@ gh release view v0.1.0   # bbl-0.1.0-<platform>-<arch>.zip × 9 種を確認
 ./scripts/package_zip.sh ./bbl macos arm64
 unzip -l bbl-*-macos-arm64.zip
 ```
-**落とし穴**: 実行属性の保持（zip -X ではなく通常 zip で可、ただし Windows で作った zip の実行属性喪失に注意 → 各 OS の zip はその OS のジョブで作る）。
+**落とし穴**: 実行属性の保持（zip -X ではなく通常 zip で可。各 OS の zip はその OS のジョブで作る）。
 **依存**: T11-1
 
 ---
@@ -72,11 +73,11 @@ unzip -l bbl-*-macos-arm64.zip
 - 再利用 workflow: `actions/download-artifact` で成果物収集 → `package_zip.sh` で zip 化 → `gh release upload --clobber`
 - **`permissions: contents: write` はこの再利用 workflow のジョブだけ**（build ジョブは read のまま。M88M の権限分離）
 **参照**: `~/dev/_Emu/M88M/.github/workflows/publish-release-assets.yml`（構造をほぼ流用可能）
-**完了条件 (DoD)**: プレリリースを作成し、9 種の zip（linux×2, macos×2, windows×3, rpi×1, freebsd×1）が自動添付される。
+**完了条件 (DoD)**: プレリリースを作成し、4 種の zip（linux×2, macos×2）が自動添付される。
 **検証方法**:
 ```sh
 gh release create v0.1.0-rc1 --prerelease --notes "release test"
-gh release view v0.1.0-rc1   # zip 9 種を確認後、削除してよい
+gh release view v0.1.0-rc1   # zip 4 種を確認後、削除してよい
 ```
 **落とし穴**: release イベント時は concurrency の cancel-in-progress を無効に（M88M 踏襲）。artifact 名と zip 名のマッピングを 1 箇所（workflow の env）に集約。
 **依存**: T11-1, T11-2, フェーズ 10 全体
@@ -114,11 +115,11 @@ git grep -i "$(whoami)" || echo OK
 **作るもの**: 手順の実施と最終確認:
 1. 全フェーズのダッシュボードが 🟢 であること（8/9 の残タスクがあれば先に完了）
 2. `odin test tests` 全パス、全 workflow グリーン
-3. プレリリース (rc) で T11-3 の 9 zip を確認 → 各 OS（手元にある範囲: macOS 必須、他は可能な範囲）で zip 展開 → `bbl -v` と実ゲーム起動
+3. プレリリース (rc) で T11-3 の 4 zip を確認 → 各 OS（手元にある範囲: macOS 必須、Linux は可能な範囲）で zip 展開 → `bbl -v` と実ゲーム起動
 4. 問題なければ `v0.1.0` を正式リリース
 5. PLAN.md のダッシュボードを全完了に更新し、次期計画（精度向上、追加 MBC 等）の候補メモを検証ログに残す
 **参照**: PLAN.md
-**完了条件 (DoD)**: GitHub Release v0.1.0 に 9 zip が添付され、macOS の zip からの展開バイナリで実ゲームがプレイできる。
+**完了条件 (DoD)**: GitHub Release v0.1.0 に 4 zip が添付され、macOS の zip からの展開バイナリで実ゲームがプレイできる。
 **検証方法**:
 ```sh
 gh release view v0.1.0

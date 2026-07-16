@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-# BubiBoyLite Linux/FreeBSD ビルドスクリプト。POSIX sh のみ使用（bash 拡張禁止）。
+# BubiBoyLite Linux ビルドスクリプト。POSIX sh のみ使用（bash 拡張禁止）。
 # CI もこのスクリプトを呼ぶ（scripts 以外にビルドコマンドを二重管理しない）。
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -56,7 +56,6 @@ if [ "$RELEASE" = "1" ]; then
 	ARCH="$(uname -m)"
 	case "$(uname -s)" in
 	Linux) PLATFORM="linux" ;;
-	FreeBSD) PLATFORM="freebsd" ;;
 	*)
 		echo "Error: 未対応の OS です（検出: $(uname -s)）"
 		exit 1
@@ -105,9 +104,8 @@ if [ "$RELEASE" = "1" ]; then
 		fi
 	done
 	if [ -z "$SDL2_LD_DEFAULT_DIR" ]; then
-		# FreeBSD の既定リンカ(lld)は --verbose で GNU ld と同じ
-		# SEARCH_DIR 形式を出力しないため上の方法では取れないことがある。
-		# どの Unix でも既定検索パスに含まれる /usr/lib へフォールバックする。
+		# ld --verbose の出力形式が異なるリンカ向けのフォールバック。
+		# どの Linux でも既定検索パスに含まれる /usr/lib へフォールバックする。
 		if [ -d /usr/lib ]; then
 			SDL2_LD_DEFAULT_DIR=/usr/lib
 		else
@@ -127,7 +125,7 @@ if [ "$RELEASE" = "1" ]; then
 	set -- "$@" "-extra-linker-flags:$EXTRA_LINKER_FLAGS"
 fi
 
-echo "=== BubiBoyLite Linux/FreeBSD build ==="
+echo "=== BubiBoyLite Linux build ==="
 echo "odin build src/app $*"
 odin build src/app "$@"
 

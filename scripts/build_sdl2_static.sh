@@ -3,11 +3,11 @@ set -e
 
 # SDL2 をソースからビルドし、静的ライブラリ (libSDL2.a) を build/sdl2/<platform>-<arch>/ に
 # 生成・キャッシュするヘルパー。scripts/build_macos.sh / build_linux.sh の --release から呼ばれる。
-# POSIX sh のみ使用（FreeBSD でも動くように。architecture.md 参照）。
+# POSIX sh のみ使用。
 #
 # 使い方: build_sdl2_static.sh <platform> <arch> [cmake 追加オプション...]
-#   platform: macos | linux | freebsd
-#   arch:     x86_64 | arm64 | armhf など、キャッシュディレクトリ名の区別にのみ使う
+#   platform: macos | linux
+#   arch:     x86_64 | arm64 など、キャッシュディレクトリ名の区別にのみ使う
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PROJECT_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -49,9 +49,7 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 # HIDAPI(生HIDデバイスアクセス)のlibusbバックエンドを切る。コントローラー対応は
-# SDL2 GameController APIで足りるため生HIDアクセスは不要。有効のままだとFreeBSDで
-# libusb未リンクによりリンクエラーになる（build-freebsd.yml の初回 CI 実行で
-# libusb_* の undefined symbol として再現・特定済み）。
+# SDL2 GameController APIで足りるため生HIDアクセスは不要で、余分なlibusb依存を避ける。
 echo "build_sdl2_static.sh: cmake configure ($PLATFORM/$ARCH)"
 cmake -S "$SRC_DIR" -B "$BUILD_DIR" \
 	-DCMAKE_BUILD_TYPE=Release \

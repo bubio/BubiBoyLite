@@ -54,8 +54,7 @@ BubiBoyLite/
 │   └── *_test.odin            # 単体テスト（@(test)）
 ├── scripts/
 │   ├── build_macos.sh
-│   ├── build_linux.sh         # FreeBSD でも動くように POSIX sh で書く
-│   ├── build_win.ps1
+│   ├── build_linux.sh
 │   └── fetch_test_roms.sh
 ├── .github/workflows/
 ├── docs/dev/                  # 本計画書一式
@@ -88,23 +87,36 @@ BubiBoyLite/
   にインストール・キャッシュする（`build/` は .gitignore 対象、CI では `actions/cache` を想定）。
 - **macOS (ld64)**: 単純に `-L` で静的ライブラリのディレクトリを探索パスに加えるだけでは、
   Odin 本体が既定でリンカに渡す `-L/opt/homebrew/lib -L/usr/local/lib`（`odin` バイナリに
-  埋め込まれている）が先に評価され、Homebrew 等でインストール済みの `libSDL2*.dylib` が
-  優先されてしまう（`-Wl,-search_paths_first` を足しても解決しなかった＝実機で確認済み）。
-  代わりに `-Wl,-force_load,<libSDL2.a への絶対パス>` で静的アーカイブの全シンボルを強制的に
-  取り込み、`-Wl,-dead_strip_dylibs` で「取り込み済みシンボルにより結果的に不要になった」
-  `-lSDL2` 由来の dylib 参照をリンク後に除去する。フレームワーク（CoreVideo, Cocoa, IOKit,
+  埋め込まれている）が先に評価される。odin が組み立てる実際のリンカ呼び出しでは、この
+  既定 `-L` 由来の `-lSDL2` 解決自体が `-extra-linker-flags` の内容より前に起きるため、
+  後方に `-L` を追加しても効果がない（`odin build ... -print-linker-flags` で実機確認済み。
+  ローカル開発機では Homebrew 版 SDL2 の dylib がこの既定パスにたまたま存在し `-lSDL2` が
+  解決されていたため気付かなかったが、Homebrew 版 SDL2 が入っていない GitHub Actions
+  ランナーでは `ld: library 'SDL2' not found` で即失敗した＝実機で確認済み）。
+  そのため CI では `brew install sdl2` を明示的なステップとして実行し、`-lSDL2` が
+  解決できる先を用意する。最終バイナリの実体は `-Wl,-force_load,<libSDL2.a への絶対パス>` で
+  静的アーカイブの全シンボルを強制的に取り込み、`-Wl,-dead_strip_dylibs` で
+  「取り込み済みシンボルにより結果的に不要になった」`-lSDL2` 由来の dylib 参照を
+  リンク後に除去することで常に自前ビルドの静的アーカイブへ差し替わる
+  （Homebrew 側のバージョンは成果物に影響しない）。フレームワーク（CoreVideo, Cocoa, IOKit,
   ForceFeedback, Carbon, CoreAudio, AudioToolbox, AVFoundation, Foundation は通常、
   GameController/Metal/QuartzCore/CoreHaptics は `-weak_framework`）は
   静的ビルドした `sdl2-config --static-libs` の出力に合わせて明示的に渡す。
-  検証: `otool -L ./bbl` に `SDL2` の動的依存が 0 件（`scripts/build_macos.sh --release` で自動化）。
-- **Linux/FreeBSD (GNU ld/lld)**: ld64 の `force_load`/`dead_strip_dylibs` に相当する機能はないため、
+  検証: `otool -L ./bbl` に `SDL2` の動的依存が 0 件（`scripts/build_macos.sh --release` で自動化、
+  実 CI(GitHub Actions)でも green を確認済み）。
+- **Linux (GNU ld/lld)**: ld64 の `force_load`/`dead_strip_dylibs` に相当する機能はないため、
   同じ方式は使えない。代わりに `-L<静的ビルドの prefix>/lib`（このディレクトリには `.so` を置かない）
   + `-Wl,-Bstatic -lSDL2 -Wl,-Bdynamic` で `-lSDL2` の解決先を静的アーカイブに固定し、
   `sdl2-config --static-libs` が返す ALSA/X11/Wayland/dbus 等のシステム動的ライブラリ一覧を
   追加で渡す（これらは意図的に動的のままで正しい。上記「開発=動的/配布=静的」の注記参照）。
-  **この Linux 側の実装は macOS 環境ではリンク・実行の実機検証ができていない**
-  （検証には Linux ランナー/VM が必要。phase-10 検証ログに記録）。
-- Windows / RPi / FreeBSD の詳細は T10-4/T10-5 実装時にこの節へ追記する。
+  odin が組み立てる実際のリンカ呼び出しでは vendor:sdl2 の foreign import 由来の `-lSDL2` が
+  `-extra-linker-flags` の内容より前に置かれるため、`-L` を渡すだけでは解決できない
+  （`odin build ... -print-linker-flags` で実機確認済み）。`ld --verbose` の `SEARCH_DIR` から
+  ld の既定検索ディレクトリを取得し、静的アーカイブをそこへ直接コピーすることで解決している
+  （`scripts/build_linux.sh`。実際に build-linux.yml の CI で green を確認済み）。
+- macOS/Linux とも実 CI(GitHub Actions)で green を確認済み（phase-10 検証ログ参照）。
+  2026-07-16、ユーザー承認により Windows/Raspberry Pi OS/FreeBSD は対応対象から外した
+  （経緯は phase-10-cicd.md 参照）。
 
 ## 型と表現の決定事項
 
@@ -135,7 +147,7 @@ BubiBoyLite/
 - 固定サイズ配列を優先し、動的確保は ROM/外部 RAM のロード時のみ。フレーム毎のアロケーション禁止。
 - `#partial switch` より網羅的 `switch` を優先（命令デコードなどで漏れをコンパイル時に検出）。
 - テストは `core:testing` の `@(test)` プロシージャ + `testing.expect`。
-- パスの扱い: 実際のユーザー名をコード・ログ・ドキュメントに残さない。`~` 展開は環境変数 `HOME`（Windows は `USERPROFILE`）で行う。
+- パスの扱い: 実際のユーザー名をコード・ログ・ドキュメントに残さない。`~` 展開は環境変数 `HOME` で行う。
 
 ## スコープ外（実装しないこと）
 
