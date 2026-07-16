@@ -7,7 +7,6 @@ on:
       - "src/**"
       - "tests/**"
       - "scripts/build_linux.sh"
-      - "scripts/build_sdl2_static.sh"
       - "scripts/fetch_test_roms.sh"
       - "mise.toml"
       - ".github/workflows/build-linux.yml"
@@ -16,7 +15,6 @@ on:
       - "src/**"
       - "tests/**"
       - "scripts/build_linux.sh"
-      - "scripts/build_sdl2_static.sh"
       - "scripts/fetch_test_roms.sh"
       - "mise.toml"
       - ".github/workflows/build-linux.yml"
@@ -54,23 +52,12 @@ jobs:
         with:
           install: true
 
-      - name: Install SDL2 build dependencies
+      # SDL2 はシステムにインストール済みのものへ動的リンクする方針
+      # （2026-07-16、ユーザー承認により静的リンク方針から変更。phase-10-cicd.md 参照）。
+      - name: Install SDL2
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential cmake pkg-config \
-            libasound2-dev libpulse-dev \
-            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
-            libxinerama-dev libxss-dev libxfixes-dev \
-            libwayland-dev libxkbcommon-dev \
-            libdbus-1-dev libudev-dev \
-            libgl1-mesa-dev libegl1-mesa-dev
-
-      - name: Cache static SDL2 build
-        uses: actions/cache@v4
-        with:
-          path: build/sdl2
-          key: sdl2-static-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('scripts/build_sdl2_static.sh') }}
+          sudo apt-get install -y libsdl2-dev
 
       - name: Cache test ROMs
         uses: actions/cache@v4
@@ -81,16 +68,15 @@ jobs:
       - name: Fetch test ROMs
         run: ./scripts/fetch_test_roms.sh
 
-      - name: Build (release, static SDL2) and test
+      - name: Build (release) and test
         run: ./scripts/build_linux.sh --release --test
 
-      - name: Verify SDL2 is statically linked
+      - name: Verify SDL2 is linked
         run: |
-          if ldd ./bbl | grep -i libsdl2; then
-            echo "Error: bbl is dynamically linked against libSDL2" >&2
+          if ! ldd ./bbl | grep -i libsdl2; then
+            echo "Error: bbl is not linked against libSDL2" >&2
             exit 1
           fi
-          echo "OK: no dynamic libSDL2 dependency"
 
       - name: Version smoke test
         run: ./bbl -v

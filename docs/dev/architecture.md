@@ -71,52 +71,36 @@ BubiBoyLite/
 - ビルドコマンドは必ず `scripts/build_*.sh|ps1` に集約し、CI も同じスクリプトを呼ぶ（M88M 方式）。
   スクリプト以外の場所（workflow 内インラインなど）にビルドコマンドを二重管理しない。
 - SDL2 は `vendor:sdl2`（Odin 標準添付バインディング）を使う。
-  - **開発中（フェーズ 0〜9）**: 動的リンクでよい（macOS: `brew install sdl2`、Ubuntu: `libsdl2-dev`）。
-  - **配布時（フェーズ 10〜11）**: BluePrint の要求どおり静的リンクに切り替える。
-    各プラットフォームで SDL2 静的ライブラリを用意し、リンカフラグで指定する（phase-10 のタスクで確立）。
-  - この「開発=動的 / 配布=静的」の二段構えは意図的な決定。ビルドスクリプトに `--release` 相当の分岐を持たせる。
+  - **システムにインストール済みのものへ動的リンクする**（macOS: `brew install sdl2`、
+    Ubuntu: `libsdl2-dev`）。開発時・配布時とも同じで区別しない
+    （2026-07-16、ユーザー承認により「配布時は静的リンク」の方針から変更。
+    経緯は phase-10-cicd.md 参照）。
+  - 実行には SDL2 のインストールが前提条件になる（BluePrint に明記）。
 
-### SDL2 静的リンクの実現方法（T10-1 で確立、macOS で実機検証済み）
+### SDL2 動的リンクの実現方法
 
 `vendor:sdl2` の `sdl2.odin` は非 Windows で `foreign import lib "system:SDL2"` と書かれており、
-これは最終的にリンカへ `-lSDL2` を渡す。この import 文自体は変更せず（vendor コードは変更禁止）、
-`odin build ... -extra-linker-flags:"..."` でリンク先だけ静的ライブラリへ差し替える。
+これは最終的にリンカへ `-lSDL2` を渡す。この import 文自体は変更せず（vendor コードは変更禁止）。
 
-- **SDL2 本体の取得**: `scripts/build_sdl2_static.sh <platform> <arch>` が SDL2 2.30.9 のソースを
-  取得し、CMake (`-DSDL_STATIC=ON -DSDL_SHARED=OFF`) でビルドして `build/sdl2/<platform>-<arch>/`
-  にインストール・キャッシュする（`build/` は .gitignore 対象、CI では `actions/cache` を想定）。
-- **macOS (ld64)**: 単純に `-L` で静的ライブラリのディレクトリを探索パスに加えるだけでは、
-  Odin 本体が既定でリンカに渡す `-L/opt/homebrew/lib -L/usr/local/lib`（`odin` バイナリに
-  埋め込まれている）が先に評価される。odin が組み立てる実際のリンカ呼び出しでは、この
-  既定 `-L` 由来の `-lSDL2` 解決自体が `-extra-linker-flags` の内容より前に起きるため、
-  後方に `-L` を追加しても効果がない（`odin build ... -print-linker-flags` で実機確認済み。
-  ローカル開発機では Homebrew 版 SDL2 の dylib がこの既定パスにたまたま存在し `-lSDL2` が
-  解決されていたため気付かなかったが、Homebrew 版 SDL2 が入っていない GitHub Actions
-  ランナーでは `ld: library 'SDL2' not found` で即失敗した＝実機で確認済み）。
-  そのため CI では `brew install sdl2` を明示的なステップとして実行し、`-lSDL2` が
-  解決できる先を用意する。最終バイナリの実体は `-Wl,-force_load,<libSDL2.a への絶対パス>` で
-  静的アーカイブの全シンボルを強制的に取り込み、`-Wl,-dead_strip_dylibs` で
-  「取り込み済みシンボルにより結果的に不要になった」`-lSDL2` 由来の dylib 参照を
-  リンク後に除去することで常に自前ビルドの静的アーカイブへ差し替わる
-  （Homebrew 側のバージョンは成果物に影響しない）。フレームワーク（CoreVideo, Cocoa, IOKit,
-  ForceFeedback, Carbon, CoreAudio, AudioToolbox, AVFoundation, Foundation は通常、
-  GameController/Metal/QuartzCore/CoreHaptics は `-weak_framework`）は
-  静的ビルドした `sdl2-config --static-libs` の出力に合わせて明示的に渡す。
-  検証: `otool -L ./bbl` に `SDL2` の動的依存が 0 件（`scripts/build_macos.sh --release` で自動化、
+- **macOS**: Odin 本体が既定でリンカに渡す `-L/opt/homebrew/lib -L/usr/local/lib`
+  （`odin` バイナリに埋め込まれている）により、`brew install sdl2` 済みの環境では
+  追加のリンカフラグ無しで `-lSDL2` が解決される（実機確認済み）。CI では
+  `brew install sdl2` を明示的なステップとして実行する。
+  検証: `otool -L ./bbl` に `SDL2` の動的依存が含まれること（`build-macos.yml` で自動化、
   実 CI(GitHub Actions)でも green を確認済み）。
-- **Linux (GNU ld/lld)**: ld64 の `force_load`/`dead_strip_dylibs` に相当する機能はないため、
-  同じ方式は使えない。代わりに `-L<静的ビルドの prefix>/lib`（このディレクトリには `.so` を置かない）
-  + `-Wl,-Bstatic -lSDL2 -Wl,-Bdynamic` で `-lSDL2` の解決先を静的アーカイブに固定し、
-  `sdl2-config --static-libs` が返す ALSA/X11/Wayland/dbus 等のシステム動的ライブラリ一覧を
-  追加で渡す（これらは意図的に動的のままで正しい。上記「開発=動的/配布=静的」の注記参照）。
-  odin が組み立てる実際のリンカ呼び出しでは vendor:sdl2 の foreign import 由来の `-lSDL2` が
-  `-extra-linker-flags` の内容より前に置かれるため、`-L` を渡すだけでは解決できない
-  （`odin build ... -print-linker-flags` で実機確認済み）。`ld --verbose` の `SEARCH_DIR` から
-  ld の既定検索ディレクトリを取得し、静的アーカイブをそこへ直接コピーすることで解決している
-  （`scripts/build_linux.sh`。実際に build-linux.yml の CI で green を確認済み）。
+- **Linux**: `libsdl2-dev`（apt）をインストール済みの環境では、ld の既定検索パス
+  （`/usr/lib/<triple>` 等）により追加のリンカフラグ無しで `-lSDL2` が解決される。
+  検証: `ldd ./bbl` に `libSDL2` の動的依存が含まれること（`build-linux.yml` で自動化、
+  実 CI(GitHub Actions)でも green を確認済み）。
 - macOS/Linux とも実 CI(GitHub Actions)で green を確認済み（phase-10 検証ログ参照）。
   2026-07-16、ユーザー承認により Windows/Raspberry Pi OS/FreeBSD は対応対象から外した
   （経緯は phase-10-cicd.md 参照）。
+- **過去の経緯（参考）**: T10-1〜T10-3 では当初 BluePrint の「静的リンク」要求どおり、
+  SDL2 をソースからビルドして静的リンクする方式（`build_sdl2_static.sh`、macOS の
+  `force_load`/`dead_strip_dylibs`、Linux の `ld` 既定検索パスへの静的アーカイブ配置等）を
+  実装し、実 CI で green にまで到達していた。その後、静的ビルドの複雑さ（プラットフォーム毎の
+  リンカ挙動の違い、HIDAPI/libusb 等の依存関係）とユーザー判断により、システムインストール前提の
+  動的リンクへ方針転換した。当時の詳細な調査記録は phase-10-cicd.md の検証ログに残っている。
 
 ## 型と表現の決定事項
 

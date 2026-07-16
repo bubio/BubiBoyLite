@@ -46,48 +46,14 @@ else
 fi
 
 if [ "$RELEASE" = "1" ]; then
-	# 配布用: SDL2 を静的リンクする（architecture.md「開発=動的/配布=静的」の二段構え）。
-	ARCH="$(uname -m)"
-	case "$ARCH" in
-	arm64 | x86_64) ;;
-	*)
-		echo "Error: --release は arm64/x86_64 のみ対応です（検出: $ARCH）"
-		exit 1
-		;;
-	esac
-
+	# 配布用ビルド。SDL2 はシステムにインストール済みのもの（`brew install sdl2`）に
+	# 動的リンクする（2026-07-16、ユーザー承認により静的リンク方針から変更。経緯は
+	# docs/dev/phases/phase-10-cicd.md 参照）。vendor:sdl2 の foreign import が渡す
+	# 暗黙の `-lSDL2` は、odin が既定で追加する `-L/opt/homebrew/lib -L/usr/local/lib`
+	# で自然に解決されるため、追加のリンカフラグは不要（実機確認済み）。
 	MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.5}"
 	export MACOSX_DEPLOYMENT_TARGET
 
-	"$SCRIPT_DIR/build_sdl2_static.sh" macos "$ARCH" \
-		-DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
-		-DCMAKE_OSX_ARCHITECTURES="$ARCH"
-
-	SDL2_LIB="$PROJECT_ROOT/build/sdl2/macos-$ARCH/lib/libSDL2.a"
-	if [ ! -f "$SDL2_LIB" ]; then
-		echo "Error: 静的 SDL2 のビルドに失敗しました: $SDL2_LIB が見つかりません"
-		exit 1
-	fi
-
-	# vendor:sdl2 の foreign import は暗黙に -lSDL2 をリンカへ渡す。odin は
-	# ユーザーの -extra-linker-flags より前に -L/opt/homebrew/lib を追加する
-	# ため、-L を渡さないと Homebrew に SDL2 が入っている環境でだけ偶然
-	# 解決されてしまい（dylib 由来）、Homebrew に SDL2 が無い環境（GitHub
-	# Actions ランナー等）では `ld: library 'SDL2' not found` で即失敗する
-	# （実際に build-macos.yml の初回 CI 実行で再現・特定済み）。
-	# 自前でビルドした静的アーカイブのディレクトリを -L で明示的に追加し、
-	# -lSDL2 がこちらへ解決されるようにする。force_load で libSDL2.a の
-	# シンボルを全て取り込み、dead_strip_dylibs で万一動的解決された場合の
-	# 未使用 dylib 参照も除去する（両対策を併用し二重に静的化を保証する）。
-	SDL2_LIB_DIR="$(dirname "$SDL2_LIB")"
-	EXTRA_LINKER_FLAGS="-L$SDL2_LIB_DIR -Wl,-force_load,$SDL2_LIB -Wl,-dead_strip_dylibs"
-	EXTRA_LINKER_FLAGS="$EXTRA_LINKER_FLAGS -framework CoreVideo -framework Cocoa -framework IOKit"
-	EXTRA_LINKER_FLAGS="$EXTRA_LINKER_FLAGS -framework ForceFeedback -framework Carbon -framework CoreAudio"
-	EXTRA_LINKER_FLAGS="$EXTRA_LINKER_FLAGS -framework AudioToolbox -framework AVFoundation -framework Foundation"
-	EXTRA_LINKER_FLAGS="$EXTRA_LINKER_FLAGS -weak_framework GameController -weak_framework Metal"
-	EXTRA_LINKER_FLAGS="$EXTRA_LINKER_FLAGS -weak_framework QuartzCore -weak_framework CoreHaptics"
-
-	set -- "$@" "-extra-linker-flags:$EXTRA_LINKER_FLAGS"
 	# odin のデフォルトは -minimum-os-version:11.0.0 で、指定しないとリンカが
 	# ホストの OS バージョンをそのまま LC_BUILD_VERSION の minos に埋め込んでしまう
 	# （実機確認: 指定なしでビルドすると minos がビルドホストの OS バージョンになった）。

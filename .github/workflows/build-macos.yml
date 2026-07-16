@@ -1,12 +1,13 @@
 name: Build macOS (x86_64/arm64, separate binaries)
 
 # BluePrint により macOS はユニバーサルではなく別バイナリを配布する。
-# GitHub 提供の Apple Silicon ランナー上での x86_64 クロスビルドは
-# scripts/build_sdl2_static.sh のクロス検証（Xcode の -arch x86_64 サポートに
-# 依存）が本セッションでは未実施のため、確実性を優先しネイティブ 2 ランナー
-# 構成にする（phase-10-cicd.md T10-3 の落とし穴欄が許容する切替）。
+# GitHub 提供の Apple Silicon ランナー上での x86_64 クロスビルドは実施しておらず、
+# 確実性を優先しネイティブ 2 ランナー構成にする（phase-10-cicd.md T10-3 の
+# 落とし穴欄が許容する切替）。
 # CLAUDE.md が想定する Xcode 26 世代に合わせ macos-26(arm64)/macos-26-intel(x64) を使う
 # （2026-02-26 に GA。actions/runner-images の macos-26-Readme.md で確認）。
+# SDL2 はシステムにインストール済みのもの（brew install sdl2）に動的リンクする
+# （2026-07-16、ユーザー承認により静的リンク方針から変更。phase-10-cicd.md 参照）。
 
 on:
   push:
@@ -15,7 +16,6 @@ on:
       - "src/**"
       - "tests/**"
       - "scripts/build_macos.sh"
-      - "scripts/build_sdl2_static.sh"
       - "scripts/fetch_test_roms.sh"
       - "mise.toml"
       - ".github/workflows/build-macos.yml"
@@ -24,7 +24,6 @@ on:
       - "src/**"
       - "tests/**"
       - "scripts/build_macos.sh"
-      - "scripts/build_sdl2_static.sh"
       - "scripts/fetch_test_roms.sh"
       - "mise.toml"
       - ".github/workflows/build-macos.yml"
@@ -63,25 +62,12 @@ jobs:
         with:
           install: true
 
-      # vendor:sdl2 の foreign import は暗黙に -lSDL2 をリンカへ渡す。odin が実際に
-      # 組み立てる clang 呼び出しでは、この -lSDL2 が -extra-linker-flags で渡す内容
-      # (自前ビルドの静的アーカイブへの -L や -force_load を含む)より前に置かれる
-      # (`odin build ... -print-linker-flags` で実機確認済み)。リンカは左から右に
-      # 処理するため、-lSDL2 の時点で見えている -L (odin が既定で足す
-      # /usr/local/lib・/opt/homebrew/lib のみ) にSDL2が無いと即座に
-      # `ld: library 'SDL2' not found` で失敗する(初回 CI 実行で実際に再現)。
-      # ここで Homebrew の SDL2 をインストールし、その既定パスに -lSDL2 が解決できる
-      # ようにする。最終バイナリの実体は下の force_load + dead_strip_dylibs で
-      # 常に自前ビルドの静的アーカイブに差し替わる(otool -L でSDL2依存ゼロを別途検証)
-      # ため、ここでの Homebrew SDL2 のバージョンは成果物に影響しない。
-      - name: Install SDL2 via Homebrew (link-time only, not the shipped binary)
+      # SDL2 はシステムにインストール済みのものへ動的リンクする方針
+      # （2026-07-16、ユーザー承認）。vendor:sdl2 の foreign import が渡す
+      # 暗黙の -lSDL2 は odin が既定で追加する -L/opt/homebrew/lib・-L/usr/local/lib
+      # で自然に解決される（実機確認済み）。
+      - name: Install SDL2 via Homebrew
         run: brew install sdl2
-
-      - name: Cache static SDL2 build
-        uses: actions/cache@v4
-        with:
-          path: build/sdl2
-          key: sdl2-static-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('scripts/build_sdl2_static.sh') }}
 
       - name: Cache test ROMs
         uses: actions/cache@v4
@@ -92,16 +78,15 @@ jobs:
       - name: Fetch test ROMs
         run: ./scripts/fetch_test_roms.sh
 
-      - name: Build (release, static SDL2) and test
+      - name: Build (release) and test
         run: ./scripts/build_macos.sh --release --test
 
-      - name: Verify SDL2 is statically linked and single-arch (not universal)
+      - name: Verify SDL2 is linked and binary is single-arch (not universal)
         run: |
-          if otool -L ./bbl | grep -i sdl; then
-            echo "Error: bbl is dynamically linked against SDL2" >&2
+          if ! otool -L ./bbl | grep -i sdl; then
+            echo "Error: bbl is not linked against SDL2" >&2
             exit 1
           fi
-          echo "OK: no dynamic SDL2 dependency"
           file ./bbl
           if file ./bbl | grep -qi universal; then
             echo "Error: bbl is a universal binary; BluePrint requires separate arch binaries" >&2
