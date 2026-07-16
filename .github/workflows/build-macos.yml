@@ -63,6 +63,20 @@ jobs:
         with:
           install: true
 
+      # vendor:sdl2 の foreign import は暗黙に -lSDL2 をリンカへ渡す。odin が実際に
+      # 組み立てる clang 呼び出しでは、この -lSDL2 が -extra-linker-flags で渡す内容
+      # (自前ビルドの静的アーカイブへの -L や -force_load を含む)より前に置かれる
+      # (`odin build ... -print-linker-flags` で実機確認済み)。リンカは左から右に
+      # 処理するため、-lSDL2 の時点で見えている -L (odin が既定で足す
+      # /usr/local/lib・/opt/homebrew/lib のみ) にSDL2が無いと即座に
+      # `ld: library 'SDL2' not found` で失敗する(初回 CI 実行で実際に再現)。
+      # ここで Homebrew の SDL2 をインストールし、その既定パスに -lSDL2 が解決できる
+      # ようにする。最終バイナリの実体は下の force_load + dead_strip_dylibs で
+      # 常に自前ビルドの静的アーカイブに差し替わる(otool -L でSDL2依存ゼロを別途検証)
+      # ため、ここでの Homebrew SDL2 のバージョンは成果物に影響しない。
+      - name: Install SDL2 via Homebrew (link-time only, not the shipped binary)
+        run: brew install sdl2
+
       - name: Cache static SDL2 build
         uses: actions/cache@v4
         with:
