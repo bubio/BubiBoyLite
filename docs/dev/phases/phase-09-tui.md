@@ -195,6 +195,39 @@ odin test tests -collection:bbl=src
 
 ## 検証ログ
 
+2026-07-17 T9-6着手中に致命的バグを発見・修正: ユーザーに`./bbl`の実機検証を依頼したところ
+「1は何も表示されません」と報告(T11-5準備中、フェーズ0/2/9の残タスク着手の一環)。
+pty経由で自ら再現したところ、`tui.odin`のROM一覧描画(`tui_run_rom_browser`)が起動直後に
+`Index 0 is out of range 0..<0`でクラッシュすることを確認(シグナルハンドラにより端末は正常復元
+されるが、画面には何も表示されないまま終了する。ユーザー報告の「何も表示されない」と一致)。
+
+原因調査(pty上でのバイナリ再現テストを多数回実施、advisor相談を経てASan診断を試みたが
+Odin dev-2026-07ツールチェインのcompiler-rtとシステムclangのバージョン不一致でASanリンクが
+失敗したため断念、代わりに手動bisectionで切り分け): `-o:speed`(最適化あり)ビルドでのみ再現し
+`-debug`ビルドでは再現しない。最小化の結果、「`build_recent_entries`内で`recent_load`
+(`os.read_entire_file`を呼ぶ)等のファイルI/Oを経由した後、`tui_run_rom_browser`のレンダー
+ループが`make([]List_Item, len(entries), context.temp_allocator)`で`context.temp_allocator`
+を使ってヒープ確保する」という組み合わせで、この`make`が実際には`len(entries)`件確保した
+はずが長さ0のスライスを返す(内部的にtemp_allocatorの状態が壊れている)ことを突き止めた。
+スタンドアロンの最小再現コード(`make([]T, N, context.temp_allocator)`単体)では再現せず、
+`entries`自体の内容は常に正しい値を保っていたため、実際のヒープ破壊(OOBライトによる
+アロケータメタデータ破壊)ではなく、`-o:speed`固有のcontext.temp_allocator関連の
+コンパイラ/ランタイムレベルの不具合と判断した(dev-2026-07という開発版ツールチェイン
+であることを踏まえ、これ以上の原因追及はOdinコンパイラ自体のデバッグが必要な規模と判断し
+深追いを打ち切った)。
+
+**修正**: `tui_run_rom_browser`・`tui_run_recent_browser`(2箇所)の`items`確保を
+`context.temp_allocator`から`context.allocator`(ヒープ)+`defer delete(items)`に変更
+(`items`は`if dirty`ブロック内でのみ使われ、ブロックを跨いで生存する必要が無いため
+安全に heap alloc/free できる)。修正後、pty経由で`./bbl`(引数無し)・`./bbl --recent`
+とも `-o:speed`ビルド(デフォルト)・`--release`ビルドの両方で10回以上連続実行し
+クラッシュが再現しないことを確認。`odin test tests -collection:bbl=src`: 415 tests
+全PASS(回帰なし)。
+
+**注記**: この修正はT9-6の残りチェックリスト項目(実端末での目視確認)を代替するものではない。
+むしろ「実端末で最初に試した結果クラッシュを検出した」ことがT9-6着手の直接のきっかけであり、
+実機検証の価値を裏付ける結果になった。ユーザーには再度、修正後のバイナリでの実機検証を依頼する。
+
 （タスク完了ごとに 1 行追記）
 
 2026-07-12 T9-1 完了: `odin build src/app -collection:bbl=src -out:bbl -debug` 成功、

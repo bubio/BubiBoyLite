@@ -725,7 +725,13 @@ tui_run_rom_browser :: proc(start_dir: string, config_dir: string) -> (result: R
 		}
 
 		if dirty {
-			items := make([]List_Item, len(entries), context.temp_allocator)
+			// 落とし穴(実機検証で発見): context.temp_allocator で確保すると、build_recent_entries
+			// 側のファイルI/O(recent_load 等)を経由した直後に -o:speed ビルドでこの make() が
+			// 長さ0のスライスを返す(temp_allocator内部状態が壊れる、dev-2026-07 ツールチェイン固有の
+			// 問題と推測。-debug では再現しない)。context.allocator(ヒープ)+明示的な delete に
+			// 変更して回避する(詳細は phase-09-tui.md T9-6 検証ログ参照)。
+			items := make([]List_Item, len(entries))
+			defer delete(items)
 			for e, i in entries {
 				items[i] = List_Item{label = browser_entry_label(e), info = e.info}
 			}
@@ -806,7 +812,10 @@ tui_run_recent_browser :: proc(config_dir: string) -> (result: Rom_Browser_Resul
 		}
 
 		if dirty {
-			items := make([]List_Item, len(entries), context.temp_allocator)
+			// context.temp_allocator を避ける理由は tui_run_rom_browser 側の同種の
+			// 箇所のコメント参照(phase-09-tui.md T9-6 検証ログ)。
+			items := make([]List_Item, len(entries))
+			defer delete(items)
 			for e, i in entries {
 				items[i] = List_Item{label = browser_entry_label(e), info = e.info}
 			}
