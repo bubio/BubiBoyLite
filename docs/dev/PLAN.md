@@ -26,7 +26,7 @@ BubiBoyLite（実行ファイル名 `bbl`）の開発計画のマスタードキ
 | 8 | フロントエンド完成 | 🟢 2026-07-12 | 7/7 | BluePrint 記載の全 CLI オプションが仕様どおり + 初回起動で設定ファイル自動生成 | [詳細](phases/phase-08-frontend.md) |
 | 9 | TUI | 🟡 | 5/6 | `bbl` 引数なし起動で TUI → ROM 選択 → 起動 → 終了が完結、`--recent` が仕様どおり | [詳細](phases/phase-09-tui.md) |
 | 10 | CI/CD (macOS/Linux) | 🟢 (2026-07-16) | 4/4 | macOS/Linux の workflow がグリーン、各バイナリがスモークテスト通過（2026-07-16、Windows/RPi/FreeBSDは対応対象外に変更） | [詳細](phases/phase-10-cicd.md) |
-| 11 | リリース | ⚪ | 0/5 | タグ push で全プラットフォームの zip が GitHub Release に自動添付 | [詳細](phases/phase-11-release.md) |
+| 11 | リリース | 🟡 | 4/5 | タグ push で全プラットフォームの zip が GitHub Release に自動添付 | [詳細](phases/phase-11-release.md) |
 
 ---
 
