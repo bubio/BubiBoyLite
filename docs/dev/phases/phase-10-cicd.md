@@ -356,3 +356,22 @@ Linux 側は初回修正(`-L` 追加)では直らず(`ld: cannot find -lSDL2`の
 T10-2・T10-3 とも DoD(両 arch グリーン、静的リンク検証・`-v` スモークがジョブ内で通過)を
 満たしたため `[x]` 完了にする。T10-4(Windows)・T10-5(RPi/FreeBSD)は同根の問題を抱えている
 可能性が高いが未検証のまま残っている(次のタスクとして着手予定)。
+
+2026-07-16 T10-4/T10-5 実 CI 4本(macOS/Linux/FreeBSD/Windows)を同時実行して結果が分岐:
+- **macOS・Linux**: 引き続き green(HIDAPI_LIBUSB フラグ追加後も回帰無し)。
+- **FreeBSD**: `-DSDL_HIDAPI_LIBUSB=OFF` を渡しても効果が無いことが実機ログで判明。
+  SDL2 の CMakeLists.txt(505-511行目)に `if(FREEBSD OR NETBSD OR OPENBSD OR BSDI)
+  set(HIDAPI_ONLY_LIBUSB TRUE)` → `set(SDL_HIDAPI_LIBUSB ON CACHE BOOL "" FORCE)` という
+  BSD 専用のハードコードされた強制上書きがあり、ユーザー指定のオプションを無視して
+  常に libusb 必須にする設計だった(取得したソース `build/sdl2/src/SDL2-2.30.9/CMakeLists.txt`
+  で直接確認)。実際のリンクコマンドには `sdl2-config --static-libs` 由来の `-lusb -lusbhid`
+  も含まれていたが、それでも `libusb_get_string_descriptor` 等が undefined symbol になった
+  ことから、FreeBSD ベースシステムの `/usr/lib/libusb.so` だけでは不十分と判断し、
+  `devel/libusb`(`pkg install libusb`)を明示的に追加した(WebSearch で freshports.org の
+  該当ポートを確認)。**再検証はこのコミットの push 後**。
+- **Windows**: SDL2 とは無関係の、より基礎的な問題を発見。`jdx/mise-action` は
+  `mise install` 自体は成功する(ログに `odin dev-2026-07 ✓ installed` と出る)が、
+  `mise-shim.exe not found ... falling back to "file" shim mode` という警告が出ており、
+  後続の `run:` ステップで `odin` コマンドが見つからない(`Error: odin コマンドが見つかりません`)。
+  これは今回の SDL2 動的リンク切替とは無関係な、Windows ランナー上での mise の
+  シム/PATH 設定に関する別の問題（未調査、次回セッションへ持ち越し）。
