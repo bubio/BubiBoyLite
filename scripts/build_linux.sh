@@ -78,6 +78,40 @@ if [ "$RELEASE" = "1" ]; then
 	# 静的ライブラリへ向ける（このディレクトリには .so を置かないので曖昧さがない）。
 	SDL2_SYS_LIBS="$("$SDL2_DIR/bin/sdl2-config" --static-libs 2>/dev/null | sed "s#-L$SDL2_DIR/lib##; s#-lSDL2##g")"
 
+	# odin が組み立てる実際の clang/ld 呼び出しでは、vendor:sdl2 の foreign import
+	# 由来の -lSDL2 が -extra-linker-flags の内容より前に置かれる
+	# （`odin build ... -print-linker-flags` で実機確認済み。macOS の
+	# build_macos.sh と同根の問題、実際に build-linux.yml の初回 CI 実行で
+	# `ld: cannot find -lSDL2` として再現・特定済み）。GNU ld は -l を左から右へ
+	# 処理するため、後方の -L だけでは解決できない。
+	# libsdl2-dev を apt で入れて動的 .so を検索パスに置く回避策は採らない
+	# （ld64 の dead_strip_dylibs に相当する後始末が GNU ld には無く、
+	# 最初の -lSDL2 が .so に動的解決されると最終バイナリに
+	# DT_NEEDED libSDL2.so が残ってしまい、静的リンク要件を満たせなくなる）。
+	# 代わりに、ld が最初から検索するディレクトリ（-L 無しでも見る場所）に
+	# 自前ビルドの静的アーカイブを直接コピーする。.a としての解決なので
+	# 実行ファイルへ動的依存が残らず、ピン止めしたバージョンがそのまま使われる。
+	SDL2_LD_DEFAULT_DIR="$(ld --verbose 2>/dev/null | sed -n 's/SEARCH_DIR("=\{0,1\}\([^"]*\)");/\1/p' | while read -r d; do
+		[ -d "$d" ] && echo "$d" && break
+	done)"
+	if [ -z "$SDL2_LD_DEFAULT_DIR" ]; then
+		# FreeBSD の既定リンカ(lld)は --verbose で GNU ld と同じ
+		# SEARCH_DIR 形式を出力しないため上の方法では取れないことがある。
+		# どの Unix でも既定検索パスに含まれる /usr/lib へフォールバックする。
+		if [ -d /usr/lib ]; then
+			SDL2_LD_DEFAULT_DIR=/usr/lib
+		else
+			echo "Error: ld のデフォルト検索ディレクトリを特定できませんでした（'ld --verbose' の出力を確認してください）"
+			exit 1
+		fi
+	fi
+	if [ -w "$SDL2_LD_DEFAULT_DIR" ]; then
+		cp "$SDL2_LIB" "$SDL2_LD_DEFAULT_DIR/libSDL2.a"
+	else
+		sudo -n cp "$SDL2_LIB" "$SDL2_LD_DEFAULT_DIR/libSDL2.a"
+	fi
+	echo "静的 SDL2 を ld の既定検索パスへ配置: $SDL2_LD_DEFAULT_DIR/libSDL2.a"
+
 	EXTRA_LINKER_FLAGS="-L$SDL2_DIR/lib -Wl,-Bstatic -lSDL2 -Wl,-Bdynamic $SDL2_SYS_LIBS"
 
 	set -- "$@" "-extra-linker-flags:$EXTRA_LINKER_FLAGS"

@@ -190,6 +190,41 @@ BluePrint どおり別バイナリ（ユニバーサル禁止）。x86_64 クロ
 (arm64大型)の4種(`actions/runner-images`の`macos-26-Readme.md`で確認)。
 構文再検証: actionlint exit=0、yaml.safe_load OK。**実際の CI 実行は依然未実施。**
 
+2026-07-16 T10-1/T10-2 実 CI 実行で判明した全プラットフォーム共通のリンカ問題:
+macOS の修正過程で `odin build ... -print-linker-flags` を実機確認した結果、
+odin は vendor:sdl2 の foreign import 由来の `-lSDL2` を、`-extra-linker-flags`
+で渡す内容(自前ビルドの静的アーカイブへの `-L` 等)より**前**に置くことが判明した
+（実際の呼び出し例: `... -L/usr/local/lib -L/opt/homebrew/lib -L/ -lSDL2 -lm
+-target ... <ここに -extra-linker-flags の内容> ...`）。リンカは `-l` を左から
+右へ処理し、その時点までに見えている `-L` しか使わないため、後方に `-L` を
+足すだけでは `-lSDL2` を自前の静的アーカイブへ向けられない。macOS ローカルで
+これまで成功していたのは、odin が既定で足す `/opt/homebrew/lib` に Homebrew 版
+SDL2 の dylib がたまたま存在し、そちらへ解決されていた（`force_load`+
+`dead_strip_dylibs` で最終的に静的化されるため気付かなかった）だけだった。
+GitHub Actions ランナーには Homebrew 版 SDL2 が無いため
+`ld: library 'SDL2' not found` で即失敗し（build-macos.yml 初回 CI 実行で再現）、
+同根の問題が build-linux.yml でも `ld: cannot find -lSDL2` として再現した
+（実際に workflow_dispatch でどちらも実行し確認済み）。
+修正方針はプラットフォームで機構が異なるため統一しない:
+- **macOS**: `build-macos.yml` に `brew install sdl2` ステップを追加し、odin の
+  既定検索パスに `-lSDL2` が解決できる先を用意した。最終バイナリは
+  `force_load`+`dead_strip_dylibs` により常に自前の静的アーカイブへ差し替わる
+  ため Homebrew 側のバージョンは成果物に影響しない
+  （`otool -L`/`file` 検証ステップ込みで build-macos.yml が実際に green になった
+  ことを確認済み: run 29468924053、両 arch success）。
+- **Linux/FreeBSD**（`build_linux.sh`。FreeBSD は薄いラッパー経由で同じコードを使う）:
+  `apt install libsdl2-dev`のような動的ライブラリ導入は採らない。GNU ld には
+  ld64 の `dead_strip_dylibs` に相当する後始末が無いため、最初の(odin 自動挿入の)
+  `-lSDL2` が `.so` へ動的解決されると最終バイナリに `DT_NEEDED libSDL2.so` が
+  残ってしまい、静的リンク要件も「SDL2 は静的リンク」の検証ステップ
+  (`ldd | grep sdl`)も満たせなくなるため。代わりに `ld --verbose` の
+  `SEARCH_DIR(...)` 出力から ld が既定で見るディレクトリを取得し、自前ビルドの
+  `libSDL2.a` をそこへ直接コピーする（`.a` としての解決なので実行ファイルに
+  動的依存が残らず、ピン止めしたバージョンがそのまま使われる）。FreeBSD の既定
+  リンカ(lld)は同じ `SEARCH_DIR` 出力形式を持たない可能性があるため、
+  検出できない場合は `/usr/lib` へフォールバックする実装にした。
+  **Linux 側はこの修正を push 直後で CI 未検証**（次のコミットで確認する）。
+
 2026-07-16 T10-3 初回実 CI 実行で失敗を検出・修正: ユーザーが GitHub remote(`bubio/BubiBoyLite`、
 Public)を作成しpush、build-macos.ymlを`workflow_dispatch`で手動実行したところ両arch
 (`macos-26`/`macos-26-intel`)とも`Build (release, static SDL2) and test`ステップで失敗。
