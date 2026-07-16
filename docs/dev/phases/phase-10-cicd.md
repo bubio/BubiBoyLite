@@ -120,7 +120,7 @@ RPi は元々 Odin に `linux_arm32` target が無くビルド不可能と判明
 
 ### T10-6: テスト ROM の CI 実行と paths フィルタ整理
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: フェーズ 10 のマイルストーン。CI の完成度を上げる。
 **作るもの**:
@@ -421,3 +421,19 @@ libsdl2-dev）へ単純に動的リンクする方式へ変更するというも
   この変更の push 後に確認する。
 **T10-1 の完了状態は維持する**（DoD である「ローカルで otool -L に SDL2 が現れる・-v 動作」は
 新方式でも満たされるため。ただし DoD の文言自体は静的リンク前提から動的リンク前提へ書き換えた）。
+
+2026-07-16 T10-1 動的リンク方式の実 CI 検証完了: 上記コミット push 後、build-linux.yml
+(run 29499205555)・build-macos.yml (run 29499205505) とも push イベントで自動発火し、
+4 レグ全て(`amd64`/`arm64` on ubuntu-22.04・ubuntu-22.04-arm、`x86_64`/`arm64` on
+macos-26-intel・macos-26)が success。`ldd`/`otool -L` の「SDL2 動的依存が含まれること」検証・
+`-v` スモークとも通過。SDL2 のソースビルドが無くなった分ビルド時間も大幅短縮
+（Linux 約1分15秒〜1分41秒、macOS 約50秒〜1分25秒。静的ビルド方式時は4分超だった）。
+
+2026-07-16 T10-6 完了確認: fetch_test_roms.sh(actions/cache付き)→`odin test`は
+`build_linux.sh --release --test`/`build_macos.sh --release --test`経由で既に両
+workflow に組み込み済み、paths フィルタも自 workflow ファイルを含め設定済み、README の
+CI バッジも設置済み、`-v` スモークも両 workflow に存在済みであることを確認（追加実装は不要だった）。
+残る DoD「docs だけの変更でビルド workflow が走らないこと」を実地検証するため、本ログ追記を
+含む docs のみのコミットを push → `gh run list` で新規の build-linux.yml/build-macos.yml
+の run が発火していないことを確認（paths フィルタが `docs/**` を含まないことにより意図通り）。
+これによりフェーズ10の実質 4 タスク(T10-1・T10-2・T10-3・T10-6)全て完了。
