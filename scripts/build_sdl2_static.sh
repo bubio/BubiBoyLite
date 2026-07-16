@@ -48,6 +48,10 @@ fi
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
+# HIDAPI(生HIDデバイスアクセス)のlibusbバックエンドを切る。コントローラー対応は
+# SDL2 GameController APIで足りるため生HIDアクセスは不要。有効のままだとFreeBSDで
+# libusb未リンクによりリンクエラーになる（build-freebsd.yml の初回 CI 実行で
+# libusb_* の undefined symbol として再現・特定済み）。
 echo "build_sdl2_static.sh: cmake configure ($PLATFORM/$ARCH)"
 cmake -S "$SRC_DIR" -B "$BUILD_DIR" \
 	-DCMAKE_BUILD_TYPE=Release \
@@ -55,6 +59,7 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" \
 	-DSDL_STATIC=ON \
 	-DSDL_SHARED=OFF \
 	-DSDL_TEST=OFF \
+	-DSDL_HIDAPI_LIBUSB=OFF \
 	"$@"
 
 echo "build_sdl2_static.sh: build"

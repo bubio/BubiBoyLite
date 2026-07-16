@@ -91,9 +91,10 @@ gh workflow list && gh run list --limit 10   # 全 build-*.yml がグリーン
 
 **目的**: Windows 10+ 向け 3 アーキテクチャ。
 **作るもの**:
-- `scripts/build_win.ps1` に `--release`（静的 SDL2）と `-Architecture x86|x64|arm64` を実装（Odin の `-target:windows_i386|windows_amd64|windows_arm64`）
+- `scripts/build_win.ps1` に `--release`（2026-07-16 方針転換: SDL2 公式配布物の動的ライブラリを使用。
+  検証ログ参照）と `-Architecture x86|x64|arm64` を実装（Odin の `-target:windows_i386|windows_amd64|windows_arm64`）
 - `.github/workflows/build-windows.yml`: `windows-latest`、matrix で 3 arch。スモークは x64 のみ実行（ランナー上で動くのは x64/arm64エミュ）
-- 成果物: `bbl-windows-<arch>`（bbl.exe 入り）
+- 成果物: `bbl-windows-<arch>`（bbl.exe + SDL2.dll 入り）
 **参照**: `~/dev/_Emu/M88M/.github/workflows/build-windows.yml` + `scripts/build_win.ps1`
 **完了条件 (DoD)**: 3 arch ジョブグリーン、x64 スモーク通過。
 **検証方法**: `gh run watch`。
@@ -255,6 +256,22 @@ x86/x64 レグ: PowerShell 構文チェックのみ実施（`brew install powers
 x86 が x64 ホストからの同一 OS 内クロスとして成立するかは Windows 環境が無く未検証。
 静的 SDL2 の実リンクも MSVC 環境が無く未検証。actionlint / yaml.safe_load はどちらも OK。
 **実際の CI 実行は未実施。**
+
+2026-07-16 T10-4 方針転換: Windows は静的リンクを諦め、SDL2 公式配布物(devel-VC パッケージ、
+`SDL2-devel-2.32.10-VC.zip`)の動的ライブラリをそのまま使うことにした（ユーザー提案。
+公式リリースページ https://github.com/libsdl-org/SDL/releases/tag/release-2.32.10 を確認したところ
+Windows 向けは `SDL2.lib`(動的インポートライブラリ)+`SDL2.dll` のみで、静的アーカイブ
+(`SDL2-static.lib` 相当)は含まれていないと判明したため）。
+`scripts/build_sdl2_static.ps1` → `scripts/fetch_sdl2_windows.ps1` にリネームし、CMake ソースビルドから
+公式 ZIP のダウンロード+展開に置き換えた。`build_win.ps1` はビルド後に `SDL2.dll` を `bbl.exe` と
+同じフォルダへコピーするようにした。`docs/dev/BluePrint.md`の「静的リンク」節にWindows例外として
+追記済み（ユーザー承認）。`.github/workflows/build-windows.yml` の成果物アップロードに `SDL2.dll` を追加。
+`fetch_sdl2_windows.ps1` は pwsh(Homebrew経由でインストール可能、cross-platform)を使い
+**実際にこの macOS 開発機で実行し検証済み**: x86/x64 双方で ZIP のダウンロード→展開→
+`SDL2.dll`/`SDL2.lib`/`SDL2main.lib` のコピーが成功、2回目実行でキャッシュスキップも確認。
+最終的な MSVC リンク自体は「このホストからの windows_amd64 クロスリンクは未対応」という
+Odin 自身のメッセージが出て(想定通り、リンクなしでのビルド構造検証のみ)、実リンクの成否は
+引き続き実 CI(Windows ランナー)での確認が必要。
 
 2026-07-16 T10-5 未完了:
 - **RPi armhf（🔴 ブロック、`build-rpi.yml` は作成せず）**: 上記の実機調査で macOS→`linux_arm32` のクロスリンクが

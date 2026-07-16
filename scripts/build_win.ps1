@@ -64,35 +64,38 @@ $BuildFlags = @("-collection:bbl=src", "-out:bbl.exe", "-target:$OdinTarget")
 if ($Debug) { $BuildFlags += "-debug" } else { $BuildFlags += "-o:speed" }
 
 if ($Release) {
-    # 配布用: SDL2 を静的リンクする（architecture.md「開発=動的/配布=静的」の二段構え）。
-    # 未検証（この開発環境は macOS であり MSVC/Windows を実行できない。
-    # phase-10-cicd.md T10-4 の検証ログ参照）。
-    & "$ScriptDir\build_sdl2_static.ps1" -Architecture $Architecture
+    # 配布用: SDL2 公式配布物(devel-VC パッケージ)の SDL2.dll/SDL2.lib を使う。
+    # Windows は SDL2 公式配布物に静的アーカイブが無いため、macOS/Linux/FreeBSD
+    # （ソースから静的ビルド）とは異なりここだけ動的リンクになる。bbl.exe と
+    # 同じフォルダに SDL2.dll を同梱して配布する
+    # （BluePrint 2026-07-16 追記、ユーザー承認。docs/dev/BluePrint.md 参照）。
+    & "$ScriptDir\fetch_sdl2_windows.ps1" -Architecture $Architecture
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     $Sdl2Dir = Join-Path $ProjectRoot "build\sdl2\windows-$Architecture"
-    $Sdl2StaticLib = Join-Path $Sdl2Dir "lib\SDL2-static.lib"
-    if (-not (Test-Path $Sdl2StaticLib)) {
-        Write-Host "Error: 静的 SDL2 のビルドに失敗しました: $Sdl2StaticLib が見つかりません"
+    $Sdl2Dll = Join-Path $Sdl2Dir "lib\SDL2.dll"
+    $Sdl2Lib = Join-Path $Sdl2Dir "lib\SDL2.lib"
+    if (-not (Test-Path $Sdl2Lib)) {
+        Write-Host "Error: SDL2 の取得に失敗しました: $Sdl2Lib が見つかりません"
         exit 1
     }
 
-    # vendor:sdl2 の `foreign import lib "SDL2.lib"`（変更不可）をそのまま満たすため、
-    # SDL2-static.lib を SDL2.lib という名前でコピーし、そのディレクトリだけを
-    # /LIBPATH に通す（他に SDL2.lib が存在しない前提のディレクトリなので曖昧さがない）。
-    $Sdl2LibAlias = Join-Path $Sdl2Dir "lib\SDL2.lib"
-    Copy-Item -Force $Sdl2StaticLib $Sdl2LibAlias
-
-    # SDL2 が依存する Windows API 群（SDL2 wiki: README-cmake / static linking 節）。
-    $ExtraLinkerFlags = "/LIBPATH:`"$Sdl2Dir\lib`" winmm.lib imm32.lib version.lib setupapi.lib " +
-        "ole32.lib oleaut32.lib gdi32.lib user32.lib advapi32.lib shell32.lib uuid.lib"
-    $BuildFlags += "-extra-linker-flags:$ExtraLinkerFlags"
+    # vendor:sdl2 の `foreign import lib "SDL2.lib"`（変更不可）を、公式パッケージ
+    # 同梱の動的インポートライブラリへ向ける（/LIBPATH 経由。このディレクトリには
+    # 他に SDL2.lib が存在しない前提なので曖昧さがない）。
+    $BuildFlags += "-extra-linker-flags:/LIBPATH:`"$Sdl2Dir\lib`""
 }
 
 Write-Host "=== BubiBoyLite Windows build ==="
 Write-Host "odin build src/app $($BuildFlags -join ' ')"
 & odin build src/app @BuildFlags
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+if ($Release) {
+    # 動的リンクのため SDL2.dll を bbl.exe と同じフォルダへ同梱する（$Sdl2Dll は
+    # 上の $Release ブロックで設定済み）。
+    Copy-Item -Force $Sdl2Dll (Join-Path $ProjectRoot "SDL2.dll")
+}
 
 if ($RunTest) {
     Write-Host "=== odin test tests ==="

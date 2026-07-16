@@ -13,7 +13,7 @@ on:
       - "src/**"
       - "tests/**"
       - "scripts/build_win.ps1"
-      - "scripts/build_sdl2_static.ps1"
+      - "scripts/fetch_sdl2_windows.ps1"
       - "scripts/fetch_test_roms.sh"
       - "mise.toml"
       - ".github/workflows/build-windows.yml"
@@ -22,7 +22,7 @@ on:
       - "src/**"
       - "tests/**"
       - "scripts/build_win.ps1"
-      - "scripts/build_sdl2_static.ps1"
+      - "scripts/fetch_sdl2_windows.ps1"
       - "scripts/fetch_test_roms.sh"
       - "mise.toml"
       - ".github/workflows/build-windows.yml"
@@ -53,11 +53,11 @@ jobs:
         with:
           install: true
 
-      - name: Cache static SDL2 build
+      - name: Cache SDL2 (official prebuilt VC devel package)
         uses: actions/cache@v4
         with:
           path: build/sdl2
-          key: sdl2-static-windows-${{ matrix.arch }}-${{ hashFiles('scripts/build_sdl2_static.ps1') }}
+          key: sdl2-windows-${{ matrix.arch }}-${{ hashFiles('scripts/fetch_sdl2_windows.ps1') }}
 
       # x64 のみテスト ROM を使った odin test を実行する（x86 はビルド確認のみ、
       # RAM/実行時間の節約。ロジックは共通なので x64 で通れば x86 も基本的に安全という判断）。
@@ -73,11 +73,11 @@ jobs:
         shell: bash
         run: ./scripts/fetch_test_roms.sh
 
-      - name: Build (release, static SDL2) and test
+      - name: Build (release, SDL2.dll bundled) and test
         if: matrix.arch == 'x64'
         run: ./scripts/build_win.ps1 --release --test -Architecture ${{ matrix.arch }}
 
-      - name: Build (release, static SDL2)
+      - name: Build (release, SDL2.dll bundled)
         if: matrix.arch != 'x64'
         run: ./scripts/build_win.ps1 --release -Architecture ${{ matrix.arch }}
 
@@ -87,9 +87,13 @@ jobs:
         if: matrix.arch == 'x64'
         run: ./bbl.exe -v
 
+      # Windows は SDL2 公式配布物に静的アーカイブが無いため bbl.exe と SDL2.dll を
+      # 同梱して配布する（BluePrint 2026-07-16 追記の例外、ユーザー承認）。
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: bbl-windows-${{ matrix.arch }}
-          path: bbl.exe
+          path: |
+            bbl.exe
+            SDL2.dll
           if-no-files-found: error
