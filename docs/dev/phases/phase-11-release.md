@@ -21,7 +21,7 @@ gh release view v0.1.0   # bbl-0.1.0-<platform>-<arch>.zip × 4 種を確認
 
 ### T11-1: バージョンの単一の源と抽出
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: バージョン定義を 1 箇所（T0-2 の `src/app/version.odin`）に保ち、CI から抽出できるようにする。
 **作るもの**:
@@ -43,7 +43,7 @@ gh release view v0.1.0   # bbl-0.1.0-<platform>-<arch>.zip × 4 種を確認
 
 ### T11-2: zip パッケージングスクリプト
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: 配布 zip を作るスクリプトをローカル/CI 共通で用意する。
 **作るもの**: `scripts/package_zip.sh`:
@@ -133,3 +133,11 @@ gh release view v0.1.0
 ## 検証ログ
 
 （タスク完了ごとに 1 行追記）
+
+2026-07-16 T11-1 完了: `scripts/get_version.sh` を作成。`./scripts/get_version.sh` が `0.1.0` を出力し、
+`./bbl -v` の `bbl 0.1.0` と一致することを確認。
+
+2026-07-16 T11-2 完了: `scripts/package_zip.sh` を作成。`./scripts/build_macos.sh --release` →
+`./scripts/package_zip.sh ./bbl macos arm64` → `unzip -l bbl-0.1.0-macos-arm64.zip` で
+`bbl`/`LICENSE`/`README.md` の 3 ファイル・階層なしを確認。展開後 `bbl` に実行権限が保持され
+（`-rwxr-xr-x`）、`./bbl -v` が正常動作することも確認済み（macOS arm64 実機）。
