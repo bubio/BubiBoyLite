@@ -91,9 +91,19 @@ if [ "$RELEASE" = "1" ]; then
 	# 代わりに、ld が最初から検索するディレクトリ（-L 無しでも見る場所）に
 	# 自前ビルドの静的アーカイブを直接コピーする。.a としての解決なので
 	# 実行ファイルへ動的依存が残らず、ピン止めしたバージョンがそのまま使われる。
-	SDL2_LD_DEFAULT_DIR="$(ld --verbose 2>/dev/null | sed -n 's/SEARCH_DIR("=\{0,1\}\([^"]*\)");/\1/p' | while read -r d; do
-		[ -d "$d" ] && echo "$d" && break
-	done)"
+	# 落とし穴: `while read` を $(...) の中でパイプに繋いで使うと、入力が
+	# 0行(EOF)の場合に read 自身が非ゼロで終わり、set -e によってスクリプト
+	# 全体がここで無言のまま強制終了する（実際に初回修正でこれを踏み、
+	# CI で "完了: .../libSDL2.a" の直後に何のエラーメッセージも無いまま
+	# exit code 1 になる形で再現した）。`for ... in $(...)` は空語リストでも
+	# 0回ループするだけで安全なため、こちらを使う。
+	SDL2_LD_DEFAULT_DIR=""
+	for d in $(ld --verbose 2>/dev/null | sed -n 's/SEARCH_DIR("=\{0,1\}\([^"]*\)");/\1/p'); do
+		if [ -d "$d" ]; then
+			SDL2_LD_DEFAULT_DIR="$d"
+			break
+		fi
+	done
 	if [ -z "$SDL2_LD_DEFAULT_DIR" ]; then
 		# FreeBSD の既定リンカ(lld)は --verbose で GNU ld と同じ
 		# SEARCH_DIR 形式を出力しないため上の方法では取れないことがある。
