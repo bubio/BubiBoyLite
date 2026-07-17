@@ -205,6 +205,60 @@ config_patch_file :: proc(path: string, changes: map[string]string) -> (ok: bool
 	return true
 }
 
+// config_apply_set は TUI の `/set`/`/settings`(T12-4)で1キーの値を検証・適用する。
+// 対象は scale/fullscreen/shader/volume の基本項目のみ(key_*/pad_* は対象外、プラン方針)。
+// 不正な値は cfg を変更せずエラーメッセージだけ返す。成功時は cfg^ を更新した上で、
+// config_dir が解決できていれば bbl.ini へそのキーだけを即時パッチする(config_patch_file、
+// map 再シリアライズではなく行単位パッチなのでコメント・他の設定は保持される)。
+// config_dir が空(config_dir_path() 解決失敗)の場合はファイル書き込みをスキップし、
+// その旨をメッセージに含める(クラッシュしないこと)。
+config_apply_set :: proc(cfg: ^Config, config_dir: string, key: string, value: string) -> (ok: bool, message: string) {
+	switch key {
+	case "scale":
+		n, parse_ok := strconv.parse_int(value)
+		if !parse_ok || n < 1 || n > MAX_SCALE {
+			return false, fmt.tprintf("scale の値が不正です(1〜8の整数): %q", value)
+		}
+		cfg.scale = n
+	case "fullscreen":
+		b, parse_ok := parse_bool(value)
+		if !parse_ok {
+			return false, fmt.tprintf("fullscreen の値が不正です(true/false): %q", value)
+		}
+		cfg.fullscreen = b
+	case "shader":
+		switch strings.to_lower(value, context.temp_allocator) {
+		case "nearest":
+			cfg.shader = .Nearest
+		case "smooth":
+			cfg.shader = .Smooth
+		case:
+			return false, fmt.tprintf("shader の値が不正です(nearest/smooth): %q", value)
+		}
+	case "volume":
+		n, parse_ok := strconv.parse_int(value)
+		if !parse_ok || n < 0 || n > 100 {
+			return false, fmt.tprintf("volume の値が不正です(0〜100の整数): %q", value)
+		}
+		cfg.volume = n
+	case:
+		return false, fmt.tprintf("不明な設定項目です: %q(scale/fullscreen/shader/volume のみ対応)", key)
+	}
+
+	if strings.trim_space(config_dir) == "" {
+		return true, fmt.tprintf("%s を更新しました(設定の保存先が見つからないためメモリ上のみ反映)", key)
+	}
+	// config_path は fmt.tprintf(temp_allocator)の戻り値なので明示的な delete はしない
+	// (呼び出し元の main.odin/config_load と同じ扱い)。
+	path := config_path(config_dir)
+	changes := make(map[string]string, 1, context.temp_allocator)
+	changes[key] = value
+	if !config_patch_file(path, changes) {
+		return true, fmt.tprintf("%s を更新しましたが bbl.ini への書き込みに失敗しました", key)
+	}
+	return true, fmt.tprintf("%s = %s に更新しました", key, value)
+}
+
 @(private = "file")
 warn_invalid :: proc(key: string, value: string, reason: string) {
 	fmt.eprintfln("config: %s の値が不正です(%s): %q。デフォルト値を使用します。", key, reason, value)

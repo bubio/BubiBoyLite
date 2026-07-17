@@ -1,5 +1,7 @@
 package tests
 
+import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:testing"
 import app "bbl:app"
@@ -287,4 +289,65 @@ test_config_patch_ini_ignores_commented_key :: proc(t: ^testing.T) {
 
 	testing.expect(t, strings.contains(patched, "# volume = 999"), "コメント行は変更されない")
 	testing.expect(t, strings.contains(patched, "volume = 50"), "コメントとは別に新しい行が追記される")
+}
+
+// --- config_apply_set(T12-4)の単体テスト ---
+
+@(test)
+test_config_apply_set_valid_volume_updates_cfg_and_file :: proc(t: ^testing.T) {
+	tmp_dir, dir_err := os.temp_dir(context.allocator)
+	testing.expect(t, dir_err == nil)
+	defer delete(tmp_dir)
+
+	config_dir := fmt.tprintf("%s/bbl_config_apply_set_test", tmp_dir)
+	os.remove_all(config_dir)
+	testing.expect(t, os.make_directory(config_dir) == nil)
+	defer os.remove_all(config_dir)
+
+	// config_path は fmt.tprintf(temp_allocator)の戻り値なので明示的な delete はしない。
+	path := app.config_path(config_dir)
+	default_content := app.config_render_default_ini()
+	defer delete(default_content)
+	testing.expect(t, os.write_entire_file(path, transmute([]u8)default_content) == nil)
+
+	cfg := app.default_config()
+	ok, msg := app.config_apply_set(&cfg, config_dir, "volume", "42")
+	testing.expect(t, ok)
+	testing.expect(t, cfg.volume == 42)
+	testing.expect(t, strings.contains(msg, "volume"))
+
+	data, read_err := os.read_entire_file(path, context.allocator)
+	testing.expect(t, read_err == nil)
+	defer delete(data)
+	testing.expect(t, strings.contains(string(data), "volume = 42"))
+	// 他のデフォルト項目(scale等)は変化しないこと。
+	testing.expect(t, strings.contains(string(data), "scale = 4"))
+}
+
+@(test)
+test_config_apply_set_invalid_value_does_not_change_cfg :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	original_volume := cfg.volume
+	// config_dir を空にしてファイルI/Oを避ける(検証ロジックだけを見るテスト)。
+	ok, msg := app.config_apply_set(&cfg, "", "volume", "not_a_number")
+	testing.expect(t, !ok)
+	testing.expect(t, cfg.volume == original_volume)
+	testing.expect(t, strings.contains(msg, "volume"))
+}
+
+@(test)
+test_config_apply_set_unknown_key_rejected :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	ok, msg := app.config_apply_set(&cfg, "", "key_a", "x")
+	testing.expect(t, !ok, "key_*/pad_* はT12-4の対象外")
+	testing.expect(t, strings.contains(msg, "不明"))
+}
+
+@(test)
+test_config_apply_set_empty_config_dir_still_updates_cfg :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	ok, msg := app.config_apply_set(&cfg, "", "scale", "6")
+	testing.expect(t, ok)
+	testing.expect(t, cfg.scale == 6)
+	testing.expect(t, strings.contains(msg, "メモリ上のみ"), "保存先不明時はその旨をメッセージに含める")
 }

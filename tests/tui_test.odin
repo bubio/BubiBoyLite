@@ -438,3 +438,31 @@ test_render_home_screen_falls_back_to_title_when_narrow :: proc(t: ^testing.T) {
 	// ロゴの罫線文字(figlet風ブロック体の一部)は含まれないこと。
 	testing.expect(t, !strings.contains(s, "____"))
 }
+
+// --- ホーム画面での /settings, /set コマンド解釈(T12-4)の単体テスト ---
+
+@(test)
+test_parse_home_command_settings :: proc(t: ^testing.T) {
+	cmd := app.parse_home_command("/settings")
+	testing.expect(t, cmd.kind == .Settings)
+}
+
+@(test)
+test_parse_home_command_set_with_key_and_value :: proc(t: ^testing.T) {
+	cmd := app.parse_home_command("/set volume 50")
+	testing.expect(t, cmd.kind == .Set)
+	testing.expect(t, cmd.set_key == "volume")
+	testing.expect(t, cmd.set_value == "50")
+}
+
+@(test)
+test_parse_home_command_set_missing_value_is_unknown :: proc(t: ^testing.T) {
+	cmd := app.parse_home_command("/set volume")
+	testing.expect(t, cmd.kind == .Unknown)
+}
+
+@(test)
+test_parse_home_command_set_missing_key_and_value_is_unknown :: proc(t: ^testing.T) {
+	cmd := app.parse_home_command("/set")
+	testing.expect(t, cmd.kind == .Unknown)
+}

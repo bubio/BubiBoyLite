@@ -484,17 +484,22 @@ Home_Command_Kind :: enum {
 	Quit,
 	Browse,
 	Recent,
+	Settings, // /settings(引数無し): ホーム画面内で対話メニューを開き、ループを継続する
+	Set, // /set <key> <value>: ホーム画面内で即時適用し、ループを継続する
 	Unknown,
 }
 
 Home_Command :: struct {
-	kind: Home_Command_Kind,
-	raw:  string, // kind == .Unknown の時だけ意味を持つ(エラー表示用、入力文字列の借用)
+	kind:      Home_Command_Kind,
+	raw:       string, // kind == .Unknown の時だけ意味を持つ(エラー表示用、入力文字列の借用)
+	set_key:   string, // kind == .Set の時だけ意味を持つ(入力文字列の借用)
+	set_value: string, // kind == .Set の時だけ意味を持つ(入力文字列の借用)
 }
 
 // parse_home_command はホーム画面のプロンプト入力を解釈する純粋関数(単体テスト対象)。
 // 空Enterは /browse 相当。未対応のコマンドは .Unknown を返し、呼び出し側はエラー表示して
-// ループを継続する(即座に終了・遷移しない)。
+// ループを継続する(即座に終了・遷移しない)。戻り値の raw/set_key/set_value は input の
+// 部分スライス(借用)なので、input より長生きさせて保持する場合は呼び出し側で clone すること。
 parse_home_command :: proc(input: string) -> Home_Command {
 	trimmed := strings.trim_space(input)
 	switch trimmed {
@@ -506,6 +511,21 @@ parse_home_command :: proc(input: string) -> Home_Command {
 		return Home_Command{kind = .Recent}
 	case "/quit", "/exit":
 		return Home_Command{kind = .Quit}
+	case "/settings":
+		return Home_Command{kind = .Settings}
+	}
+	SET_PREFIX :: "/set "
+	if strings.has_prefix(trimmed, SET_PREFIX) {
+		rest := strings.trim_space(trimmed[len(SET_PREFIX):])
+		sp := strings.index_byte(rest, ' ')
+		if sp > 0 {
+			key := strings.trim_space(rest[:sp])
+			value := strings.trim_space(rest[sp + 1:])
+			if key != "" && value != "" {
+				return Home_Command{kind = .Set, set_key = key, set_value = value}
+			}
+		}
+		return Home_Command{kind = .Unknown, raw = trimmed}
 	}
 	return Home_Command{kind = .Unknown, raw = trimmed}
 }
@@ -569,9 +589,151 @@ tui_write_home_screen :: proc(cols: int, input: string, status: string) {
 	os.write_string(os.stdout, s)
 }
 
-// tui_run_command_home はロゴ+プロンプト画面を表示し、コマンドが確定するまでブロックする。
+// --- /settings 対話メニュー(T12-4) ---
+// ホーム画面限定(ゲーム実行中は対話メニューを開かない、T12-5 参照: SDL イベントポンプが
+// 止まりウィンドウ幽霊化を再発するため)。scale/fullscreen/shader/volume のみ対象。
+
+@(private = "file")
+Settings_Field :: enum {
+	Scale,
+	Fullscreen,
+	Shader,
+	Volume,
+}
+
+@(private = "file")
+settings_fields := [4]Settings_Field{.Scale, .Fullscreen, .Shader, .Volume}
+
+@(private = "file")
+settings_field_key :: proc(f: Settings_Field) -> string {
+	switch f {
+	case .Scale:
+		return "scale"
+	case .Fullscreen:
+		return "fullscreen"
+	case .Shader:
+		return "shader"
+	case .Volume:
+		return "volume"
+	}
+	return ""
+}
+
+@(private = "file")
+settings_field_value_string :: proc(cfg: Config, f: Settings_Field) -> string {
+	switch f {
+	case .Scale:
+		return fmt.tprintf("%d", cfg.scale)
+	case .Fullscreen:
+		return cfg.fullscreen ? "true" : "false"
+	case .Shader:
+		return cfg.shader == .Smooth ? "smooth" : "nearest"
+	case .Volume:
+		return fmt.tprintf("%d", cfg.volume)
+	}
+	return ""
+}
+
+// tui_run_settings_menu は /settings(引数無し)の対話メニュー。↑↓で項目選択、Enter で
+// 編集モードに入り新しい値を入力、Enter で確定(config_apply_set 経由で検証・適用・書き戻し)。
+// Esc は編集モード中なら編集をキャンセル、項目選択中ならメニュー自体を抜ける。
+tui_run_settings_menu :: proc(cfg: ^Config, config_dir: string) {
+	selected := 0
+	kr: Key_Reader
+	dirty := true
+	editing := false
+	editor: Line_Editor
+	defer line_editor_destroy(&editor)
+	status := ""
+
+	for {
+		cols, rows := tui_term_size()
+
+		if dirty {
+			items := make([]List_Item, len(settings_fields))
+			defer delete(items)
+			for f, i in settings_fields {
+				items[i] = List_Item{label = settings_field_key(f), info = settings_field_value_string(cfg^, f)}
+			}
+			heading := "設定項目を選択(Enter で編集、Esc で戻る)"
+			if editing {
+				heading = fmt.tprintf(
+					"%s の新しい値を入力: %s_",
+					settings_field_key(settings_fields[selected]),
+					line_editor_text(editor),
+				)
+			}
+			frame := Tui_Frame {
+				cols     = cols,
+				rows     = rows,
+				title    = fmt.tprintf("BubiBoyLite v%s 設定", VERSION),
+				heading  = heading,
+				status   = status,
+				items    = items,
+				selected = selected,
+				footer   = editing ? "Enter 確定  Esc キャンセル" : "↑↓ 選択  Enter 編集  Esc 戻る",
+			}
+			tui_write_frame(frame)
+			dirty = false
+		}
+
+		ev, ok := key_reader_poll(&kr)
+		if !ok {
+			tui_plat_sleep_ms(30)
+			continue
+		}
+
+		if editing {
+			#partial switch ev.key {
+			case .Char, .Backspace:
+				line_editor_feed(&editor, ev)
+				dirty = true
+			case .Escape:
+				line_editor_feed(&editor, ev)
+				editing = false
+				dirty = true
+			case .Enter:
+				submitted, text := line_editor_feed(&editor, ev)
+				if submitted {
+					_, msg := config_apply_set(cfg, config_dir, settings_field_key(settings_fields[selected]), text)
+					delete(text)
+					status = msg
+					editing = false
+					dirty = true
+				}
+			}
+		} else {
+			#partial switch ev.key {
+			case .Up:
+				if selected > 0 {
+					selected -= 1
+					dirty = true
+				}
+			case .Down:
+				if selected < len(settings_fields) - 1 {
+					selected += 1
+					dirty = true
+				}
+			case .Enter:
+				editing = true
+				status = ""
+				dirty = true
+			case .Escape:
+				return
+			case .Char:
+				if ev.ch == 'q' {
+					return
+				}
+			}
+		}
+	}
+}
+
+// tui_run_command_home はロゴ+プロンプト画面を表示し、画面遷移を伴うコマンド
+// (/browse, /recent, /quit)が確定するまでブロックする。/settings と /set はこの関数の中で
+// 完結処理し(対話メニュー起動、または即時適用)、処理後はループを継続する(ホーム画面に留まる)。
 // 未対応コマンドはエラー表示してループを継続する(呼び出し元に .Unknown を返すことはない)。
-tui_run_command_home :: proc() -> Home_Command {
+tui_run_command_home :: proc(cfg: ^Config, config_dir: string) -> Home_Command {
 	editor: Line_Editor
 	defer line_editor_destroy(&editor)
 
@@ -612,11 +774,23 @@ tui_run_command_home :: proc() -> Home_Command {
 				break
 			}
 			cmd := parse_home_command(text)
-			if cmd.kind == .Unknown {
+			switch cmd.kind {
+			case .Unknown:
 				status = fmt.tprintf("不明なコマンドです: %s", cmd.raw)
 				delete(text)
 				dirty = true
-			} else {
+			case .Settings:
+				delete(text)
+				tui_run_settings_menu(cfg, config_dir)
+				status = ""
+				last_cols, last_rows = -1, -1 // 設定メニューで書き換えた画面を強制再描画させる
+				dirty = true
+			case .Set:
+				_, msg := config_apply_set(cfg, config_dir, cmd.set_key, cmd.set_value)
+				delete(text)
+				status = msg
+				dirty = true
+			case .Quit, .Browse, .Recent:
 				delete(text)
 				return cmd
 			}
@@ -1063,6 +1237,11 @@ run_tui :: proc(opts: Options, cfg: Config) {
 
 	start_dir := strings.trim_space(cfg.rom_dir) != "" ? cfg.rom_dir : "."
 
+	// T12-4: /set で変更した値をメモリ上に保持するため、ローカル変数へコピーしてアドレスを
+	// 取れるようにする(Odin は関数パラメータのアドレスを直接取れない制約があるため)。
+	// 以降 run_rom_window へはこの live_cfg を渡す。
+	live_cfg := cfg
+
 	// T9-3: 履歴ファイルの保存場所は設定ファイルと同じ場所(config_dir_path を共有)。
 	// 解決できない場合は recent 機能全体を静かに無効化する(TUI自体の起動は妨げない、
 	// config_load 側の「実行ファイルの場所を特定できない場合も起動は止めない」方針と揃える)。
@@ -1084,7 +1263,7 @@ run_tui :: proc(opts: Options, cfg: Config) {
 
 	for {
 		if screen == .Home {
-			cmd := tui_run_command_home()
+			cmd := tui_run_command_home(&live_cfg, config_dir)
 			if cmd.kind == .Quit {
 				return
 			}
@@ -1113,7 +1292,7 @@ run_tui :: proc(opts: Options, cfg: Config) {
 		tui_suspend_for_game()
 		game_opts := opts
 		game_opts.rom_path = rom_path
-		run_rom_window(game_opts, cfg, standalone_terminal = false)
+		run_rom_window(game_opts, live_cfg, standalone_terminal = false)
 		tui_resume_from_game()
 
 		// T9-3「ROM起動成功のたびに更新」。run_rom_window がここまで戻ってきた時点で
