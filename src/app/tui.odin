@@ -408,6 +408,8 @@ TERM_FALLBACK_ROWS :: 24
 
 // tui_term_size は現在の端末サイズを返す。取得できない場合は 80x24 にフォールバックする
 // (advisor 指摘: 変則的な端末でも落ちないようにする)。
+// optimization_mode="none": tui_run_command_home 側のコメント参照(T12-6、3点セット必須)。
+@(optimization_mode = "none")
 tui_term_size :: proc() -> (cols, rows: int) {
 	c, r, ok := tui_plat_term_size()
 	if !ok || c <= 0 || r <= 0 {
@@ -583,10 +585,17 @@ write_centered_line :: proc(b: ^strings.Builder, cols: int, line: string) {
 	strings.write_string(b, "\n")
 }
 
+// 落とし穴(T12-6、-o:speed 実機検証で発見): このプロシージャが os.write_string(os.stdout, s)
+// を直接呼ぶと、in-place 実行(コピーなし、AMFI とは無関係)でも再現する形で
+// `runtime assertion: a.allocator.procedure != nil` が発生する(dev-2026-07 ツールチェイン
+// 固有のコード生成不具合と推測、T9-6 の temp_allocator 破損とは別の症状)。同一パターンの
+// tui_write_frame は他の呼び出し元(フレームレイアウトが異なる)では発火しないが、ここでは
+// 確実に再現するため、"contextless" な tui_plat_write_raw(syscall を直接呼び、context を
+// 経由しない)を使う。
 tui_write_home_screen :: proc(cols: int, input: string, status: string) {
 	s := tui_render_home_screen(cols, input, status)
 	defer delete(s)
-	os.write_string(os.stdout, s)
+	tui_plat_write_raw(s)
 }
 
 // --- /settings 対話メニュー(T12-4) ---
@@ -637,6 +646,10 @@ settings_field_value_string :: proc(cfg: Config, f: Settings_Field) -> string {
 // tui_run_settings_menu は /settings(引数無し)の対話メニュー。↑↓で項目選択、Enter で
 // 編集モードに入り新しい値を入力、Enter で確定(config_apply_set 経由で検証・適用・書き戻し)。
 // Esc は編集モード中なら編集をキャンセル、項目選択中ならメニュー自体を抜ける。
+// optimization_mode="none": tui_run_command_home 側のコメント参照(T12-6)。この関数も
+// config_apply_set() 呼び出し後にループへ戻り tui_term_size() を呼ぶ同型のパターンを持つ
+// (実機検証では発火しなかったが、予防的に揃える。30ms ポーリングループなのでコストは無視できる)。
+@(optimization_mode = "none")
 tui_run_settings_menu :: proc(cfg: ^Config, config_dir: string) {
 	selected := 0
 	kr: Key_Reader
@@ -733,6 +746,17 @@ tui_run_settings_menu :: proc(cfg: ^Config, config_dir: string) {
 // (/browse, /recent, /quit)が確定するまでブロックする。/settings と /set はこの関数の中で
 // 完結処理し(対話メニュー起動、または即時適用)、処理後はループを継続する(ホーム画面に留まる)。
 // 未対応コマンドはエラー表示してループを継続する(呼び出し元に .Unknown を返すことはない)。
+// optimization_mode="none"(T12-6、-o:speed 実機バグ回避、3箇所セット): この関数のループ内、
+// config_apply_set() から戻った直後に再度ループ先頭へ戻り tui_term_size() を呼ぶと、
+// `runtime assertion: a.allocator.procedure != nil` が発生する実機バグをデバッグマーカーで
+// 突き止めた(-debug ビルドでは再現しない。config.odin 側の各関数を個別に "none" にしても
+// 直らなかった)。切り分けの結果、この関数・tui_term_size・tui_plat_term_size(tui_posix.odin)
+// の3つ全てに "none" を付けて初めて解消することを確認した(3点セットで実機検証済み。
+// メカニズムの厳密な特定はできておらず、いずれか1つを外すと再発する可能性があるため、
+// 3つとも揃えて保持すること。dev-2026-07 ツールチェイン固有のコード生成不具合と推測、
+// 深追いはT9-6の前例に倣い打ち切る)。この関数は30ms間隔のキー入力ポーリングが主であり
+// 最適化コストは無視できるため、最適化を無効化して回避する。
+@(optimization_mode = "none")
 tui_run_command_home :: proc(cfg: ^Config, config_dir: string) -> Home_Command {
 	editor: Line_Editor
 	defer line_editor_destroy(&editor)

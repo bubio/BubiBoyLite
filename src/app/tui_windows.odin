@@ -98,6 +98,10 @@ tui_plat_write_raw :: proc "contextless" (s: string) {
 	win.WriteFile(h_stdout, raw_data(s), win.DWORD(len(s)), &written, nil)
 }
 
+// optimization_mode="none": tui_posix.odin の同名関数のコメント参照(T12-6)。
+// Windows は対応プラットフォーム外(CLAUDE.md)で実機検証はできていないが、POSIX側と
+// 同じ dev-2026-07 ツールチェインの疑いがあるコード生成不具合のため念のため揃えている。
+@(optimization_mode = "none")
 tui_plat_term_size :: proc() -> (cols, rows: int, ok: bool) {
 	info: win.CONSOLE_SCREEN_BUFFER_INFO
 	if !win.GetConsoleScreenBufferInfo(h_stdout, &info) {

@@ -114,6 +114,10 @@ when ODIN_OS == .Linux {
 	TIOCGWINSZ :: 0x40087468
 }
 
+// optimization_mode="none": tui.odin の tui_run_command_home 側のコメント参照
+// (T12-6、-o:speed 実機バグ回避、tui_run_command_home・tui_term_size とセットで
+// 必須。単体では効果を確認できなかった。3つとも揃えて保持すること)。
+@(optimization_mode = "none")
 tui_plat_term_size :: proc() -> (cols, rows: int, ok: bool) {
 	ws: Winsize
 	if ioctl(c.int(posix.STDOUT_FILENO), c.ulong(TIOCGWINSZ), &ws) != 0 {

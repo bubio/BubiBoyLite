@@ -141,9 +141,15 @@ config_parse_ini :: proc(text: string, allocator := context.allocator) -> map[st
 // 存在しないものは末尾に追記する。呼び出し側は「そのセッションで /set により明示的に変更された
 // キー」だけを changes に渡すこと(CLI 引数由来の一時的な値を混ぜないこと、config.odin 冒頭の
 // 「CLI引数は一時的な変更であり書き戻さない」方針を守るため)。
+// 落とし穴(T9-6の再発防止): ファイルI/O(config_patch_file の os.read_entire_file)の直後に
+// context.temp_allocator で確保すると、-o:speed ビルドで内部状態が壊れ長さ0のスライス/mapが
+// 返る実機バグが T9-6 で確認されている(tui.odin 冒頭コメント参照)。ここは正にその発火パターン
+// (ファイルI/O直後の split_lines/make)に該当するため、context.allocator + 明示的 delete を使う。
 config_patch_ini :: proc(original: string, changes: map[string]string, allocator := context.allocator) -> string {
-	lines := strings.split_lines(original, context.temp_allocator)
-	applied := make(map[string]bool, len(changes), context.temp_allocator)
+	lines := strings.split_lines(original, context.allocator)
+	defer delete(lines)
+	applied := make(map[string]bool, len(changes), context.allocator)
+	defer delete(applied)
 
 	b: strings.Builder
 	strings.builder_init(&b, allocator)
@@ -249,9 +255,11 @@ config_apply_set :: proc(cfg: ^Config, config_dir: string, key: string, value: s
 		return true, fmt.tprintf("%s を更新しました(設定の保存先が見つからないためメモリ上のみ反映)", key)
 	}
 	// config_path は fmt.tprintf(temp_allocator)の戻り値なので明示的な delete はしない
-	// (呼び出し元の main.odin/config_load と同じ扱い)。
+	// (呼び出し元の main.odin/config_load と同じ扱い)。changes は config_patch_file 内で
+	// ファイルI/Oの前後にまたがって参照されるため、T9-6と同じ理由で context.allocator を使う。
 	path := config_path(config_dir)
-	changes := make(map[string]string, 1, context.temp_allocator)
+	changes := make(map[string]string, 1, context.allocator)
+	defer delete(changes)
 	changes[key] = value
 	if !config_patch_file(path, changes) {
 		return true, fmt.tprintf("%s を更新しましたが bbl.ini への書き込みに失敗しました", key)
