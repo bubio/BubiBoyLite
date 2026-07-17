@@ -134,6 +134,77 @@ config_parse_ini :: proc(text: string, allocator := context.allocator) -> map[st
 	return result
 }
 
+// config_patch_ini は元の bbl.ini テキストを行単位で走査し、changes に含まれるキーの行だけ
+// 値を置換する(T12-2)。config_parse_ini とは異なり、コメント・空行・他のキーの行・行順を
+// 一切変更しない(map 再シリアライズだと `#` コメントと Odin の map 順不定によるキー順の
+// 揺れで bbl.ini の見た目が壊れるため、この関数は使わない)。changes に無いキーで元ファイルに
+// 存在しないものは末尾に追記する。呼び出し側は「そのセッションで /set により明示的に変更された
+// キー」だけを changes に渡すこと(CLI 引数由来の一時的な値を混ぜないこと、config.odin 冒頭の
+// 「CLI引数は一時的な変更であり書き戻さない」方針を守るため)。
+config_patch_ini :: proc(original: string, changes: map[string]string, allocator := context.allocator) -> string {
+	lines := strings.split_lines(original, context.temp_allocator)
+	applied := make(map[string]bool, len(changes), context.temp_allocator)
+
+	b: strings.Builder
+	strings.builder_init(&b, allocator)
+
+	for line, i in lines {
+		trimmed := strings.trim_space(line)
+		matched_key := ""
+		if trimmed != "" && trimmed[0] != '#' {
+			eq := strings.index_byte(trimmed, '=')
+			if eq >= 0 {
+				key := strings.trim_space(trimmed[:eq])
+				if key in changes {
+					matched_key = key
+				}
+			}
+		}
+		if matched_key != "" {
+			strings.write_string(&b, fmt.tprintf("%s = %s", matched_key, changes[matched_key]))
+			applied[matched_key] = true
+		} else {
+			strings.write_string(&b, line)
+		}
+		if i < len(lines) - 1 {
+			strings.write_byte(&b, '\n')
+		}
+	}
+
+	// changes のうち元ファイルに該当行が無かったキーは末尾に追記する。
+	// gb_button_order と違い changes は任意のキー集合なので、安定した見た目は保証しない
+	// (通常は /set で1キーずつ変更する運用のため実害は無い)。
+	for key, value in changes {
+		if key not_in applied {
+			if len(strings.to_string(b)) > 0 {
+				strings.write_byte(&b, '\n')
+			}
+			strings.write_string(&b, fmt.tprintf("%s = %s", key, value))
+		}
+	}
+
+	return strings.to_string(b)
+}
+
+// config_patch_file は path を読み込み、config_patch_ini で changes を適用してから書き戻す
+// (T12-2、/settings・/set の書き込み先)。読み込み・書き込みに失敗した場合は ok=false
+// (呼び出し側はエラーメッセージを表示するに留め、クラッシュしないこと)。
+config_patch_file :: proc(path: string, changes: map[string]string) -> (ok: bool) {
+	data, read_err := os.read_entire_file(path, context.allocator)
+	if read_err != nil {
+		return false
+	}
+	defer delete(data)
+
+	patched := config_patch_ini(string(data), changes)
+	defer delete(patched)
+
+	if err := os.write_entire_file(path, transmute([]u8)patched); err != nil {
+		return false
+	}
+	return true
+}
+
 @(private = "file")
 warn_invalid :: proc(key: string, value: string, reason: string) {
 	fmt.eprintfln("config: %s の値が不正です(%s): %q。デフォルト値を使用します。", key, reason, value)

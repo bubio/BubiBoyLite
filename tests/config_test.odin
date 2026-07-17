@@ -221,3 +221,70 @@ test_config_key_map_conflicts_detects_overlap :: proc(t: ^testing.T) {
 	conflicts := app.config_key_map_conflicts(cfg.key_map)
 	testing.expect(t, core.Button.A in conflicts)
 }
+
+// --- config_patch_ini(T12-2)の単体テスト ---
+
+@(test)
+test_config_patch_ini_replaces_only_target_key :: proc(t: ^testing.T) {
+	original := "# comment\nscale = 4\nvolume = 100\n# another comment\nfullscreen = false\n"
+	changes := make(map[string]string)
+	defer delete(changes)
+	changes["volume"] = "50"
+
+	patched := app.config_patch_ini(original, changes)
+	defer delete(patched)
+
+	testing.expect(t, strings.contains(patched, "volume = 50"))
+	testing.expect(t, !strings.contains(patched, "volume = 100"))
+	// 他の行・コメント・行順は保持される。
+	testing.expect(t, strings.contains(patched, "# comment"))
+	testing.expect(t, strings.contains(patched, "scale = 4"))
+	testing.expect(t, strings.contains(patched, "# another comment"))
+	testing.expect(t, strings.contains(patched, "fullscreen = false"))
+
+	scale_idx := strings.index(patched, "scale = 4")
+	volume_idx := strings.index(patched, "volume = 50")
+	fullscreen_idx := strings.index(patched, "fullscreen = false")
+	testing.expect(t, scale_idx < volume_idx && volume_idx < fullscreen_idx, "行順が保持されること")
+}
+
+@(test)
+test_config_patch_ini_no_changes_is_noop :: proc(t: ^testing.T) {
+	original := "# comment\nscale = 4\nvolume = 100\n"
+	changes := make(map[string]string)
+	defer delete(changes)
+
+	patched := app.config_patch_ini(original, changes)
+	defer delete(patched)
+
+	testing.expect(t, patched == original, "変更が無ければ元のテキストと完全一致すること")
+}
+
+@(test)
+test_config_patch_ini_appends_missing_key :: proc(t: ^testing.T) {
+	original := "scale = 4\n"
+	changes := make(map[string]string)
+	defer delete(changes)
+	changes["volume"] = "75"
+
+	patched := app.config_patch_ini(original, changes)
+	defer delete(patched)
+
+	testing.expect(t, strings.contains(patched, "scale = 4"))
+	testing.expect(t, strings.contains(patched, "volume = 75"))
+}
+
+@(test)
+test_config_patch_ini_ignores_commented_key :: proc(t: ^testing.T) {
+	// コメントアウトされた行(`# volume = 999`)はキーとして扱わず、変更対象にしない。
+	original := "# volume = 999\n"
+	changes := make(map[string]string)
+	defer delete(changes)
+	changes["volume"] = "50"
+
+	patched := app.config_patch_ini(original, changes)
+	defer delete(patched)
+
+	testing.expect(t, strings.contains(patched, "# volume = 999"), "コメント行は変更されない")
+	testing.expect(t, strings.contains(patched, "volume = 50"), "コメントとは別に新しい行が追記される")
+}
