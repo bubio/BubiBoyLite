@@ -367,3 +367,74 @@ test_line_editor_reset_clears_buffer :: proc(t: ^testing.T) {
 	app.line_editor_reset(&editor)
 	testing.expect(t, app.line_editor_text(editor) == "")
 }
+
+// --- ホーム画面(T12-3)の単体テスト ---
+
+@(test)
+test_parse_home_command_empty_is_browse :: proc(t: ^testing.T) {
+	cmd := app.parse_home_command("")
+	testing.expect(t, cmd.kind == .Browse)
+
+	cmd_spaces := app.parse_home_command("   ")
+	testing.expect(t, cmd_spaces.kind == .Browse, "空白のみの入力もbrowse扱い")
+}
+
+@(test)
+test_parse_home_command_browse_aliases :: proc(t: ^testing.T) {
+	testing.expect(t, app.parse_home_command("/browse").kind == .Browse)
+	testing.expect(t, app.parse_home_command("/ls").kind == .Browse)
+}
+
+@(test)
+test_parse_home_command_recent :: proc(t: ^testing.T) {
+	testing.expect(t, app.parse_home_command("/recent").kind == .Recent)
+}
+
+@(test)
+test_parse_home_command_quit_aliases :: proc(t: ^testing.T) {
+	testing.expect(t, app.parse_home_command("/quit").kind == .Quit)
+	testing.expect(t, app.parse_home_command("/exit").kind == .Quit)
+}
+
+@(test)
+test_parse_home_command_unknown :: proc(t: ^testing.T) {
+	cmd := app.parse_home_command("/nonexistent")
+	testing.expect(t, cmd.kind == .Unknown)
+	testing.expect(t, cmd.raw == "/nonexistent")
+}
+
+@(test)
+test_parse_home_command_trims_whitespace :: proc(t: ^testing.T) {
+	cmd := app.parse_home_command("  /browse  ")
+	testing.expect(t, cmd.kind == .Browse)
+}
+
+@(test)
+test_render_home_screen_shows_prompt_and_input :: proc(t: ^testing.T) {
+	s := app.tui_render_home_screen(80, "browse", "")
+	defer delete(s)
+
+	testing.expect(t, strings.contains(s, "> browse"))
+	testing.expect(t, strings.contains(s, "/browse"))
+	testing.expect(t, strings.contains(s, "/settings"))
+	testing.expect(t, strings.contains(s, "/quit"))
+}
+
+@(test)
+test_render_home_screen_shows_status_when_present :: proc(t: ^testing.T) {
+	s := app.tui_render_home_screen(80, "", "不明なコマンドです: /foo")
+	defer delete(s)
+
+	testing.expect(t, strings.contains(s, "不明なコマンドです: /foo"))
+}
+
+@(test)
+test_render_home_screen_falls_back_to_title_when_narrow :: proc(t: ^testing.T) {
+	// 幅が極端に狭い端末ではロゴの代わりに1行タイトルへフォールバックする。
+	s := app.tui_render_home_screen(20, "", "")
+	defer delete(s)
+
+	testing.expect(t, strings.contains(s, "BubiBoyLite v"))
+	// ロゴの罫線文字(figlet風ブロック体の一部)は含まれないこと。
+	testing.expect(t, !strings.contains(s, "____"))
+}

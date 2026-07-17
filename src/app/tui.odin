@@ -454,6 +454,176 @@ key_reader_poll :: proc(kr: ^Key_Reader) -> (event: Key_Event, ok: bool) {
 	return ev, true
 }
 
+// --- ホーム画面(T12-3): ロゴ+コマンドプロンプト ---
+// BluePrint「Claude Code などに見られる TUI も提供する」。起動直後にロゴとプロンプトを表示し、
+// `/browse` 等のコマンドで既存の ROM ブラウザ(T9-2、T9-6 で実機検証済みの資産)へ遷移する
+// (案C、検討経緯は `/Users/seiji/.claude/plans/tui-claude-code-bubiboylite-settings-snoopy-whale.md`)。
+
+// TUI_LOGO は起動時に表示する複数行 ASCII アート(幅約56桁)。tui_render_home_screen が
+// tui_term_size() の cols と比較し、収まらない場合は1行タイトルへフォールバックする。
+TUI_LOGO :: `____        _     _ ____              _     _ _
+| __ ) _   _| |__ (_) __ )  ___  _   _| |   (_) |_ ___
+|  _ \| | | | '_ \| |  _ \ / _ \| | | | |   | | __/ _ \
+| |_) | |_| | |_) | | |_) | (_) | |_| | |___| | ||  __/
+|____/ \__,_|_.__/|_|____/ \___/ \__, |_____|_|\__\___|
+                                   |___/`
+
+@(private = "file")
+tui_logo_max_width :: proc() -> int {
+	w := 0
+	for line in strings.split_lines(TUI_LOGO, context.temp_allocator) {
+		lw := display_width(line)
+		if lw > w {
+			w = lw
+		}
+	}
+	return w
+}
+
+Home_Command_Kind :: enum {
+	Quit,
+	Browse,
+	Recent,
+	Unknown,
+}
+
+Home_Command :: struct {
+	kind: Home_Command_Kind,
+	raw:  string, // kind == .Unknown の時だけ意味を持つ(エラー表示用、入力文字列の借用)
+}
+
+// parse_home_command はホーム画面のプロンプト入力を解釈する純粋関数(単体テスト対象)。
+// 空Enterは /browse 相当。未対応のコマンドは .Unknown を返し、呼び出し側はエラー表示して
+// ループを継続する(即座に終了・遷移しない)。
+parse_home_command :: proc(input: string) -> Home_Command {
+	trimmed := strings.trim_space(input)
+	switch trimmed {
+	case "":
+		return Home_Command{kind = .Browse}
+	case "/browse", "/ls":
+		return Home_Command{kind = .Browse}
+	case "/recent":
+		return Home_Command{kind = .Recent}
+	case "/quit", "/exit":
+		return Home_Command{kind = .Quit}
+	}
+	return Home_Command{kind = .Unknown, raw = trimmed}
+}
+
+// tui_render_home_screen はホーム画面の描画内容を1つの文字列に組み立てる(純粋関数、単体テスト
+// 対象。tui_render_frame と同じ理由で描画とI/Oを分離する)。ロゴは Tui_Frame の枠線には入れず、
+// 生の行として直接書く(Claude Code 風の見た目に近づけるため)。
+tui_render_home_screen :: proc(cols: int, input: string, status: string) -> string {
+	b: strings.Builder
+	strings.builder_init(&b)
+
+	strings.write_string(&b, CURSOR_HOME)
+	strings.write_string(&b, CLEAR_SCREEN)
+	strings.write_string(&b, "\n")
+
+	logo_width := tui_logo_max_width()
+	if cols >= logo_width + 4 {
+		// ロゴ全体を1ブロックとして中央寄せする(行ごとに個別センタリングすると、行幅の
+		// 違いでジグザグに崩れて見えるため、全行に同じ左パディングを使う)。
+		pad := (cols - logo_width) / 2
+		for line in strings.split_lines(TUI_LOGO, context.temp_allocator) {
+			for _ in 0 ..< pad {
+				strings.write_byte(&b, ' ')
+			}
+			strings.write_string(&b, line)
+			strings.write_string(&b, "\n")
+		}
+	} else {
+		// ターミナル幅が不足する場合は1行タイトルへフォールバックする。
+		title := fmt.tprintf("BubiBoyLite v%s", VERSION)
+		write_centered_line(&b, cols, title)
+	}
+
+	strings.write_string(&b, "\n")
+	if status != "" {
+		strings.write_string(&b, status)
+		strings.write_string(&b, "\n\n")
+	}
+	strings.write_string(&b, "> ")
+	strings.write_string(&b, input)
+	strings.write_string(&b, "_\n\n") // 擬似カーソル(実カーソルは非表示のまま、CURSOR_HIDE を維持)
+	strings.write_string(&b, " /browse  /recent  /settings  /quit\n")
+
+	return strings.to_string(b)
+}
+
+@(private = "file")
+write_centered_line :: proc(b: ^strings.Builder, cols: int, line: string) {
+	w := display_width(line)
+	pad := (cols - w) / 2
+	for _ in 0 ..< pad {
+		strings.write_byte(b, ' ')
+	}
+	strings.write_string(b, line)
+	strings.write_string(b, "\n")
+}
+
+tui_write_home_screen :: proc(cols: int, input: string, status: string) {
+	s := tui_render_home_screen(cols, input, status)
+	defer delete(s)
+	os.write_string(os.stdout, s)
+}
+
+// tui_run_command_home はロゴ+プロンプト画面を表示し、コマンドが確定するまでブロックする。
+// 未対応コマンドはエラー表示してループを継続する(呼び出し元に .Unknown を返すことはない)。
+tui_run_command_home :: proc() -> Home_Command {
+	editor: Line_Editor
+	defer line_editor_destroy(&editor)
+
+	kr: Key_Reader
+	status := ""
+	last_cols, last_rows := -1, -1
+	dirty := true
+
+	for {
+		cols, rows := tui_term_size()
+		if cols != last_cols || rows != last_rows {
+			last_cols, last_rows = cols, rows
+			dirty = true
+		}
+
+		if dirty {
+			tui_write_home_screen(cols, line_editor_text(editor), status)
+			dirty = false
+		}
+
+		ev, ok := key_reader_poll(&kr)
+		if !ok {
+			tui_plat_sleep_ms(30)
+			continue
+		}
+
+		#partial switch ev.key {
+		case .Char, .Backspace:
+			line_editor_feed(&editor, ev)
+			dirty = true
+		case .Escape:
+			line_editor_feed(&editor, ev)
+			status = ""
+			dirty = true
+		case .Enter:
+			submitted, text := line_editor_feed(&editor, ev)
+			if !submitted {
+				break
+			}
+			cmd := parse_home_command(text)
+			if cmd.kind == .Unknown {
+				status = fmt.tprintf("不明なコマンドです: %s", cmd.raw)
+				delete(text)
+				dirty = true
+			} else {
+				delete(text)
+				return cmd
+			}
+		}
+	}
+}
+
 // --- ROM 選択画面(T9-2) ---
 // BluePrint「Claude Codeなどに見られる TUI も提供する」。T4-1 の core.cartridge_parse_header_lite
 // を再利用してヘッダの MBC種別/CGBフラグだけを読む(落とし穴: ファイル先頭 HEADER_MIN_LEN
@@ -743,7 +913,7 @@ tui_run_rom_browser :: proc(start_dir: string, config_dir: string) -> (result: R
 				status   = status,
 				items    = items,
 				selected = selected,
-				footer   = "↑↓ 選択  Enter 起動/移動  q 終了",
+				footer   = "↑↓ 選択  Enter 起動/移動  q 戻る",
 			}
 			tui_write_frame(frame)
 			dirty = false
@@ -827,7 +997,7 @@ tui_run_recent_browser :: proc(config_dir: string) -> (result: Rom_Browser_Resul
 				status   = status,
 				items    = items,
 				selected = selected,
-				footer   = "↑↓ 選択  Enter 起動  q 終了",
+				footer   = "↑↓ 選択  Enter 起動  q 戻る",
 			}
 			tui_write_frame(frame)
 			dirty = false
@@ -864,8 +1034,17 @@ tui_run_recent_browser :: proc(config_dir: string) -> (result: Rom_Browser_Resul
 	}
 }
 
+// Tui_Screen は run_tui 内部のみで使う画面状態(T12-3: ホーム画面 ⇄ ブラウザ画面の2段ループ)。
+@(private = "file")
+Tui_Screen :: enum {
+	Home,
+	Browse,
+	Recent,
+}
+
 // run_tui は main.odin から呼ばれるエントリポイント。非TTYなら起動せずエラー+exit 1
-// (T9-1完了条件)。ROM選択→起動→終了後にROM選択へ戻る、を q で抜けるまで繰り返す(T9-2)。
+// (T9-1完了条件)。ホーム画面(T12-3)→ `/browse`/`/recent` でブラウザ画面→起動→終了後は
+// ホーム画面へ戻る、を `/quit` で抜けるまで繰り返す。
 run_tui :: proc(opts: Options, cfg: Config) {
 	if !tui_available() {
 		fmt.eprintln("TUI を起動できません: 標準入出力が端末(TTY)に接続されていません")
@@ -878,7 +1057,7 @@ run_tui :: proc(opts: Options, cfg: Config) {
 	// context.assertion_failure_proc は「代入した proc から呼ばれる範囲」にしか効かない
 	// (tui_enter 側コメント参照)ので、ここ(TUIを実際に動かす run_tui 自身)で設定する。
 	context.assertion_failure_proc = tui_assertion_failure
-	defer tui_exit() // 通常のreturn経路(qで抜けた場合)ではdeferで問題ない。
+	defer tui_exit() // 通常のreturn経路(/quitで抜けた場合)ではdeferで問題ない。
 	// 異常系(シグナル/panic)は tui_plat_install_crash_restore(シグナル) と
 	// context.assertion_failure_proc(panic/assert) の両方で復元される。
 
@@ -896,22 +1075,34 @@ run_tui :: proc(opts: Options, cfg: Config) {
 	}
 
 	// --recent はTUIの初回表示だけに効かせる(BluePrint「--recent : 最近使ったファイルを
-	// 表示して選択できる」。ゲームから戻るたびに履歴だけを再表示し続けると新しいROMを
-	// 選びにくくなるため、2周目以降は通常のディレクトリ一覧に戻す)。
-	// Odin の値渡し引数は書き換え不可なので、ループで変化させるローカル変数にコピーする。
-	show_recent_first := opts.recent
+	// 表示して選択できる」)。T12-3でホーム画面を導入した後もこの優先順位を維持し、初回は
+	// ホーム画面をスキップして直接 recent 画面を開く(2周目以降はホーム画面経由に戻る)。
+	screen := Tui_Screen.Home
+	if opts.recent {
+		screen = .Recent
+	}
 
 	for {
+		if screen == .Home {
+			cmd := tui_run_command_home()
+			if cmd.kind == .Quit {
+				return
+			}
+			screen = cmd.kind == .Recent ? Tui_Screen.Recent : Tui_Screen.Browse
+		}
+
 		result: Rom_Browser_Result
 		rom_path: string
-		if show_recent_first {
+		if screen == .Recent {
 			result, rom_path = tui_run_recent_browser(config_dir)
-			show_recent_first = false
 		} else {
 			result, rom_path = tui_run_rom_browser(start_dir, config_dir)
 		}
+		// ブラウザ画面から戻ったら次はホーム画面へ(q/Escで抜けた場合もLaunchした場合も)。
+		screen = .Home
+
 		if result == .Quit {
-			return
+			continue // ホーム画面へ戻る(ループ先頭で tui_run_command_home が呼ばれる)
 		}
 		defer delete(rom_path)
 

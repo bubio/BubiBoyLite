@@ -27,7 +27,7 @@ BubiBoyLite（実行ファイル名 `bbl`）の開発計画のマスタードキ
 | 9 | TUI | 🟢 2026-07-17 | 6/6 | `bbl` 引数なし起動で TUI → ROM 選択 → 起動 → 終了が完結、`--recent` が仕様どおり | [詳細](phases/phase-09-tui.md) |
 | 10 | CI/CD (macOS/Linux) | 🟢 (2026-07-16) | 4/4 | macOS/Linux の workflow がグリーン、各バイナリがスモークテスト通過（2026-07-16、Windows/RPi/FreeBSDは対応対象外に変更） | [詳細](phases/phase-10-cicd.md) |
 | 11 | リリース | 🟢 2026-07-17(プレリリース) | 5/5 | タグ push で全プラットフォームの zip が GitHub Release に自動添付 | [詳細](phases/phase-11-release.md) |
-| 12 | TUI コマンド拡張(ロゴ+プロンプト) | 🟡 | 2/6 | `bbl` 引数なし起動でロゴ+プロンプト画面 → `/browse` で ROM 選択、`/settings`/`/set` で基本設定を差分書き込み | [詳細](phases/phase-12-tui-command.md) |
+| 12 | TUI コマンド拡張(ロゴ+プロンプト) | 🟡 | 3/6 | `bbl` 引数なし起動でロゴ+プロンプト画面 → `/browse` で ROM 選択、`/settings`/`/set` で基本設定を差分書き込み | [詳細](phases/phase-12-tui-command.md) |
 
 ---
 
