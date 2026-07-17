@@ -407,3 +407,16 @@ OAM自身は0xFFになることを検証するテストに更新。`tests/expect
 なお`mooneye/acceptance/timer/rapid_toggle`は本修正と無関係の別問題として引き続き未解決・
 許可リスト残存のまま(2026-07-11の検証ログ参照)。T2-7自体はrapid_toggleが残っているため
 未完了のままとする。
+
+2026-07-17 rapid_toggleについて、BubiBoy(前身プロジェクト)への移植可否をユーザーに確認。
+`~/dev/_Emu/BubiBoy/src/BubiBoy.Core/Timer.fs`(T-cycle単位の落下エッジ検出・2段階リロード
+遅延)と`Cpu.fs`(`pendingInterrupt`を命令境界でのみチェックする設計)を調査したところ、
+両方ともbblと基本的に同一のアーキテクチャだった。しかし
+`~/dev/_Emu/BubiBoy/tests/BubiBoy.TestRoms/roms/mooneye/README.md`を確認したところ、
+BubiBoyのテストROM一覧に`rapid_toggle`(および`tim*_div_trigger`系)がそもそも含まれておらず、
+BubiBoy自身もこのROMを一度も検証したことが無いと判明した。つまりOAM DMAバグの時と異なり
+「移植元に答えが無い」ケースであり、単純な移植では解決できない。
+**ユーザー判断**: 「このままとします。動作不良が見つかった時に調査するものとします」。
+実プレイでの不具合が実際に見つかった場合にのみ再調査する方針とし、それまでは
+`tests/expected_failures.odin`の許可リストに残したまま、T2-7は未完了(フェーズ2は6/7・🟡)の
+まま据え置く。
