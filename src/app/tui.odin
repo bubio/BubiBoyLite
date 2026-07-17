@@ -1087,3 +1087,53 @@ game_key_to_action :: proc(ev: Key_Event) -> (action: Game_Action, slot: int) {
 	}
 	return .None, 0
 }
+
+// --- Line_Editor(T12-1): 複数文字コマンド入力用の最小限の行入力バッファ ---
+// ホーム画面(T12-3)とゲーム実行中のコマンドモード(T12-5)の両方で再利用する。
+// カーソル移動(左右)は実装しない(末尾追記 + Backspace のみ、要望に含まれないため)。
+// context.temp_allocator は使わない(T9-6 で踏んだ -o:speed ビルド時の実機バグの再発防止、
+// このファイル冒頭コメント参照)。
+
+Line_Editor :: struct {
+	buf: [dynamic]u8,
+}
+
+line_editor_destroy :: proc(e: ^Line_Editor) {
+	delete(e.buf)
+}
+
+// line_editor_text は現在バッファされている文字列を返す(借用、e より長生きさせないこと)。
+line_editor_text :: proc(e: Line_Editor) -> string {
+	return string(e.buf[:])
+}
+
+// line_editor_reset はバッファを空にする(確定後の再利用、またはキャンセル時に呼ぶ)。
+line_editor_reset :: proc(e: ^Line_Editor) {
+	clear(&e.buf)
+}
+
+// line_editor_feed は1キーイベントを処理する純粋関数(単体テスト対象)。
+// Enter で確定(submitted=true、text は呼び出し側の allocator で確保した所有権付き文字列。
+// 呼び出し側が delete すること)。内部バッファは確定と同時にクリアする(次の入力に混ざらないため)。
+// Escape はバッファをクリアしてキャンセル扱い(submitted=false)。
+// 印字可能文字(0x20-0x7E)のみ受理し、Tab や Ctrl 系(0x01-0x1F)は無視する
+// (tui_parse_key は 0x80 未満を無条件で .Char にするため、ここでフィルタする)。
+line_editor_feed :: proc(e: ^Line_Editor, ev: Key_Event, allocator := context.allocator) -> (submitted: bool, text: string) {
+	#partial switch ev.key {
+	case .Enter:
+		s := strings.clone(string(e.buf[:]), allocator)
+		clear(&e.buf)
+		return true, s
+	case .Backspace:
+		if len(e.buf) > 0 {
+			pop(&e.buf)
+		}
+	case .Escape:
+		clear(&e.buf)
+	case .Char:
+		if ev.ch >= 0x20 && ev.ch <= 0x7E {
+			append(&e.buf, u8(ev.ch))
+		}
+	}
+	return false, ""
+}

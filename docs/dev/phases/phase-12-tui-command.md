@@ -1,0 +1,197 @@
+# フェーズ 12: TUI コマンド拡張(ロゴ+プロンプト)
+
+## 前提
+
+- 依存フェーズ: 9(TUI 基盤、完了済み)。
+- 経緯: ユーザーから「起動時に大きなロゴを出し、Claude Code のようなコマンド入力エリアを設けて
+  `/settings` 等のコマンドを打てるようにしたい。エミュ動作中もコマンドを入力できるようにしたい」
+  という要望があり、設計案(コマンドファースト/Vim風モーダル/ロゴ+プロンプト→ブラウザ遷移の3案)を
+  比較検討の上、Plan agent と Fable レビューを経て本フェーズとして具体化した
+  (`/Users/seiji/.claude/plans/tui-claude-code-bubiboylite-settings-snoopy-whale.md` に検討経緯を記録)。
+- フェーズ9は既に完了(🟢)扱いのため、そちらへの追記はダッシュボードの整合性を崩す。新規フェーズとして独立させる。
+
+## ゴール
+
+`bbl` 引数なし起動でロゴ+コマンドプロンプトのホーム画面が出て、`/browse` で既存 ROM ブラウザへ遷移できる。
+`/settings`/`/set` で基本設定(scale/fullscreen/shader/volume)を変更でき、変更は `bbl.ini` へ差分だけ
+反映される。ROM 実行中も `/set` によるワンライナーコマンドが使える。
+
+## フェーズ完了の検証コマンド
+
+```sh
+./bbl                          # ロゴ+プロンプト画面が出る → /browse で既存ブラウザへ
+./bbl --recent                 # ホームをスキップし直接 recent 画面
+odin test tests -collection:bbl=src   # Line_Editor・config差分パッチの単体テスト PASS
+```
+
+## 設計方針(実装前に読むこと)
+
+- 全体アプローチは案C(ロゴ+プロンプト画面 → `/browse`/`/ls`/空Enter で既存 ROM ブラウザへ遷移)。
+  T9-2/T9-3/T9-6 で実機バグ2件(`temp_allocator` クラッシュ、SDL ウィンドウ幽霊化)を踏んで検証済みの
+  既存 ROM ブラウザ・ゲームループはできるだけ無改修で活かす。
+- 全コマンドはスラッシュ付きに統一(`/browse` `/ls` `/recent` `/settings` `/set` `/quit` `/exit`)。
+  素の入力は将来的なパス直接指定に予約する。
+- **ゲーム実行中は対話メニューを一切開かない**: ブロッキングループを回すと `sdl.PollEvent` が止まり
+  SDL ウィンドウが応答不能になる(直近のコミット `0a78a66` と同じ再発パターン)。ゲーム中に許可するのは
+  `/set <key> <value>` のワンライナーのみ。
+- `/settings` の書き戻しは行単位パッチ方式(`config_parse_ini` の map 再シリアライズは不採用、
+  コメント・行順を壊すため)。「変更」はそのセッションで `/set` により明示的に操作されたキーのみを対象とする。
+- 新規に追加する `make`/`append` 等の明示的な動的確保は `context.allocator` を使い、対応する `delete` を
+  徹底する(T9-6 で踏んだ `-o:speed` ビルド時の `temp_allocator` 実機バグの再発防止。既存の `fmt.tprintf`
+  的な使い捨て確保は踏襲してよい)。
+- 詳細な設計判断(フォーカスの制約、ESC 誤判定の既知の弱点、cfg 反映フロー等)はプランファイル
+  `/Users/seiji/.claude/plans/tui-claude-code-bubiboylite-settings-snoopy-whale.md` を参照。
+
+---
+
+### T12-1: Line_Editor 共通コンポーネント
+
+- [x] 完了
+
+**目的**: 複数文字を貯めて Enter で確定する最小限の行入力バッファを作る。ホーム画面・ゲーム中コマンド
+モードの両方で再利用する土台。
+**作るもの**: `src/app/tui.odin`:
+- `Line_Editor` 構造体(`buf: [dynamic]u8`、`context.allocator` で確保)
+- `line_editor_feed(editor: ^Line_Editor, ev: Key_Event) -> (submitted: bool, text: string)` のような
+  純粋関数。`.Backspace` で末尾1文字削除、`.Enter` で確定、`.Escape` でクリア扱い
+- 印字可能文字(0x20–0x7E)のみ受理し、Tab や Ctrl 系(0x01–0x1F)は無視する
+  (`tui_parse_key` は 0x80 未満を無条件で `.Char` にするため、ここでフィルタする)
+- カーソル移動(左右)は実装しない(末尾追記 + Backspace のみ)
+**参照**: `tui_parse_key`(tui.odin:127、既存のキー解析)、phase-09-tui.md T9-1
+**完了条件 (DoD)**: 単体テストで Backspace/Enter/Escape/印字可能文字フィルタの挙動を検証できる。
+**検証方法**: `odin test tests -collection:bbl=src`
+**落とし穴**: `context.temp_allocator` を使わない(上記設計方針参照)。
+**依存**: なし
+
+---
+
+### T12-2: config.odin 行単位パッチ書き戻し
+
+- [ ] 完了
+
+**目的**: `/settings`/`/set` で変更した値だけを `bbl.ini` へ安全に書き戻す。
+**作るもの**: `src/app/config.odin`:
+- 元のファイル内容を行単位で走査し、指定された `key = value` 行だけ値を置換する関数
+  (該当行が無ければ末尾に追記)。コメント行・他のキーの行・行順は一切変更しない
+- CLI 引数による一時的な上書き値を誤って書き戻さないよう、呼び出し側(T12-4/T12-5)が
+  「そのセッションで明示的に `/set` されたキー」だけをこの関数へ渡す設計にする
+**参照**: `config_parse_ini`(config.odin:115、map化はコメント・順序を保持しないため今回は使わない)、
+`config_render_default_ini`(config.odin:282、デフォルト生成時のコメント形式の参考)
+**完了条件 (DoD)**: 単体テストで、(1) 既存キーの値だけが変わりコメント・他行が保持されること、
+(2) 存在しないキーは末尾に追記されること、を確認できる。
+**検証方法**: `odin test tests -collection:bbl=src`
+**落とし穴**: map 再シリアライズは使わない(初回使用でコメントが消え、map 順不定でキー順が
+書き込みごとに変わるため)。
+**依存**: なし
+
+---
+
+### T12-3: ホーム画面(ロゴ+プロンプト)
+
+- [ ] 完了
+
+**目的**: 起動時にロゴとコマンドプロンプトを表示し、既存 ROM ブラウザへの入口にする。
+**作るもの**: `src/app/tui.odin`:
+- `tui_run_command_home`(仮称)を新設。`run_tui()` のトップレベルを「ホーム画面 ⇄ 既存ブラウザ画面」の
+  2段ループに拡張する
+- 画面上部にロゴ(複数行 ASCII アート定数)を `display_width` で中央寄せ。ターミナル幅が不足する場合は
+  既存の `Tui_Frame.title` 相当の1行タイトルにフォールバック
+- コマンド: `/browse`/`/ls`(引数無し)→ 既存 `tui_run_rom_browser` を呼ぶ。`/recent` → 既存
+  `tui_run_recent_browser`。空 Enter は `/browse` 相当。`/quit`/`/exit` → 終了
+- `--recent` 指定時はホーム画面をスキップし直接 recent 画面を表示(既存の `show_recent_first` の
+  優先順位を維持)
+- ブラウザ画面側で `q`/`Esc` を押すとホーム画面へ戻る(フッター文言 `"↑↓ 選択 Enter 起動/移動 q 終了"`
+  も「q 戻る」等に修正)
+- プロンプト行のカーソル表示方法(`CURSOR_SHOW` 切替 or 擬似カーソル)を決めて実装
+**参照**: `run_tui`(tui.odin:869)、`tui_run_rom_browser`(tui.odin:679)、T12-1 の `Line_Editor`
+**完了条件 (DoD)**: `./bbl` でロゴ+プロンプトが表示され、`/browse` で ROM ブラウザへ遷移、`q` で
+ホームへ戻れる。`--recent` はホームをスキップする。
+**検証方法**: pty 経由での自動検証、または目視確認。
+**落とし穴**: `tui_run_rom_browser`/`tui_run_recent_browser` 自体のロジックは変更しない(T9-6 で
+検証済みの資産を壊さない)。
+**依存**: T12-1
+
+---
+
+### T12-4: /settings 対話メニューと /set ワンライナー(ホーム画面)
+
+- [ ] 完了
+
+**目的**: ホーム画面から基本設定を変更できるようにする。
+**作るもの**: `src/app/tui.odin` / `src/app/config.odin`:
+- `/settings`(引数無し、ホーム画面限定)→ `scale`/`fullscreen`/`shader`/`volume` の対話メニュー
+  (既存の `List_Item`/選択の仕組みを再利用)
+- `/set <key> <value>` のワンライナー
+- 確定したキーだけを T12-2 の行単位パッチ関数で `bbl.ini` へ即時書き込み。メモリ上の `cfg` も同時に
+  直接更新(ファイル再ロードはしない: `config_apply_cli_overrides` の再適用が必要になり、かつ
+  `config_load` の警告出力が alt screen 表示中に画面を乱すため)
+- 反映タイミング: `scale`/`fullscreen`/`shader` は次回 ROM 起動から(即時反映はスコープ外)。`volume`
+  はホーム画面ではファイル+メモリ反映のみ(実際の音量反映は次回 ROM 起動から)
+- `config_dir_path()` 失敗時はクラッシュせずエラーメッセージを表示するに留める
+**参照**: T12-2、`config_apply_cli_overrides`(config.odin:402)
+**完了条件 (DoD)**: `/set volume 50` で `bbl.ini` の該当行だけが変わり、他の値・コメント・行順が
+保持される。`/settings` を開いて何も変更せず閉じても `bbl.ini` は変化しない。
+**検証方法**: `/set` 実行前後で `bbl.ini` を diff。
+**落とし穴**: 「変更」の判定は値比較ではなくセッション内の明示操作のみ(`--scale 6` 起動中に
+確認だけして閉じても書き込まれないこと)。
+**依存**: T12-1, T12-2, T12-3
+
+---
+
+### T12-5: ゲーム実行中のコマンドモード(/set のみ)
+
+- [ ] 完了
+
+**目的**: ROM 実行中も `/set` によるワンライナーコマンドを打てるようにする。
+**作るもの**: `src/app/main.odin`:
+- `run_rom_window` 内の既存ホットキー処理(`game_key_to_action`)に `/` トリガーを追加
+- `paused` ローカル変数(main.odin:159, 247-249)を一時停止/再開の小関数として抽出し、`/` 押下時に
+  呼んで自動一時停止する。確定(Enter)/キャンセル(Esc)時、コマンドモードに入る前が非一時停止状態
+  だった場合のみ再開する
+- コマンドモード中は T12-1 の `Line_Editor` を使い、`status_line_tick` の代わりに入力中の行を
+  `\r\x1b[K` で stderr に描く
+- **対話メニューは開かない**: `/settings`(引数無し)がゲーム中に打たれた場合は「ホーム画面で
+  実行してください」等のメッセージを表示するに留める
+- `/set` 確定時は最終的に既存の内部 API(`handle_shortcut_action` や `audio_adjust_volume` 系)を
+  呼ぶ形にし、二重実装を避ける
+**参照**: `run_rom_window`(main.odin:73)、`handle_shortcut_action`(main.odin:355)、T12-1
+**完了条件 (DoD)**: ゲーム実行中に `/` でコマンドモードに入るとエミュレーションが自動一時停止し、
+SDL ウィンドウが応答不能にならない。`/set volume 50` が機能する。
+**検証方法**: 実機での目視確認(SDL ウィンドウのフォーカス切り替えを伴うため pty のみでは検証不可)。
+**落とし穴**: 自動ポーズ中もオーディオコールバックはバッファを消費し続けるためアンダーラン警告が
+出うる(既存 `p` ポーズと同じ挙動)。`key_reader_poll` は VMIN=0/VTIME=0 の完全ノンブロッキングで、
+CSI シーケンスが read 境界で分割されると単独 ESC に誤判定されうる既知の弱点がある(対処は今回のスコープ外)。
+**依存**: T12-1
+
+---
+
+### T12-6: 統合検証
+
+- [ ] 完了
+
+**目的**: フェーズ12のマイルストーン。
+**作るもの**: デバッグと修正のみ。チェックリスト:
+- [ ] `./bbl` → ロゴ+プロンプト → `/browse` → ROM ブラウザ → `q` → ホームへ戻る、が一巡
+- [ ] `--recent` でホームをスキップし直接 recent 画面
+- [ ] `/settings`/`/set` で `bbl.ini` に差分だけ反映(コメント・行順保持)
+- [ ] `--scale 6` 等 CLI 併用時、`/set` を使わなければ `bbl.ini` の scale が変化しない
+- [ ] ゲーム実行中に `/` でコマンドモード、SDL ウィンドウが応答不能にならない、`/set volume 50` が機能
+- [ ] 可能なら macOS Terminal / Linux 実機確認
+**参照**: プランファイルの「検証方法」セクション。
+**完了条件 (DoD)**: チェックリスト全項目 + 検証ログに記録。
+**検証方法**: 各項目を手動実行。
+**落とし穴**: なし(既知の落とし穴は各タスクに記載済み)。
+**依存**: T12-1, T12-2, T12-3, T12-4, T12-5
+
+---
+
+## 検証ログ
+
+（タスク完了ごとに 1 行追記）
+
+2026-07-17 T12-1 完了: `odin build src/app -collection:bbl=src -out:bbl -debug` 成功、
+`odin test tests -collection:bbl=src` 420件全パス(Line_Editor の単体テスト5件を追加:
+文字蓄積+Enter確定、Backspace、空状態でのBackspaceが範囲外アクセスしないこと、Escapeでの
+クリア、制御文字フィルタ、reset)。`src/app/tui.odin` に `Line_Editor`/`line_editor_feed`/
+`line_editor_text`/`line_editor_reset`/`line_editor_destroy` を追加。`context.allocator` を
+明示使用(T9-6 の temp_allocator 実機バグを踏まえた設計方針どおり)。

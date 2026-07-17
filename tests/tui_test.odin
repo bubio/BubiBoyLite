@@ -296,3 +296,74 @@ test_game_key_to_action_unmapped_key_is_none :: proc(t: ^testing.T) {
 	arrow_action, _ := app.game_key_to_action(app.Key_Event{key = .Up})
 	testing.expect(t, arrow_action == .None, "矢印キー等はゲームホットキーとしては未割当")
 }
+
+// --- Line_Editor(T12-1)の単体テスト ---
+
+@(test)
+test_line_editor_char_accumulates_and_enter_submits :: proc(t: ^testing.T) {
+	editor: app.Line_Editor
+	defer app.line_editor_destroy(&editor)
+
+	for ch in "browse" {
+		submitted, text := app.line_editor_feed(&editor, app.Key_Event{key = .Char, ch = ch})
+		testing.expect(t, !submitted)
+		testing.expect(t, text == "")
+	}
+
+	submitted, text := app.line_editor_feed(&editor, app.Key_Event{key = .Enter})
+	defer delete(text)
+	testing.expect(t, submitted)
+	testing.expect(t, text == "browse")
+	// 確定後は内部バッファがクリアされ、次の入力に混ざらない。
+	testing.expect(t, app.line_editor_text(editor) == "")
+}
+
+@(test)
+test_line_editor_backspace_removes_last_char :: proc(t: ^testing.T) {
+	editor: app.Line_Editor
+	defer app.line_editor_destroy(&editor)
+
+	app.line_editor_feed(&editor, app.Key_Event{key = .Char, ch = 'a'})
+	app.line_editor_feed(&editor, app.Key_Event{key = .Char, ch = 'b'})
+	app.line_editor_feed(&editor, app.Key_Event{key = .Backspace})
+	testing.expect(t, app.line_editor_text(editor) == "a")
+
+	// 空の状態での Backspace は何もしない(範囲外アクセスしない)。
+	app.line_editor_feed(&editor, app.Key_Event{key = .Backspace})
+	app.line_editor_feed(&editor, app.Key_Event{key = .Backspace})
+	testing.expect(t, app.line_editor_text(editor) == "")
+}
+
+@(test)
+test_line_editor_escape_clears_without_submitting :: proc(t: ^testing.T) {
+	editor: app.Line_Editor
+	defer app.line_editor_destroy(&editor)
+
+	app.line_editor_feed(&editor, app.Key_Event{key = .Char, ch = 'x'})
+	submitted, text := app.line_editor_feed(&editor, app.Key_Event{key = .Escape})
+	testing.expect(t, !submitted)
+	testing.expect(t, text == "")
+	testing.expect(t, app.line_editor_text(editor) == "")
+}
+
+@(test)
+test_line_editor_filters_control_characters :: proc(t: ^testing.T) {
+	editor: app.Line_Editor
+	defer app.line_editor_destroy(&editor)
+
+	// Tab(0x09)や他の制御文字はバッファに入らない。印字可能文字(0x20-0x7E)だけ通す。
+	app.line_editor_feed(&editor, app.Key_Event{key = .Char, ch = rune(0x09)})
+	app.line_editor_feed(&editor, app.Key_Event{key = .Char, ch = 'a'})
+	app.line_editor_feed(&editor, app.Key_Event{key = .Char, ch = rune(0x1f)})
+	testing.expect(t, app.line_editor_text(editor) == "a")
+}
+
+@(test)
+test_line_editor_reset_clears_buffer :: proc(t: ^testing.T) {
+	editor: app.Line_Editor
+	defer app.line_editor_destroy(&editor)
+
+	app.line_editor_feed(&editor, app.Key_Event{key = .Char, ch = 'x'})
+	app.line_editor_reset(&editor)
+	testing.expect(t, app.line_editor_text(editor) == "")
+}
