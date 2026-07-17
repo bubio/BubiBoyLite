@@ -109,7 +109,7 @@ git grep -i "$(whoami)" || echo OK
 
 ### T11-5: リリースドライランと v0.1.0
 
-- [ ] 完了
+- [x] 完了(プレリリースとして。下記検証ログ参照)
 
 **目的**: フェーズ 11 = プロジェクト全体のマイルストーン。最初の公開リリースを出す。
 **作るもの**: 手順の実施と最終確認:
@@ -162,3 +162,19 @@ gh release view v0.1.0
 DoD 検証: `git grep -i "$(whoami)"` → 0 件（PLAN.md/phases 配下の検証ログにも実ユーザー名の
 記載がないことを確認）。合わせて、静的リンク方式の残骸だった `build/`（144MB、gitignore 済みで
 未追跡）をローカルから削除（リポジトリには影響なし）。
+
+2026-07-17 T11-5 完了(プレリリースとして): ユーザーから「v0.1.0をpre-releaseとしてリリース
+してください」との明示的指示を受け、`gh release create v0.1.0 --prerelease` で作成
+(正式リリースではなく`prerelease: true`のまま。DoD本文が想定する「4を確認できたら正式
+リリース」の手順のうち、正式リリース化は今回は行わないという意図的なユーザー判断。
+`mooneye/acceptance/timer/rapid_toggle`が未解決のまま残っていることを踏まえた慎重な
+選択と考えられる)。
+release イベントで `build-linux.yml`(run 29580986191)・`build-macos.yml`(run 29580986224)が
+自動発火し両方 success。`gh release view v0.1.0` で
+`bbl-0.1.0-linux-amd64.zip`・`bbl-0.1.0-linux-arm64.zip`・`bbl-0.1.0-macos-arm64.zip`・
+`bbl-0.1.0-macos-x86_64.zip` の4種が自動添付されたことを確認済み。
+release note に対応プラットフォーム・動作要件(SDL2)・インストール手順・既知の課題
+(rapid_toggle)を明記した。
+**正式リリース(prerelease解除)への切り替えはユーザー判断が必要なため保留**。
+将来的に問題が無いと判断されたら `gh release edit v0.1.0 --prerelease=false` で
+正式リリースに切り替えられる。
