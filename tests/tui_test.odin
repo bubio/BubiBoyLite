@@ -466,3 +466,50 @@ test_parse_home_command_set_missing_key_and_value_is_unknown :: proc(t: ^testing
 	cmd := app.parse_home_command("/set")
 	testing.expect(t, cmd.kind == .Unknown)
 }
+
+// --- ゲーム実行中コマンドモード(T12-5)の単体テスト ---
+
+@(test)
+test_game_key_to_action_slash_enters_command_mode :: proc(t: ^testing.T) {
+	action, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = '/'})
+	testing.expect(t, action == .Enter_Command_Mode)
+}
+
+@(test)
+test_parse_game_command_set :: proc(t: ^testing.T) {
+	// `/` キー自体がトリガーなので、入力テキストに先頭の "/" は含まれない
+	// (画面表示は "/set volume 50" に見えるが、Line_Editor が蓄積するのは "set volume 50")。
+	cmd := app.parse_game_command("set volume 50")
+	testing.expect(t, cmd.kind == .Set)
+	testing.expect(t, cmd.set_key == "volume")
+	testing.expect(t, cmd.set_value == "50")
+}
+
+@(test)
+test_parse_game_command_settings_is_unavailable :: proc(t: ^testing.T) {
+	// ゲーム中は対話メニューを開かない(SDLイベントポンプ停止によるウィンドウ幽霊化の再発防止)。
+	cmd := app.parse_game_command("settings")
+	testing.expect(t, cmd.kind == .Settings_Unavailable)
+}
+
+@(test)
+test_parse_game_command_browse_is_unknown :: proc(t: ^testing.T) {
+	// ゲーム中に画面遷移コマンド(browse等)は意味を持たないため Unknown 扱い。
+	cmd := app.parse_game_command("browse")
+	testing.expect(t, cmd.kind == .Unknown)
+}
+
+@(test)
+test_parse_game_command_empty_input :: proc(t: ^testing.T) {
+	cmd := app.parse_game_command("")
+	testing.expect(t, cmd.kind == .Empty)
+
+	cmd_spaces := app.parse_game_command("   ")
+	testing.expect(t, cmd_spaces.kind == .Empty)
+}
+
+@(test)
+test_parse_game_command_set_missing_value_is_unknown :: proc(t: ^testing.T) {
+	cmd := app.parse_game_command("set volume")
+	testing.expect(t, cmd.kind == .Unknown)
+}

@@ -159,6 +159,25 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 	paused := false
 	stop_reported := false
 
+	// T12-5: ゲーム中コマンドモード。`/set <key> <value>` のワンライナーのみ許可する
+	// (対話メニューを開くと sdl.PollEvent が止まりウィンドウ幽霊化を再発するため、対話メニューは
+	// ホーム画面(TUI)限定)。/set で変更した値は live_cfg に反映し、以降の処理は live_cfg を
+	// 参照する(cfg は関数パラメータでアドレスを取れないため、ここでローカルコピーする)。
+	command_mode := false
+	command_was_paused := false
+	command_editor: Line_Editor
+	defer line_editor_destroy(&command_editor)
+	command_dirty := false
+	live_cfg := cfg
+
+	config_dir, config_dir_ok := config_dir_path()
+	defer if config_dir_ok {
+		delete(config_dir)
+	}
+	if !config_dir_ok {
+		config_dir = ""
+	}
+
 	// オーディオ駆動ペーシング(T5-6、T3-6の壁時計ペーシングを置換): オーディオバッファ残量が
 	// 目標(3フレーム分)を下回っている間だけ emulator_run_frame を回し、満杯なら1ms待つ
 	// (BubiBoy RuntimePacing.fs の方式、architecture.md「タイミングモデル」)。
@@ -226,27 +245,71 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 		if hotkeys_available {
 			ev, ok := key_reader_poll(&game_kr)
 			if ok {
-				action, slot := game_key_to_action(ev)
-				#partial switch action {
-				case .Volume_Up:
-					v := audio_adjust_volume(&audio, AUDIO_VOLUME_STEP)
-					status_line_set_message(&status_line, fmt.tprintf("Volume %d%%", v))
-				case .Volume_Down:
-					v := audio_adjust_volume(&audio, -AUDIO_VOLUME_STEP)
-					status_line_set_message(&status_line, fmt.tprintf("Volume %d%%", v))
-				case .Select_Slot:
-					input_state.state_slot = slot
-					msg := handle_shortcut_action(.Select_Slot, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
-					status_line_set_message(&status_line, msg)
-				case .Save_State:
-					msg := handle_shortcut_action(.Save_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
-					status_line_set_message(&status_line, msg)
-				case .Load_State:
-					msg := handle_shortcut_action(.Load_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
-					status_line_set_message(&status_line, msg)
-				case .Toggle_Pause:
-					paused = !paused
-					status_line_set_message(&status_line, paused ? "Paused" : "Resumed")
+				if command_mode {
+					#partial switch ev.key {
+					case .Char, .Backspace:
+						line_editor_feed(&command_editor, ev)
+						command_dirty = true
+					case .Escape:
+						line_editor_feed(&command_editor, ev)
+						command_mode = false
+						game_resume_after_command_mode(&paused, command_was_paused)
+						status_line_set_message(&status_line, "Command cancelled")
+						fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(次のstatus_line_tickまでの見た目対策)
+					case .Enter:
+						submitted, text := line_editor_feed(&command_editor, ev)
+						if submitted {
+							cmd := parse_game_command(text)
+							msg := ""
+							switch cmd.kind {
+							case .Empty:
+								msg = ""
+							case .Settings_Unavailable:
+								msg = "対話メニューはホーム画面(TUI)で実行してください"
+							case .Unknown:
+								msg = fmt.tprintf("不明なコマンドです: %s", cmd.raw)
+							case .Set:
+								set_ok, apply_msg := config_apply_set(&live_cfg, config_dir, cmd.set_key, cmd.set_value)
+								if set_ok && cmd.set_key == "volume" {
+									audio_set_volume(&audio, live_cfg.volume)
+								}
+								msg = apply_msg
+							}
+							delete(text)
+							command_mode = false
+							game_resume_after_command_mode(&paused, command_was_paused)
+							status_line_set_message(&status_line, msg)
+							fmt.eprintf("\r\x1b[K")
+						}
+					}
+				} else {
+					action, slot := game_key_to_action(ev)
+					#partial switch action {
+					case .Volume_Up:
+						v := audio_adjust_volume(&audio, AUDIO_VOLUME_STEP)
+						status_line_set_message(&status_line, fmt.tprintf("Volume %d%%", v))
+					case .Volume_Down:
+						v := audio_adjust_volume(&audio, -AUDIO_VOLUME_STEP)
+						status_line_set_message(&status_line, fmt.tprintf("Volume %d%%", v))
+					case .Select_Slot:
+						input_state.state_slot = slot
+						msg := handle_shortcut_action(.Select_Slot, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+						status_line_set_message(&status_line, msg)
+					case .Save_State:
+						msg := handle_shortcut_action(.Save_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+						status_line_set_message(&status_line, msg)
+					case .Load_State:
+						msg := handle_shortcut_action(.Load_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+						status_line_set_message(&status_line, msg)
+					case .Toggle_Pause:
+						paused = !paused
+						status_line_set_message(&status_line, paused ? "Paused" : "Resumed")
+					case .Enter_Command_Mode:
+						command_mode = true
+						command_was_paused = game_pause_for_command_mode(&paused)
+						line_editor_reset(&command_editor)
+						command_dirty = true
+					}
 				}
 			}
 		}
@@ -295,7 +358,16 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 			sdl.Delay(paused ? 16 : 1)
 		}
 		underrun_now := audio.underrun_events > underrun_before
-		status_line_tick(&status_line, audio.volume, input_state.state_slot, emu.bus.double_speed, paused, underrun_now)
+		if command_mode {
+			// T12-5: コマンドモード中は通常のステータス行の代わりに入力中の行をエコーする
+			// (入力があった時だけ再描画、status_line_tick の1秒間引きとは独立)。
+			if command_dirty {
+				fmt.eprintf("\r\x1b[K/%s_", line_editor_text(command_editor))
+				command_dirty = false
+			}
+		} else {
+			status_line_tick(&status_line, audio.volume, input_state.state_slot, emu.bus.double_speed, paused, underrun_now)
+		}
 	}
 
 	if audio.underrun_events > 0 {
@@ -341,6 +413,27 @@ save_rtc_now :: proc(emu: ^core.Emulator, rtc_path: string) {
 	}
 	if !rtc_save(rtc_path, snapshot) {
 		fmt.eprintfln("RTCの書き込みに失敗しました: %s", rtc_path)
+	}
+}
+
+// game_pause_for_command_mode / game_resume_after_command_mode は T12-5 のコマンドモード突入時に
+// エミュレーションを自動一時停止させるための小さなヘルパー。paused は run_rom_window 内の
+// オーディオ駆動ペーシングを止めるだけの単純な bool であり(audio_run_frame_locked を呼ばず
+// sdl.Delay に切り替わる)、他に連動する状態は無い(オーディオコールバック自体は止まらないため、
+// 一時停止中もバッファ枯渇によるアンダーランは起こりうる、既存の p キー一時停止と同じ挙動)。
+// 呼び出し元がコマンドモードに入る前の一時停止状態を憶えておき、抜けるときにその状態だけを
+// 復元する(ユーザーが p で既に一時停止していた場合はコマンドモードを抜けても止まったままにする)。
+@(private = "file")
+game_pause_for_command_mode :: proc(paused: ^bool) -> (was_paused: bool) {
+	was_paused = paused^
+	paused^ = true
+	return was_paused
+}
+
+@(private = "file")
+game_resume_after_command_mode :: proc(paused: ^bool, was_paused: bool) {
+	if !was_paused {
+		paused^ = false
 	}
 }
 

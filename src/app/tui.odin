@@ -1427,10 +1427,12 @@ Game_Action :: enum {
 	Save_State,
 	Load_State,
 	Toggle_Pause,
+	Enter_Command_Mode, // T12-5: `/` でコマンドモードに入る(/set のワンライナーのみ許可)
 }
 
-// game_key_to_action は T9-5 のホットキー(+/-音量、1-4スロット、s保存、l復元、p一時停止)を
-// 解釈する純粋関数(単体テスト対象)。slot は .Select_Slot の時だけ意味を持つ(1-4)。
+// game_key_to_action は T9-5 のホットキー(+/-音量、1-4スロット、s保存、l復元、p一時停止、
+// T12-5で追加した / コマンドモード)を解釈する純粋関数(単体テスト対象)。slot は
+// .Select_Slot の時だけ意味を持つ(1-4)。
 game_key_to_action :: proc(ev: Key_Event) -> (action: Game_Action, slot: int) {
 	if ev.key != .Char {
 		return .None, 0
@@ -1454,8 +1456,58 @@ game_key_to_action :: proc(ev: Key_Event) -> (action: Game_Action, slot: int) {
 		return .Load_State, 0
 	case 'p':
 		return .Toggle_Pause, 0
+	case '/':
+		return .Enter_Command_Mode, 0
 	}
 	return .None, 0
+}
+
+// --- ゲーム実行中のコマンドモード(T12-5) ---
+// SDL イベントポンプを止めるブロッキングな対話メニューは開かない(直近のコミット 0a78a66
+// と同じ SDL ウィンドウ幽霊化パターンの再発防止)。許可するのは `/set <key> <value>` の
+// ワンライナーのみ。`/settings`(引数無し)はホーム画面での実行を促すメッセージに留める。
+
+Game_Command_Kind :: enum {
+	Set,
+	Settings_Unavailable, // /settings(引数無し)はゲーム中では未対応
+	Unknown,
+	Empty, // 空Enter(何もしない、コマンドモードを抜けるだけ)
+}
+
+Game_Command :: struct {
+	kind:      Game_Command_Kind,
+	raw:       string, // .Unknown 時のエラー表示用(input の借用)
+	set_key:   string, // .Set 時のみ意味を持つ(input の借用)
+	set_value: string, // .Set 時のみ意味を持つ(input の借用)
+}
+
+// parse_game_command はゲーム中コマンドモードの入力を解釈する純粋関数(単体テスト対象)。
+// `/` キー自体がコマンドモードへの唯一のトリガーであり画面上のプロンプトが常に "/" を
+// 前置して表示するため(tui_run_command_home と違いプロンプト欄自体が空にならない)、
+// ここで受け取る input には先頭の "/" を含めない(ユーザーは "/" キー押下後 "set volume 30"
+// のように続けて打つ)。ホーム画面の parse_home_command と違い、画面遷移コマンド
+// (/browse 等)は一切受け付けない(ゲーム中に ROM ブラウザへ遷移する概念が無いため)。
+parse_game_command :: proc(input: string) -> Game_Command {
+	trimmed := strings.trim_space(input)
+	if trimmed == "" {
+		return Game_Command{kind = .Empty}
+	}
+	if trimmed == "settings" {
+		return Game_Command{kind = .Settings_Unavailable}
+	}
+	SET_PREFIX :: "set "
+	if strings.has_prefix(trimmed, SET_PREFIX) {
+		rest := strings.trim_space(trimmed[len(SET_PREFIX):])
+		sp := strings.index_byte(rest, ' ')
+		if sp > 0 {
+			key := strings.trim_space(rest[:sp])
+			value := strings.trim_space(rest[sp + 1:])
+			if key != "" && value != "" {
+				return Game_Command{kind = .Set, set_key = key, set_value = value}
+			}
+		}
+	}
+	return Game_Command{kind = .Unknown, raw = trimmed}
 }
 
 // --- Line_Editor(T12-1): 複数文字コマンド入力用の最小限の行入力バッファ ---
