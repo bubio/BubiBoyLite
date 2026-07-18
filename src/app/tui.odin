@@ -179,98 +179,11 @@ List_Item :: struct {
 	info:  string, // 右寄せの付加情報(空文字なら無し)
 }
 
-Tui_Frame :: struct {
-	cols:     int, // 端末の列数(0 以下ならデフォルト幅を使う)
-	rows:     int,
-	title:    string, // 上枠に表示するタイトル
-	heading:  string, // 本文見出し
-	status:   string, // 見出し下に出す追加行(エラー等)。空文字なら出さない
-	items:    []List_Item,
-	selected: int, // items のうちカーソル(▸)が当たっている index。範囲外なら非表示
-	footer:   string, // 枠の下に出すキーヒント行
-}
+// T14-2: 旧 Tui_Frame(枠線付き全画面フレーム)は固定レイアウトシェル(Shell_Frame、下記)に
+// 置き換えられて撤去した。List_Item と幅の定数は shell_content_list が引き続き使う。
 
 FRAME_MIN_WIDTH :: 40
 FRAME_MAX_WIDTH :: 100
-FRAME_DEFAULT_COLS :: 80
-
-// tui_render_frame は Tui_Frame から1画面分の ANSI 文字列を組み立てる。
-// 副作用なし(ファイル書き込み等は行わない)なので、内容の検証は文字列比較で完結できる
-// (advisor 指摘: 「実際の見た目を目で確認できない」ことへの対策として、描画とI/Oを分離する)。
-tui_render_frame :: proc(frame: Tui_Frame) -> string {
-	b: strings.Builder
-	strings.builder_init(&b)
-
-	cols := frame.cols
-	if cols <= 0 {
-		cols = FRAME_DEFAULT_COLS
-	}
-	width := cols - 4
-	if width < FRAME_MIN_WIDTH {
-		width = FRAME_MIN_WIDTH
-	}
-	if width > FRAME_MAX_WIDTH {
-		width = FRAME_MAX_WIDTH
-	}
-
-	strings.write_string(&b, CURSOR_HOME)
-	strings.write_string(&b, CLEAR_SCREEN)
-
-	// 上枠: "┌─ <title> ────...──┐"
-	strings.write_string(&b, "┌─ ")
-	strings.write_string(&b, frame.title)
-	strings.write_string(&b, " ")
-	used := display_width(frame.title) + 4 // "┌─ "(2幅+1) + title + " "(1) の合計相当
-	dash_count := width - used
-	if dash_count < 0 {
-		dash_count = 0
-	}
-	for _ in 0 ..< dash_count {
-		strings.write_string(&b, "─")
-	}
-	strings.write_string(&b, "┐\n")
-
-	write_row(&b, width, fmt.tprintf("  %s", frame.heading))
-	if frame.status != "" {
-		write_row(&b, width, fmt.tprintf("  %s", frame.status))
-	}
-	write_row(&b, width, "")
-
-	for item, i in frame.items {
-		marker := i == frame.selected ? "▸ " : "  "
-		left := fmt.tprintf("%s%s", marker, item.label)
-		line := left
-		if item.info != "" {
-			left_w := display_width(left)
-			info_w := display_width(item.info)
-			pad := width - 2 - left_w - info_w
-			if pad < 1 {
-				pad = 1
-			}
-			line = fmt.tprintf("%s%s%s", left, strings.repeat(" ", pad, context.temp_allocator), item.info)
-		}
-		write_row(&b, width, line)
-	}
-
-	strings.write_string(&b, "└")
-	for _ in 0 ..< width {
-		strings.write_string(&b, "─")
-	}
-	strings.write_string(&b, "┘\n")
-
-	strings.write_string(&b, " ")
-	strings.write_string(&b, frame.footer)
-	strings.write_string(&b, "\n")
-
-	return strings.to_string(b)
-}
-
-@(private = "file")
-write_row :: proc(b: ^strings.Builder, width: int, text: string) {
-	strings.write_string(b, "│")
-	write_padded(b, text, width)
-	strings.write_string(b, "│\n")
-}
 
 // --- 固定レイアウトシェル(T14-1) ---
 // Claude Code 風の固定レイアウト: 上部コンテンツ領域(rows-3)+区切り線+ステータス行+
@@ -361,6 +274,74 @@ shell_lines_destroy :: proc(lines: []string) {
 		delete(l)
 	}
 	delete(lines)
+}
+
+// shell_content_list はリスト画面(ROMブラウザ/recent/設定メニュー)のコンテンツ領域を
+// 組み立てる(T14-2、純粋関数)。heading + 空行 + 項目リスト(選択カーソル▸、info は右寄せ)。
+// 選択が常に見えるようスクロール窓を計算する(avail_rows を超える項目は選択位置を含む
+// 窓だけ表示)。戻り値は所有 []string(shell_lines_destroy で解放)。
+// ファイルI/O(ディレクトリスキャン等)の直後に呼ばれるため temp_allocator は使わない
+// (T9-6 の教訓、戻り値は allocator で確保)。
+shell_content_list :: proc(heading: string, items: []List_Item, selected: int, avail_rows: int, cols: int, allocator := context.allocator) -> []string {
+	lines := make([dynamic]string, 0, avail_rows, allocator)
+	append(&lines, strings.clone(heading, allocator))
+	append(&lines, strings.clone("", allocator))
+
+	item_rows := max(avail_rows - 2, 1)
+	start := 0
+	if selected >= item_rows {
+		start = selected - item_rows + 1
+	}
+	end := min(start + item_rows, len(items))
+
+	// info の右寄せ幅(tui_render_frame の項目行と同じ発想。極端に広い端末では読みにくいので
+	// 上限を設ける)。
+	width := clamp(cols - 1, FRAME_MIN_WIDTH, FRAME_MAX_WIDTH)
+
+	for i in start ..< end {
+		item := items[i]
+		marker := i == selected ? "▸ " : "  "
+		left := fmt.tprintf("%s%s", marker, item.label)
+		line := left
+		if item.info != "" {
+			left_w := display_width(left)
+			info_w := display_width(item.info)
+			pad := width - 2 - left_w - info_w
+			if pad < 1 {
+				pad = 1
+			}
+			line = fmt.tprintf("%s%s%s", left, strings.repeat(" ", pad, context.temp_allocator), item.info)
+		}
+		append(&lines, strings.clone(line, allocator))
+	}
+	return lines[:]
+}
+
+// shell_content_home はホーム画面のコンテンツ領域(ロゴ中央寄せ+コマンド一覧)を組み立てる
+// (T14-2、純粋関数)。幅が不足する場合は1行タイトルへフォールバック(T12-3 と同じ挙動)。
+shell_content_home :: proc(cols: int, allocator := context.allocator) -> []string {
+	lines := make([dynamic]string, 0, 12, allocator)
+	append(&lines, strings.clone("", allocator))
+
+	logo_width := tui_logo_max_width()
+	if cols >= logo_width + 4 {
+		// ロゴ全体を1ブロックとして中央寄せ(行ごとの個別センタリングはジグザグに崩れる、
+		// T12-3 検証ログ参照)。
+		pad := (cols - logo_width) / 2
+		pad_str := strings.repeat(" ", pad, context.temp_allocator)
+		for line in strings.split_lines(TUI_LOGO, context.temp_allocator) {
+			append(&lines, fmt.aprintf("%s%s", pad_str, line, allocator = allocator))
+		}
+	} else {
+		title := fmt.tprintf("BubiBoyLite v%s", VERSION)
+		w := display_width(title)
+		pad := max((cols - w) / 2, 0)
+		append(&lines, fmt.aprintf("%s%s", strings.repeat(" ", pad, context.temp_allocator), title, allocator = allocator))
+	}
+
+	append(&lines, strings.clone("", allocator))
+	append(&lines, strings.clone(" /browse  /recent  /settings  /quit", allocator))
+	return lines[:]
 }
 
 // --- TTY 判定 ---
@@ -510,16 +491,6 @@ tui_term_size :: proc() -> (cols, rows: int) {
 	return c, r
 }
 
-// --- 描画の書き出し ---
-
-// tui_write_frame は tui_render_frame の結果を1回の write でまとめて出力する
-// (T9-1「描画は全画面を文字列バッファに構築して一括write」)。
-tui_write_frame :: proc(frame: Tui_Frame) {
-	s := tui_render_frame(frame)
-	defer delete(s)
-	os.write_string(os.stdout, s)
-}
-
 // --- キー読み取り(ノンブロッキング) ---
 
 // Key_Reader は tui_plat_read の生バイトから tui_parse_key でイベントを切り出すための
@@ -624,71 +595,9 @@ parse_home_command :: proc(input: string) -> Home_Command {
 	return Home_Command{kind = .Unknown, raw = trimmed}
 }
 
-// tui_render_home_screen はホーム画面の描画内容を1つの文字列に組み立てる(純粋関数、単体テスト
-// 対象。tui_render_frame と同じ理由で描画とI/Oを分離する)。ロゴは Tui_Frame の枠線には入れず、
-// 生の行として直接書く(Claude Code 風の見た目に近づけるため)。
-tui_render_home_screen :: proc(cols: int, input: string, status: string) -> string {
-	b: strings.Builder
-	strings.builder_init(&b)
-
-	strings.write_string(&b, CURSOR_HOME)
-	strings.write_string(&b, CLEAR_SCREEN)
-	strings.write_string(&b, "\n")
-
-	logo_width := tui_logo_max_width()
-	if cols >= logo_width + 4 {
-		// ロゴ全体を1ブロックとして中央寄せする(行ごとに個別センタリングすると、行幅の
-		// 違いでジグザグに崩れて見えるため、全行に同じ左パディングを使う)。
-		pad := (cols - logo_width) / 2
-		for line in strings.split_lines(TUI_LOGO, context.temp_allocator) {
-			for _ in 0 ..< pad {
-				strings.write_byte(&b, ' ')
-			}
-			strings.write_string(&b, line)
-			strings.write_string(&b, "\n")
-		}
-	} else {
-		// ターミナル幅が不足する場合は1行タイトルへフォールバックする。
-		title := fmt.tprintf("BubiBoyLite v%s", VERSION)
-		write_centered_line(&b, cols, title)
-	}
-
-	strings.write_string(&b, "\n")
-	if status != "" {
-		strings.write_string(&b, status)
-		strings.write_string(&b, "\n\n")
-	}
-	strings.write_string(&b, "> ")
-	strings.write_string(&b, input)
-	strings.write_string(&b, "_\n\n") // 擬似カーソル(実カーソルは非表示のまま、CURSOR_HIDE を維持)
-	strings.write_string(&b, " /browse  /recent  /settings  /quit\n")
-
-	return strings.to_string(b)
-}
-
-@(private = "file")
-write_centered_line :: proc(b: ^strings.Builder, cols: int, line: string) {
-	w := display_width(line)
-	pad := (cols - w) / 2
-	for _ in 0 ..< pad {
-		strings.write_byte(b, ' ')
-	}
-	strings.write_string(b, line)
-	strings.write_string(b, "\n")
-}
-
-// 落とし穴(T12-6、-o:speed 実機検証で発見): このプロシージャが os.write_string(os.stdout, s)
-// を直接呼ぶと、in-place 実行(コピーなし、AMFI とは無関係)でも再現する形で
-// `runtime assertion: a.allocator.procedure != nil` が発生する(dev-2026-07 ツールチェイン
-// 固有のコード生成不具合と推測、T9-6 の temp_allocator 破損とは別の症状)。同一パターンの
-// tui_write_frame は他の呼び出し元(フレームレイアウトが異なる)では発火しないが、ここでは
-// 確実に再現するため、"contextless" な tui_plat_write_raw(syscall を直接呼び、context を
-// 経由しない)を使う。
-tui_write_home_screen :: proc(cols: int, input: string, status: string) {
-	s := tui_render_home_screen(cols, input, status)
-	defer delete(s)
-	tui_plat_write_raw(s)
-}
+// T14-2: 旧 tui_render_home_screen/tui_write_home_screen は shell_content_home +
+// tui_write_shell に置き換えられて撤去した(T12-6 の contextless 書き込みの知見は
+// tui_write_shell が引き継いでいる)。
 
 // --- /settings 対話メニュー(T12-4) ---
 // ホーム画面限定(ゲーム実行中は対話メニューを開かない、T12-5 参照: SDL イベントポンプが
@@ -934,17 +843,16 @@ tui_run_settings_menu :: proc(cfg: ^Config, config_dir: string) {
 			for f, i in settings_fields {
 				items[i] = List_Item{label = settings_field_key(f), info = menu_item_info(cfg^, f)}
 			}
-			frame := Tui_Frame {
-				cols     = cols,
-				rows     = rows,
-				title    = fmt.tprintf("BubiBoyLite v%s 設定", VERSION),
-				heading  = "設定項目を選択(←→ で値を変更)",
-				status   = status,
-				items    = items,
-				selected = m.selected,
-				footer   = "↑↓ 選択  ←→ 値を変更  Esc 戻る",
-			}
-			tui_write_frame(frame)
+			// T14-2: 固定レイアウトシェルで描画(キー処理・状態遷移は無変更)。
+			content := shell_content_list(
+				fmt.tprintf("BubiBoyLite v%s 設定 — 設定項目を選択(←→ で値を変更)", VERSION),
+				items,
+				m.selected,
+				rows - SHELL_RESERVED_ROWS,
+				cols,
+			)
+			tui_write_shell(Shell_Frame{cols = cols, rows = rows, content = content, status = status, hint = "↑↓ 選択  ←→ 値を変更  Esc 戻る"})
+			shell_lines_destroy(content)
 			dirty = false
 		}
 
@@ -1002,7 +910,11 @@ tui_run_command_home :: proc(cfg: ^Config, config_dir: string) -> Home_Command {
 		}
 
 		if dirty {
-			tui_write_home_screen(cols, line_editor_text(editor), status)
+			// T14-2: 固定レイアウトシェルで描画(コンテンツ=ロゴ+コマンド一覧、入力行=編集中の
+			// コマンド)。shell_content_home は所有 []string を返すので必ず解放する。
+			content := shell_content_home(cols)
+			tui_write_shell(Shell_Frame{cols = cols, rows = rows, content = content, status = status, input = line_editor_text(editor)})
+			shell_lines_destroy(content)
 			dirty = false
 		}
 
@@ -1331,17 +1243,16 @@ tui_run_rom_browser :: proc(start_dir: string, config_dir: string) -> (result: R
 			for e, i in entries {
 				items[i] = List_Item{label = browser_entry_label(e), info = e.info}
 			}
-			frame := Tui_Frame {
-				cols     = cols,
-				rows     = rows,
-				title    = fmt.tprintf("BubiBoyLite v%s", VERSION),
-				heading  = fmt.tprintf("ROM を選択してください  [%s]", cwd),
-				status   = status,
-				items    = items,
-				selected = selected,
-				footer   = "↑↓ 選択  Enter 起動/移動  q 戻る",
-			}
-			tui_write_frame(frame)
+			// T14-2: 固定レイアウトシェルで描画(キー処理・entries 管理は無変更)。
+			content := shell_content_list(
+				fmt.tprintf("BubiBoyLite v%s — ROM を選択してください  [%s]", VERSION, cwd),
+				items,
+				selected,
+				rows - SHELL_RESERVED_ROWS,
+				cols,
+			)
+			tui_write_shell(Shell_Frame{cols = cols, rows = rows, content = content, status = status, hint = "↑↓ 選択  Enter 起動/移動  q 戻る"})
+			shell_lines_destroy(content)
 			dirty = false
 		}
 
@@ -1415,17 +1326,16 @@ tui_run_recent_browser :: proc(config_dir: string) -> (result: Rom_Browser_Resul
 			for e, i in entries {
 				items[i] = List_Item{label = browser_entry_label(e), info = e.info}
 			}
-			frame := Tui_Frame {
-				cols     = cols,
-				rows     = rows,
-				title    = fmt.tprintf("BubiBoyLite v%s", VERSION),
-				heading  = "最近使ったファイル",
-				status   = status,
-				items    = items,
-				selected = selected,
-				footer   = "↑↓ 選択  Enter 起動  q 戻る",
-			}
-			tui_write_frame(frame)
+			// T14-2: 固定レイアウトシェルで描画(キー処理・entries 管理は無変更)。
+			content := shell_content_list(
+				fmt.tprintf("BubiBoyLite v%s — 最近使ったファイル", VERSION),
+				items,
+				selected,
+				rows - SHELL_RESERVED_ROWS,
+				cols,
+			)
+			tui_write_shell(Shell_Frame{cols = cols, rows = rows, content = content, status = status, hint = "↑↓ 選択  Enter 起動  q 戻る"})
+			shell_lines_destroy(content)
 			dirty = false
 		}
 

@@ -96,7 +96,7 @@ pty 検証で「ゲーム起動前後で画面構成が同一」(区切り線・
 
 ### T14-2: ホーム/ブラウザ/設定をシェル描画に移行
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: TUI 側3画面の描画を Shell_Frame へ差し替える(ロジック無変更、描画のみ)。
 **作るもの**: `src/app/tui.odin`:
@@ -222,3 +222,15 @@ exit すると画面が復元されないため、TUI経由の失敗時は tui_f
 `./scripts/build_macos.sh`(-o:speed)成功。`Shell_Frame`/`SHELL_RESERVED_ROWS`/
 `tui_render_shell`(純粋)/`tui_write_shell`(contextless 書き出し、T12-6 の前例を踏まえ最初から
 tui_plat_write_raw 使用)/`shell_lines_destroy` を追加。
+
+2026-07-18 T14-2 完了: `odin test tests -collection:bbl=src` 467件全パス(旧 tui_render_frame
+4件+旧 tui_render_home_screen 3件を撤去し、shell_content_list 3件(heading+項目+info 右寄せ、
+選択マーカー、スクロール窓で選択が常に見える)+shell_content_home 2件(ロゴ+コマンド一覧、
+狭い幅での1行タイトルフォールバック)に移行)。`shell_content_home`/`shell_content_list`
+(いずれも所有 []string を返す純粋関数、temp_allocator 不使用)を追加し、
+`tui_run_command_home`/`tui_run_settings_menu`/`tui_run_rom_browser`/`tui_run_recent_browser`
+の描画ブロックを `tui_write_shell` へ差し替え(キー処理・状態遷移・entries 管理・opt-none は
+無変更)。旧 `Tui_Frame`/`tui_render_frame`/`tui_write_frame`/`tui_render_home_screen`/
+`tui_write_home_screen` を撤去。`-o:speed` pty 検証: (1) ホーム→/settings→←→で volume/scale
+適用→Esc→/quit の一巡、(2) ホーム→/settings→/browse→ROM起動→ゲーム中メニュー→復帰→終了の
+フルラウンドトリップ、いずれもクラッシュなし・bbl.ini 検証前後バイト一致。

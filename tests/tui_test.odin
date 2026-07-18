@@ -75,73 +75,56 @@ test_parse_key_empty_buffer :: proc(t: ^testing.T) {
 	testing.expect(t, ev.key == .None && n == 0)
 }
 
-@(test)
-test_render_frame_contains_border_and_title :: proc(t: ^testing.T) {
-	frame := app.Tui_Frame {
-		cols     = 80,
-		rows     = 24,
-		title    = "BubiBoyLite v0.1.0",
-		heading  = "ROM を選択してください",
-		items    = []app.List_Item{{label = "game1.gbc", info = "(MBC5, CGB)"}, {label = "game2.gb", info = "(MBC1)"}},
-		selected = 0,
-		footer   = "↑↓ 選択  Enter 起動  q 終了",
-	}
-	s := app.tui_render_frame(frame)
-	defer delete(s)
+// --- リスト画面コンテンツ(T14-2、旧 tui_render_frame テストを shell_content_list へ移行) ---
 
-	testing.expect(t, strings.contains(s, "┌─ BubiBoyLite v0.1.0"))
-	testing.expect(t, strings.contains(s, "┐"))
-	testing.expect(t, strings.contains(s, "└"))
-	testing.expect(t, strings.contains(s, "┘"))
-	testing.expect(t, strings.contains(s, "ROM を選択してください"))
-	testing.expect(t, strings.contains(s, "game1.gbc"))
-	testing.expect(t, strings.contains(s, "(MBC5, CGB)"))
-	testing.expect(t, strings.contains(s, "↑↓ 選択  Enter 起動  q 終了"))
+@(test)
+test_shell_content_list_heading_items_and_info :: proc(t: ^testing.T) {
+	items := []app.List_Item{{label = "game1.gbc", info = "(MBC5, CGB)"}, {label = "game2.gb", info = "(MBC1)"}}
+	content := app.shell_content_list("BubiBoyLite v0.1.0 — ROM を選択してください", items, 0, 21, 80)
+	defer app.shell_lines_destroy(content)
+
+	testing.expect_value(t, len(content), 4) // heading + 空行 + 項目2
+	testing.expect(t, strings.contains(content[0], "ROM を選択してください"))
+	testing.expect_value(t, content[1], "")
+	testing.expect(t, strings.contains(content[2], "▸ game1.gbc"))
+	testing.expect(t, strings.contains(content[2], "(MBC5, CGB)"))
+	testing.expect(t, strings.contains(content[3], "  game2.gb"))
+	testing.expect(t, !strings.contains(content[3], "▸"))
 }
 
 @(test)
-test_render_frame_marks_selected_row :: proc(t: ^testing.T) {
-	frame := app.Tui_Frame {
-		cols     = 80,
-		rows     = 24,
-		title    = "t",
-		heading  = "h",
-		items    = []app.List_Item{{label = "one"}, {label = "two"}, {label = "three"}},
-		selected = 1,
-		footer   = "f",
-	}
-	s := app.tui_render_frame(frame)
-	defer delete(s)
+test_shell_content_list_marks_selected_row :: proc(t: ^testing.T) {
+	items := []app.List_Item{{label = "one"}, {label = "two"}, {label = "three"}}
+	content := app.shell_content_list("h", items, 1, 21, 80)
+	defer app.shell_lines_destroy(content)
 
-	lines := strings.split(s, "\n", context.temp_allocator)
-	found_marker_on_two := false
-	for line in lines {
+	for line in content {
 		if strings.contains(line, "two") {
 			testing.expect(t, strings.contains(line, "▸"))
-			found_marker_on_two = true
 		}
 		if strings.contains(line, "one") || strings.contains(line, "three") {
 			testing.expect(t, !strings.contains(line, "▸"))
 		}
 	}
-	testing.expect(t, found_marker_on_two)
 }
 
 @(test)
-test_render_frame_includes_ansi_control_sequences :: proc(t: ^testing.T) {
-	frame := app.Tui_Frame{cols = 80, rows = 24, title = "t", heading = "h", footer = "f"}
-	s := app.tui_render_frame(frame)
-	defer delete(s)
+test_shell_content_list_scroll_window_keeps_selection_visible :: proc(t: ^testing.T) {
+	items := make([]app.List_Item, 10)
+	defer delete(items)
+	labels := [10]string{"i0", "i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9"}
+	for i in 0 ..< 10 {
+		items[i] = app.List_Item{label = labels[i]}
+	}
+	// avail_rows=5 → 項目枠は 3 行。selected=7 なら i5..i7 の窓が見え、i0 は見えない。
+	content := app.shell_content_list("h", items, 7, 5, 80)
+	defer app.shell_lines_destroy(content)
 
-	testing.expect(t, strings.has_prefix(s, app.CURSOR_HOME + app.CLEAR_SCREEN))
-}
-
-@(test)
-test_render_frame_status_line_shown_when_present :: proc(t: ^testing.T) {
-	frame := app.Tui_Frame{cols = 80, rows = 24, title = "t", heading = "h", status = "エラー: 読み込めません", footer = "f"}
-	s := app.tui_render_frame(frame)
-	defer delete(s)
-	testing.expect(t, strings.contains(s, "エラー: 読み込めません"))
+	joined := strings.join(content, "\n", context.temp_allocator)
+	testing.expect(t, strings.contains(joined, "▸ i7"))
+	testing.expect(t, strings.contains(joined, "i5"))
+	testing.expect(t, !strings.contains(joined, "i0"))
+	testing.expect(t, !strings.contains(joined, "i8"))
 }
 
 @(test)
@@ -410,33 +393,28 @@ test_parse_home_command_trims_whitespace :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_render_home_screen_shows_prompt_and_input :: proc(t: ^testing.T) {
-	s := app.tui_render_home_screen(80, "browse", "")
-	defer delete(s)
+test_shell_content_home_shows_logo_and_commands :: proc(t: ^testing.T) {
+	// T14-2: ホーム画面のコンテンツ(旧 tui_render_home_screen のテストを移行)。
+	// 入力行・ステータス行はシェル側(Shell_Frame)の担当になったためここには含まれない。
+	content := app.shell_content_home(80)
+	defer app.shell_lines_destroy(content)
 
-	testing.expect(t, strings.contains(s, "> browse"))
-	testing.expect(t, strings.contains(s, "/browse"))
-	testing.expect(t, strings.contains(s, "/settings"))
-	testing.expect(t, strings.contains(s, "/quit"))
+	joined := strings.join(content, "\n", context.temp_allocator)
+	testing.expect(t, strings.contains(joined, "____")) // ロゴ(figlet風ブロック体)
+	testing.expect(t, strings.contains(joined, "/browse"))
+	testing.expect(t, strings.contains(joined, "/settings"))
+	testing.expect(t, strings.contains(joined, "/quit"))
 }
 
 @(test)
-test_render_home_screen_shows_status_when_present :: proc(t: ^testing.T) {
-	s := app.tui_render_home_screen(80, "", "不明なコマンドです: /foo")
-	defer delete(s)
-
-	testing.expect(t, strings.contains(s, "不明なコマンドです: /foo"))
-}
-
-@(test)
-test_render_home_screen_falls_back_to_title_when_narrow :: proc(t: ^testing.T) {
+test_shell_content_home_falls_back_to_title_when_narrow :: proc(t: ^testing.T) {
 	// 幅が極端に狭い端末ではロゴの代わりに1行タイトルへフォールバックする。
-	s := app.tui_render_home_screen(20, "", "")
-	defer delete(s)
+	content := app.shell_content_home(20)
+	defer app.shell_lines_destroy(content)
 
-	testing.expect(t, strings.contains(s, "BubiBoyLite v"))
-	// ロゴの罫線文字(figlet風ブロック体の一部)は含まれないこと。
-	testing.expect(t, !strings.contains(s, "____"))
+	joined := strings.join(content, "\n", context.temp_allocator)
+	testing.expect(t, strings.contains(joined, "BubiBoyLite v"))
+	testing.expect(t, !strings.contains(joined, "____"))
 }
 
 // --- ホーム画面での /settings, /set コマンド解釈(T12-4)の単体テスト ---
