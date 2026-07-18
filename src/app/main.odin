@@ -264,8 +264,11 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 							switch cmd.kind {
 							case .Empty:
 								msg = ""
-							case .Settings_Unavailable:
-								msg = "対話メニューはホーム画面(TUI)で実行してください"
+							case .Settings, .Pause, .Resume, .Save_State, .Load_State, .Select_Slot, .Quit:
+								// T13-4 時点の暫定: パーサは新コマンドを解釈するが、ゲームループへの
+								// 配線(オーバーレイ遷移・pause 制御・handle_shortcut_action 写像)は
+								// T13-5 で行う。それまでは案内メッセージのみ。
+								msg = "このコマンドは T13-5(ゲームループ統合)で有効になります"
 							case .Unknown:
 								msg = fmt.tprintf("不明なコマンドです: %s", cmd.raw)
 							case .Set:

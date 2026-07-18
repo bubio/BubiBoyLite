@@ -486,10 +486,15 @@ test_parse_game_command_set :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_parse_game_command_settings_is_unavailable :: proc(t: ^testing.T) {
-	// ゲーム中は対話メニューを開かない(SDLイベントポンプ停止によるウィンドウ幽霊化の再発防止)。
+test_parse_game_command_settings_opens_menu :: proc(t: ^testing.T) {
+	// T13-4 で仕様変更: ゲーム中の settings はオーバーレイメニュー(状態機械+毎フレーム1ステップ、
+	// SDLポンプを止めない)を開く .Settings を返す(T12-5 の Settings_Unavailable は廃止)。
 	cmd := app.parse_game_command("settings")
-	testing.expect(t, cmd.kind == .Settings_Unavailable)
+	testing.expect(t, cmd.kind == .Settings)
+
+	// 引数付きの settings は未対応 → Unknown
+	cmd_arg := app.parse_game_command("settings foo")
+	testing.expect(t, cmd_arg.kind == .Unknown)
 }
 
 @(test)
@@ -754,4 +759,51 @@ test_status_line_format_contents :: proc(t: ^testing.T) {
 	paused_line := app.status_line_format(s, 0.0, 80, 2, true, true)
 	testing.expect(t, strings.contains(paused_line, "⏸"))
 	testing.expect(t, strings.contains(paused_line, "双速"))
+}
+
+// --- parse_game_command 拡張(T13-4) ---
+
+@(test)
+test_parse_game_command_pause_resume :: proc(t: ^testing.T) {
+	testing.expect(t, app.parse_game_command("pause").kind == .Pause)
+	testing.expect(t, app.parse_game_command("resume").kind == .Resume)
+	testing.expect(t, app.parse_game_command("pause now").kind == .Unknown)
+}
+
+@(test)
+test_parse_game_command_save_load_with_optional_slot :: proc(t: ^testing.T) {
+	save := app.parse_game_command("save")
+	testing.expect(t, save.kind == .Save_State && save.slot == 0)
+
+	save2 := app.parse_game_command("save 2")
+	testing.expect(t, save2.kind == .Save_State && save2.slot == 2)
+
+	load := app.parse_game_command("load")
+	testing.expect(t, load.kind == .Load_State && load.slot == 0)
+
+	load3 := app.parse_game_command("load 3")
+	testing.expect(t, load3.kind == .Load_State && load3.slot == 3)
+
+	// 範囲外・非数値スロットは Unknown
+	testing.expect(t, app.parse_game_command("save 5").kind == .Unknown)
+	testing.expect(t, app.parse_game_command("load abc").kind == .Unknown)
+}
+
+@(test)
+test_parse_game_command_slot_requires_valid_arg :: proc(t: ^testing.T) {
+	slot3 := app.parse_game_command("slot 3")
+	testing.expect(t, slot3.kind == .Select_Slot && slot3.slot == 3)
+
+	// slot は引数必須、0/5/非数値は Unknown
+	testing.expect(t, app.parse_game_command("slot").kind == .Unknown)
+	testing.expect(t, app.parse_game_command("slot 0").kind == .Unknown)
+	testing.expect(t, app.parse_game_command("slot 5").kind == .Unknown)
+	testing.expect(t, app.parse_game_command("slot x").kind == .Unknown)
+}
+
+@(test)
+test_parse_game_command_quit_aliases :: proc(t: ^testing.T) {
+	testing.expect(t, app.parse_game_command("quit").kind == .Quit)
+	testing.expect(t, app.parse_game_command("exit").kind == .Quit)
+	testing.expect(t, app.parse_game_command("quit now").kind == .Unknown)
 }

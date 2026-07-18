@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
 import "core:terminal"
 import "core:time"
@@ -1608,14 +1609,22 @@ game_key_to_action :: proc(ev: Key_Event) -> (action: Game_Action, slot: int) {
 	return .None, 0
 }
 
-// --- ゲーム実行中のコマンドモード(T12-5) ---
-// SDL イベントポンプを止めるブロッキングな対話メニューは開かない(直近のコミット 0a78a66
-// と同じ SDL ウィンドウ幽霊化パターンの再発防止)。許可するのは `/set <key> <value>` の
-// ワンライナーのみ。`/settings`(引数無し)はホーム画面での実行を促すメッセージに留める。
+// --- ゲーム実行中のコマンドモード(T12-5、T13-4 で拡張) ---
+// T13-4: /set 以外にも settings/pause/resume/save/load/slot/quit を追加。全て既存バックエンド
+// (handle_shortcut_action、paused、running)への写像のみで新規エミュ機能は無い。
+// `settings` は T13-5 のオーバーレイメニュー(状態機械+毎フレーム1ステップ)を開く:
+// ブロッキングループではないため SDL イベントポンプは止まらない(0a78a66 の幽霊化パターンを
+// 構造的に回避。T12-5 時代の Settings_Unavailable workaround は廃止)。
 
 Game_Command_Kind :: enum {
 	Set,
-	Settings_Unavailable, // /settings(引数無し)はゲーム中では未対応
+	Settings, // オーバーレイ設定メニューを開く(T13-5)
+	Pause,
+	Resume,
+	Save_State, // slot 引数は省略可(0=現在のスロット)
+	Load_State, // slot 引数は省略可(0=現在のスロット)
+	Select_Slot, // slot 引数必須(1-4)
+	Quit,
 	Unknown,
 	Empty, // 空Enter(何もしない、コマンドモードを抜けるだけ)
 }
@@ -1625,6 +1634,17 @@ Game_Command :: struct {
 	raw:       string, // .Unknown 時のエラー表示用(input の借用)
 	set_key:   string, // .Set 時のみ意味を持つ(input の借用)
 	set_value: string, // .Set 時のみ意味を持つ(input の借用)
+	slot:      int, // .Save_State/.Load_State/.Select_Slot 用。0=指定なし(現在のスロットを使う)
+}
+
+// game_command_parse_slot はスロット引数(1-4)を解釈する。範囲外・非数値は ok=false。
+@(private = "file")
+game_command_parse_slot :: proc(s: string) -> (slot: int, ok: bool) {
+	n, parse_ok := strconv.parse_int(s)
+	if !parse_ok || n < 1 || n > 4 {
+		return 0, false
+	}
+	return n, true
 }
 
 // parse_game_command はゲーム中コマンドモードの入力を解釈する純粋関数(単体テスト対象)。
@@ -1638,12 +1658,44 @@ parse_game_command :: proc(input: string) -> Game_Command {
 	if trimmed == "" {
 		return Game_Command{kind = .Empty}
 	}
-	if trimmed == "settings" {
-		return Game_Command{kind = .Settings_Unavailable}
+
+	head := trimmed
+	rest := ""
+	if sp := strings.index_byte(trimmed, ' '); sp >= 0 {
+		head = trimmed[:sp]
+		rest = strings.trim_space(trimmed[sp + 1:])
 	}
-	SET_PREFIX :: "set "
-	if strings.has_prefix(trimmed, SET_PREFIX) {
-		rest := strings.trim_space(trimmed[len(SET_PREFIX):])
+
+	switch head {
+	case "settings":
+		if rest == "" {
+			return Game_Command{kind = .Settings}
+		}
+	case "pause":
+		if rest == "" {
+			return Game_Command{kind = .Pause}
+		}
+	case "resume":
+		if rest == "" {
+			return Game_Command{kind = .Resume}
+		}
+	case "quit", "exit":
+		if rest == "" {
+			return Game_Command{kind = .Quit}
+		}
+	case "save", "load":
+		kind := head == "save" ? Game_Command_Kind.Save_State : Game_Command_Kind.Load_State
+		if rest == "" {
+			return Game_Command{kind = kind}
+		}
+		if slot, ok := game_command_parse_slot(rest); ok {
+			return Game_Command{kind = kind, slot = slot}
+		}
+	case "slot":
+		if slot, ok := game_command_parse_slot(rest); ok {
+			return Game_Command{kind = .Select_Slot, slot = slot}
+		}
+	case "set":
 		sp := strings.index_byte(rest, ' ')
 		if sp > 0 {
 			key := strings.trim_space(rest[:sp])
