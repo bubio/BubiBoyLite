@@ -513,3 +513,157 @@ test_parse_game_command_set_missing_value_is_unknown :: proc(t: ^testing.T) {
 	cmd := app.parse_game_command("set volume")
 	testing.expect(t, cmd.kind == .Unknown)
 }
+
+// --- メニュー状態機械(T13-1) ---
+
+@(test)
+test_menu_step_up_down_clamps_selection :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	m := app.Menu_State{}
+
+	// 先頭(0)で Up → 動かない(.None)
+	eff := app.menu_step(&m, app.Key_Event{key = .Up}, cfg)
+	testing.expect(t, eff.op == .None && m.selected == 0)
+
+	// Down で 1 に移動(.Redraw)
+	eff = app.menu_step(&m, app.Key_Event{key = .Down}, cfg)
+	testing.expect(t, eff.op == .Redraw && m.selected == 1)
+
+	// 末尾(3)まで下げてさらに Down → 動かない
+	m.selected = 3
+	eff = app.menu_step(&m, app.Key_Event{key = .Down}, cfg)
+	testing.expect(t, eff.op == .None && m.selected == 3)
+
+	// Up で 2 に戻る
+	eff = app.menu_step(&m, app.Key_Event{key = .Up}, cfg)
+	testing.expect(t, eff.op == .Redraw && m.selected == 2)
+}
+
+@(test)
+test_menu_adjust_value_scale :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	cfg.scale = 3
+
+	v, changed := app.menu_adjust_value(cfg, .Scale, 1)
+	testing.expect(t, changed && v == "4")
+	delete(v)
+
+	v, changed = app.menu_adjust_value(cfg, .Scale, -1)
+	testing.expect(t, changed && v == "2")
+	delete(v)
+}
+
+@(test)
+test_menu_adjust_value_scale_boundaries :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+
+	// scale=8(上限)で + → 変化なし
+	cfg.scale = 8
+	_, changed := app.menu_adjust_value(cfg, .Scale, 1)
+	testing.expect(t, !changed)
+
+	// scale=1(下限)で - → 変化なし
+	cfg.scale = 1
+	_, changed = app.menu_adjust_value(cfg, .Scale, -1)
+	testing.expect(t, !changed)
+}
+
+@(test)
+test_menu_adjust_value_fullscreen_toggles :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	cfg.fullscreen = false
+
+	// delta の符号に関わらずトグル
+	v, changed := app.menu_adjust_value(cfg, .Fullscreen, 1)
+	testing.expect(t, changed && v == "true")
+	delete(v)
+
+	v, changed = app.menu_adjust_value(cfg, .Fullscreen, -1)
+	testing.expect(t, changed && v == "true")
+	delete(v)
+
+	cfg.fullscreen = true
+	v, changed = app.menu_adjust_value(cfg, .Fullscreen, 1)
+	testing.expect(t, changed && v == "false")
+	delete(v)
+}
+
+@(test)
+test_menu_adjust_value_shader_toggles :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	cfg.shader = .Nearest
+
+	v, changed := app.menu_adjust_value(cfg, .Shader, 1)
+	testing.expect(t, changed && v == "smooth")
+	delete(v)
+
+	cfg.shader = .Smooth
+	v, changed = app.menu_adjust_value(cfg, .Shader, -1)
+	testing.expect(t, changed && v == "nearest")
+	delete(v)
+}
+
+@(test)
+test_menu_adjust_value_volume_steps_and_clamps :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	cfg.volume = 50
+
+	v, changed := app.menu_adjust_value(cfg, .Volume, 1)
+	testing.expect(t, changed && v == "55")
+	delete(v)
+
+	v, changed = app.menu_adjust_value(cfg, .Volume, -1)
+	testing.expect(t, changed && v == "45")
+	delete(v)
+
+	// 98 + 5 → 100 に clamp(境界未満なら clamp してでも変化する)
+	cfg.volume = 98
+	v, changed = app.menu_adjust_value(cfg, .Volume, 1)
+	testing.expect(t, changed && v == "100")
+	delete(v)
+
+	// 100(上限)で + → 変化なし、0(下限)で - → 変化なし
+	cfg.volume = 100
+	_, changed = app.menu_adjust_value(cfg, .Volume, 1)
+	testing.expect(t, !changed)
+	cfg.volume = 0
+	_, changed = app.menu_adjust_value(cfg, .Volume, -1)
+	testing.expect(t, !changed)
+}
+
+@(test)
+test_menu_step_left_right_produce_adjust_effect :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	cfg.scale = 4
+	m := app.Menu_State{} // selected=0 = scale
+
+	eff := app.menu_step(&m, app.Key_Event{key = .Right}, cfg)
+	testing.expect(t, eff.op == .Adjust)
+	testing.expect(t, eff.key == "scale")
+	testing.expect(t, eff.value == "5")
+	delete(eff.value)
+
+	// 境界(scale=8)では .None(確保なし)
+	cfg.scale = 8
+	eff = app.menu_step(&m, app.Key_Event{key = .Right}, cfg)
+	testing.expect(t, eff.op == .None)
+}
+
+@(test)
+test_menu_step_close_keys :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	m := app.Menu_State{}
+
+	eff := app.menu_step(&m, app.Key_Event{key = .Escape}, cfg)
+	testing.expect(t, eff.op == .Close)
+
+	eff = app.menu_step(&m, app.Key_Event{key = .Enter}, cfg)
+	testing.expect(t, eff.op == .Close)
+
+	eff = app.menu_step(&m, app.Key_Event{key = .Char, ch = 'q'}, cfg)
+	testing.expect(t, eff.op == .Close)
+
+	// q 以外の文字は .None
+	eff = app.menu_step(&m, app.Key_Event{key = .Char, ch = 'x'}, cfg)
+	testing.expect(t, eff.op == .None)
+}

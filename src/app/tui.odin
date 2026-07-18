@@ -602,7 +602,8 @@ tui_write_home_screen :: proc(cols: int, input: string, status: string) {
 // ホーム画面限定(ゲーム実行中は対話メニューを開かない、T12-5 参照: SDL イベントポンプが
 // 止まりウィンドウ幽霊化を再発するため)。scale/fullscreen/shader/volume のみ対象。
 
-@(private = "file")
+// T13-1: tests パッケージから menu_adjust_value(cfg, f, delta) を直接テストするため
+// private を外して公開する(settings_fields 等の補助はファイル内利用のみなので private のまま)。
 Settings_Field :: enum {
 	Scale,
 	Fullscreen,
@@ -641,6 +642,95 @@ settings_field_value_string :: proc(cfg: Config, f: Settings_Field) -> string {
 		return fmt.tprintf("%d", cfg.volume)
 	}
 	return ""
+}
+
+// --- メニュー状態機械(T13-1、純粋関数) ---
+// 対話メニューの遷移ロジックを I/O から完全分離する。ホーム画面の /settings(T13-2)と
+// ゲーム中オーバーレイ(T13-5)の両方がこの menu_step を共有し、描画だけを分岐させる。
+// 適用(config_apply_set)は状態機械の外: menu_step は「何をすべきか」(Menu_Effect)を返すだけに
+// して完全純粋化し、文字列比較で単体テスト可能にする。
+
+Menu_State :: struct {
+	selected: int, // settings_fields のインデックス(0..3)
+	status:   string, // 直前の操作結果メッセージ(所有。呼び出し側が config_apply_set の結果等を反映する)
+}
+
+Menu_Op :: enum {
+	None, // 何もしない(未対応キー、または境界で値が変わらなかった)
+	Redraw, // 選択が動いた等、再描画だけ必要
+	Adjust, // key/value で config_apply_set を呼ぶこと(value は呼び出し側が delete する)
+	Close, // メニューを閉じること
+}
+
+Menu_Effect :: struct {
+	op:    Menu_Op,
+	key:   string, // .Adjust 時のみ有効(settings_field_key の静的文字列、delete 不要)
+	value: string, // .Adjust 時のみ有効(allocator で確保した所有権付き文字列、呼び出し側が delete)
+}
+
+// menu_adjust_value は ←→ 操作による値の増減/トグルを計算する(純粋関数、単体テスト対象)。
+// scale は ±1 で 1..MAX_SCALE に clamp、volume は ±5 で 0..100 に clamp、fullscreen/shader は
+// delta の符号に関わらずトグル。既に境界にいて値が変わらない場合は changed=false を返し、
+// 文字列の確保もしない。config_apply_set は範囲外を clamp せずエラーにする仕様のため、
+// ここで clamp してから渡すことで常に適用可能な値だけを返す。
+// 戻り値 value は temp_allocator の借用ではなく allocator で確保した所有権付き文字列
+// (呼び出し側が delete する。ファイルI/Oをまたいで生存するため temp_allocator 不可、
+// config.odin の config_patch_ini コメント参照)。
+menu_adjust_value :: proc(cfg: Config, f: Settings_Field, delta: int, allocator := context.allocator) -> (value: string, changed: bool) {
+	switch f {
+	case .Scale:
+		n := clamp(cfg.scale + delta, 1, MAX_SCALE)
+		if n == cfg.scale {
+			return "", false
+		}
+		return fmt.aprintf("%d", n, allocator = allocator), true
+	case .Fullscreen:
+		return strings.clone(cfg.fullscreen ? "false" : "true", allocator), true
+	case .Shader:
+		return strings.clone(cfg.shader == .Smooth ? "nearest" : "smooth", allocator), true
+	case .Volume:
+		MENU_VOLUME_STEP :: 5
+		n := clamp(cfg.volume + delta * MENU_VOLUME_STEP, 0, 100)
+		if n == cfg.volume {
+			return "", false
+		}
+		return fmt.aprintf("%d", n, allocator = allocator), true
+	}
+	return "", false
+}
+
+// menu_step は1キーイベントを状態機械へ与え、呼び出し側が実行すべき効果を返す(純粋関数、
+// 単体テスト対象)。↑↓=選択移動(clamp)、←→=値サイクル/増減、Esc/q/Enter=Close。
+menu_step :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator := context.allocator) -> Menu_Effect {
+	#partial switch ev.key {
+	case .Up:
+		if m.selected > 0 {
+			m.selected -= 1
+			return Menu_Effect{op = .Redraw}
+		}
+		return Menu_Effect{op = .None}
+	case .Down:
+		if m.selected < len(settings_fields) - 1 {
+			m.selected += 1
+			return Menu_Effect{op = .Redraw}
+		}
+		return Menu_Effect{op = .None}
+	case .Left, .Right:
+		delta := ev.key == .Right ? 1 : -1
+		f := settings_fields[m.selected]
+		value, changed := menu_adjust_value(cfg, f, delta, allocator)
+		if !changed {
+			return Menu_Effect{op = .None}
+		}
+		return Menu_Effect{op = .Adjust, key = settings_field_key(f), value = value}
+	case .Escape, .Enter:
+		return Menu_Effect{op = .Close}
+	case .Char:
+		if ev.ch == 'q' {
+			return Menu_Effect{op = .Close}
+		}
+	}
+	return Menu_Effect{op = .None}
 }
 
 // tui_run_settings_menu は /settings(引数無し)の対話メニュー。↑↓で項目選択、Enter で
