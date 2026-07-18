@@ -28,7 +28,7 @@ BubiBoyLite（実行ファイル名 `bbl`）の開発計画のマスタードキ
 | 10 | CI/CD (macOS/Linux) | 🟢 (2026-07-16) | 4/4 | macOS/Linux の workflow がグリーン、各バイナリがスモークテスト通過（2026-07-16、Windows/RPi/FreeBSDは対応対象外に変更） | [詳細](phases/phase-10-cicd.md) |
 | 11 | リリース | 🟢 2026-07-17(プレリリース) | 5/5 | タグ push で全プラットフォームの zip が GitHub Release に自動添付 | [詳細](phases/phase-11-release.md) |
 | 12 | TUI コマンド拡張(ロゴ+プロンプト) | 🟡 | 5/6 | `bbl` 引数なし起動でロゴ+プロンプト画面 → `/browse` で ROM 選択、`/settings`/`/set` で基本設定を差分書き込み | [詳細](phases/phase-12-tui-command.md) |
-| 13 | ゲーム中TUIメニュー(状態機械+オーバーレイ) | 🟡 | 1/6 | ROM実行中に `/` → `settings` でオーバーレイメニューを開閉・←→で値変更でき、SDLウィンドウが応答不能にならない | [詳細](phases/phase-13-tui-game-menu.md) |
+| 13 | ゲーム中TUIメニュー(状態機械+オーバーレイ) | 🟡 | 2/6 | ROM実行中に `/` → `settings` でオーバーレイメニューを開閉・←→で値変更でき、SDLウィンドウが応答不能にならない | [詳細](phases/phase-13-tui-game-menu.md) |
 
 ---
 

@@ -733,20 +733,25 @@ menu_step :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator := conte
 	return Menu_Effect{op = .None}
 }
 
-// tui_run_settings_menu は /settings(引数無し)の対話メニュー。↑↓で項目選択、Enter で
-// 編集モードに入り新しい値を入力、Enter で確定(config_apply_set 経由で検証・適用・書き戻し)。
-// Esc は編集モード中なら編集をキャンセル、項目選択中ならメニュー自体を抜ける。
+// menu_item_info は設定メニューの List_Item.info 用の "◂ 3 ▸" 形式の文字列を作る
+// (純粋関数、単体テスト対象)。戻り値は fmt.tprintf の借用(既存 settings_field_value_string と
+// 同じ扱い、描画中のみ有効。ファイルI/Oをまたいで保持しないこと)。
+menu_item_info :: proc(cfg: Config, f: Settings_Field) -> string {
+	return fmt.tprintf("◂ %s ▸", settings_field_value_string(cfg, f))
+}
+
+// tui_run_settings_menu は /settings(引数無し)の対話メニュー。T13-2 で menu_step 駆動に
+// 書き換え: ↑↓で項目選択、←→で値サイクル/増減(即時に config_apply_set で検証・適用・書き戻し)、
+// Esc/q/Enter で戻る。従来の「Enter で編集モード → タイプ入力」は廃止(遷移ロジックと値計算を
+// ゲーム中オーバーレイ(T13-5)と共有するため。描画だけがこちらはフル枠 tui_write_frame)。
 // optimization_mode="none": tui_run_command_home 側のコメント参照(T12-6)。この関数も
 // config_apply_set() 呼び出し後にループへ戻り tui_term_size() を呼ぶ同型のパターンを持つ
 // (実機検証では発火しなかったが、予防的に揃える。30ms ポーリングループなのでコストは無視できる)。
 @(optimization_mode = "none")
 tui_run_settings_menu :: proc(cfg: ^Config, config_dir: string) {
-	selected := 0
 	kr: Key_Reader
+	m: Menu_State
 	dirty := true
-	editing := false
-	editor: Line_Editor
-	defer line_editor_destroy(&editor)
 	status := ""
 
 	for {
@@ -756,25 +761,17 @@ tui_run_settings_menu :: proc(cfg: ^Config, config_dir: string) {
 			items := make([]List_Item, len(settings_fields))
 			defer delete(items)
 			for f, i in settings_fields {
-				items[i] = List_Item{label = settings_field_key(f), info = settings_field_value_string(cfg^, f)}
-			}
-			heading := "設定項目を選択(Enter で編集、Esc で戻る)"
-			if editing {
-				heading = fmt.tprintf(
-					"%s の新しい値を入力: %s_",
-					settings_field_key(settings_fields[selected]),
-					line_editor_text(editor),
-				)
+				items[i] = List_Item{label = settings_field_key(f), info = menu_item_info(cfg^, f)}
 			}
 			frame := Tui_Frame {
 				cols     = cols,
 				rows     = rows,
 				title    = fmt.tprintf("BubiBoyLite v%s 設定", VERSION),
-				heading  = heading,
+				heading  = "設定項目を選択(←→ で値を変更)",
 				status   = status,
 				items    = items,
-				selected = selected,
-				footer   = editing ? "Enter 確定  Esc キャンセル" : "↑↓ 選択  Enter 編集  Esc 戻る",
+				selected = m.selected,
+				footer   = "↑↓ 選択  ←→ 値を変更  Esc 戻る",
 			}
 			tui_write_frame(frame)
 			dirty = false
@@ -786,48 +783,18 @@ tui_run_settings_menu :: proc(cfg: ^Config, config_dir: string) {
 			continue
 		}
 
-		if editing {
-			#partial switch ev.key {
-			case .Char, .Backspace:
-				line_editor_feed(&editor, ev)
-				dirty = true
-			case .Escape:
-				line_editor_feed(&editor, ev)
-				editing = false
-				dirty = true
-			case .Enter:
-				submitted, text := line_editor_feed(&editor, ev)
-				if submitted {
-					_, msg := config_apply_set(cfg, config_dir, settings_field_key(settings_fields[selected]), text)
-					delete(text)
-					status = msg
-					editing = false
-					dirty = true
-				}
-			}
-		} else {
-			#partial switch ev.key {
-			case .Up:
-				if selected > 0 {
-					selected -= 1
-					dirty = true
-				}
-			case .Down:
-				if selected < len(settings_fields) - 1 {
-					selected += 1
-					dirty = true
-				}
-			case .Enter:
-				editing = true
-				status = ""
-				dirty = true
-			case .Escape:
-				return
-			case .Char:
-				if ev.ch == 'q' {
-					return
-				}
-			}
+		eff := menu_step(&m, ev, cfg^)
+		switch eff.op {
+		case .None:
+		case .Redraw:
+			dirty = true
+		case .Adjust:
+			_, msg := config_apply_set(cfg, config_dir, eff.key, eff.value)
+			delete(eff.value)
+			status = msg
+			dirty = true
+		case .Close:
+			return
 		}
 	}
 }

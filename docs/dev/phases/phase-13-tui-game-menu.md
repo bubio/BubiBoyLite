@@ -112,7 +112,7 @@ changed=false 等)、Esc/q/Enter で .Close を検証できる。
 
 ### T13-2: tui_run_settings_menu の menu_step 駆動化(ホーム画面)
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: ホーム画面の /settings 対話メニューを新しい状態機械に載せ替え、タイプ入力を廃止して
 ←→サイクル操作に統一する。ゲーム中オーバーレイ(T13-5)投入前に状態機械を実機で検証可能にする。
@@ -244,3 +244,13 @@ config_apply_set 呼び出しは状態機械の外)。`Settings_Field` の `@(pr
 (tests パッケージから menu_adjust_value を直接テストするため。実装前の精読で判明した計画の
 補正点)。Effect の value は allocator で確保した所有権付き文字列(temp_allocator 不可の
 方針どおり)。
+
+2026-07-18 T13-2 完了: `odin test tests -collection:bbl=src` 456件全パス(menu_item_info の
+"◂ 3 ▸" 形式1件を追加)。`tui_run_settings_menu` を menu_step 駆動に書き換え
+(シグネチャ・opt-none 維持、`editing`/`Line_Editor` タイプ入力を削除、←→サイクルに統一。
+フッターを「↑↓ 選択  ←→ 値を変更  Esc 戻る」へ)。`-o:speed` ビルドの実バイナリを pty
+(`pty.fork`、in-place 実行)で検証: ホーム→`/settings`→"◂ 値 ▸"表示+フッター確認→↓×3で
+volume 選択→`←`で「volume = NN に更新しました」→`→`で復元→↑×3で scale→`→`で
+「scale = N に更新しました」→`←`で復元→Esc でホーム復帰→`/quit` で exit 0。
+増減を対で行ったため終了後の bbl.ini はバイト単位で検証前と一致(書き戻し配線と
+行パッチの両方が機能している証拠)。クラッシュ・アサーションなし。

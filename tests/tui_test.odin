@@ -667,3 +667,19 @@ test_menu_step_close_keys :: proc(t: ^testing.T) {
 	eff = app.menu_step(&m, app.Key_Event{key = .Char, ch = 'x'}, cfg)
 	testing.expect(t, eff.op == .None)
 }
+
+// --- /settings メニューの ←→ サイクル表示(T13-2) ---
+
+@(test)
+test_menu_item_info_arrow_format :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	cfg.scale = 3
+	cfg.fullscreen = false
+	cfg.shader = .Nearest
+	cfg.volume = 80
+
+	testing.expect_value(t, app.menu_item_info(cfg, .Scale), "◂ 3 ▸")
+	testing.expect_value(t, app.menu_item_info(cfg, .Fullscreen), "◂ false ▸")
+	testing.expect_value(t, app.menu_item_info(cfg, .Shader), "◂ nearest ▸")
+	testing.expect_value(t, app.menu_item_info(cfg, .Volume), "◂ 80 ▸")
+}
