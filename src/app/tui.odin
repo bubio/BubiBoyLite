@@ -272,6 +272,97 @@ write_row :: proc(b: ^strings.Builder, width: int, text: string) {
 	strings.write_string(b, "│\n")
 }
 
+// --- 固定レイアウトシェル(T14-1) ---
+// Claude Code 風の固定レイアウト: 上部コンテンツ領域(rows-3)+区切り線+ステータス行+
+// 入力行。ホーム/ブラウザ/設定/ゲーム中の全画面がこの1本のレンダラで描画され、
+// **ゲーム起動中も全く同じ画面構成を維持する**(phase-14 の中核要件)。
+
+SHELL_RESERVED_ROWS :: 3 // 区切り線 + ステータス行 + 入力行
+
+Shell_Frame :: struct {
+	cols:    int, // 端末の列数(0 以下ならフォールバック値)
+	rows:    int,
+	content: []string, // コンテンツ領域の行。rows-3 を超える分は切り捨て、不足分は空行
+	status:  string, // ステータス行(fps / vol / 操作結果メッセージ等)
+	input:   string, // 入力行。"> " + input + "_" の形式で表示(擬似カーソル)
+	hint:    string, // 入力行の右端に右寄せ表示するキーヒント(幅が足りなければ省略)
+}
+
+// tui_render_shell は Shell_Frame から1画面分の ANSI 文字列を組み立てる(純粋関数、
+// 単体テスト対象。tui_render_frame と同じ理由で描画とI/Oを分離する)。
+// - CURSOR_HOME 開始、各行 "\x1b[K"(行クリア)+ cols-1 幅の write_padded(パディング兼
+//   打ち切り。自動折り返しによる行ズレ防止)
+// - ちょうど rows 行を書く(改行は rows-1 個)。**最下行に改行を書かない**(書くと端末が
+//   スクロールして全体が1行ズレるため)
+tui_render_shell :: proc(f: Shell_Frame, allocator := context.allocator) -> string {
+	cols := f.cols > 0 ? f.cols : TERM_FALLBACK_COLS
+	rows := f.rows > 0 ? f.rows : TERM_FALLBACK_ROWS
+	width := max(cols - 1, 1)
+	content_rows := max(rows - SHELL_RESERVED_ROWS, 0)
+
+	b: strings.Builder
+	strings.builder_init(&b, allocator)
+
+	strings.write_string(&b, CURSOR_HOME)
+
+	// コンテンツ領域
+	for i in 0 ..< content_rows {
+		strings.write_string(&b, "\x1b[K")
+		line := i < len(f.content) ? f.content[i] : ""
+		write_padded(&b, line, width)
+		strings.write_string(&b, "\n")
+	}
+
+	if rows >= SHELL_RESERVED_ROWS {
+		// 区切り線
+		strings.write_string(&b, "\x1b[K")
+		for _ in 0 ..< width {
+			strings.write_string(&b, "─")
+		}
+		strings.write_string(&b, "\n")
+
+		// ステータス行
+		strings.write_string(&b, "\x1b[K")
+		write_padded(&b, f.status, width)
+		strings.write_string(&b, "\n")
+
+		// 入力行(最下行、改行なし): "> " + input + "_" と右寄せヒント
+		strings.write_string(&b, "\x1b[K")
+		left := fmt.tprintf("> %s_", f.input)
+		left_w := display_width(left)
+		hint_w := display_width(f.hint)
+		if f.hint != "" && left_w + 2 + hint_w <= width {
+			pad := width - left_w - hint_w
+			strings.write_string(&b, left)
+			for _ in 0 ..< pad {
+				strings.write_byte(&b, ' ')
+			}
+			strings.write_string(&b, f.hint)
+		} else {
+			write_padded(&b, left, width)
+		}
+	}
+
+	return strings.to_string(b)
+}
+
+// tui_write_shell は tui_render_shell の結果を書き出す。contextless な tui_plat_write_raw を
+// 使う(T12-6 で os.write_string 直接呼び出しが -o:speed で `a.allocator.procedure != nil`
+// アサーションを誘発した前例があるため、シェル描画は最初から contextless で書く)。
+tui_write_shell :: proc(f: Shell_Frame) {
+	s := tui_render_shell(f)
+	defer delete(s)
+	tui_plat_write_raw(s)
+}
+
+// shell_lines_destroy は shell_content_* が返す所有 []string を解放する。
+shell_lines_destroy :: proc(lines: []string) {
+	for l in lines {
+		delete(l)
+	}
+	delete(lines)
+}
+
 // --- TTY 判定 ---
 
 // tui_available は標準入出力の両方が TTY に接続されているかを返す(T9-1「非TTYではTUI起動せず

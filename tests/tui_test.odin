@@ -807,3 +807,81 @@ test_parse_game_command_quit_aliases :: proc(t: ^testing.T) {
 	testing.expect(t, app.parse_game_command("exit").kind == .Quit)
 	testing.expect(t, app.parse_game_command("quit now").kind == .Unknown)
 }
+
+// --- 固定レイアウトシェル(T14-1) ---
+
+@(test)
+test_render_shell_row_count_and_structure :: proc(t: ^testing.T) {
+	content := []string{"line A", "line B"}
+	f := app.Shell_Frame{cols = 40, rows = 10, content = content, status = "status here", input = "abc", hint = "hint"}
+	s := app.tui_render_shell(f)
+	defer delete(s)
+
+	// CURSOR_HOME 開始、改行はちょうど rows-1 個(最下行に改行なし)、行クリアは rows 個。
+	testing.expect(t, strings.has_prefix(s, "\x1b[H"))
+	testing.expect_value(t, strings.count(s, "\n"), 9)
+	testing.expect_value(t, strings.count(s, "\x1b[K"), 10)
+
+	// コンテンツ・区切り線・ステータス・入力行が含まれる。
+	testing.expect(t, strings.contains(s, "line A"))
+	testing.expect(t, strings.contains(s, "line B"))
+	testing.expect(t, strings.contains(s, "───"))
+	testing.expect(t, strings.contains(s, "status here"))
+	testing.expect(t, strings.contains(s, "> abc_"))
+	testing.expect(t, strings.contains(s, "hint"))
+	testing.expect(t, !strings.has_suffix(s, "\n"))
+}
+
+@(test)
+test_render_shell_truncates_content_to_available_rows :: proc(t: ^testing.T) {
+	// rows=6 → コンテンツ領域は 3 行。4行目以降は切り捨てられる。
+	content := []string{"c0", "c1", "c2", "c3-overflow"}
+	f := app.Shell_Frame{cols = 40, rows = 6, content = content}
+	s := app.tui_render_shell(f)
+	defer delete(s)
+	testing.expect(t, strings.contains(s, "c2"))
+	testing.expect(t, !strings.contains(s, "c3-overflow"))
+	testing.expect_value(t, strings.count(s, "\n"), 5)
+}
+
+@(test)
+test_render_shell_pads_every_line_to_width :: proc(t: ^testing.T) {
+	f := app.Shell_Frame{cols = 20, rows = 5, content = []string{"a very long content line that overflows"}, status = "s", input = "", hint = ""}
+	s := app.tui_render_shell(f)
+	defer delete(s)
+
+	body, _ := strings.replace_all(s, "\x1b[H", "", context.temp_allocator)
+	body, _ = strings.replace_all(body, "\x1b[K", "", context.temp_allocator)
+	lines := strings.split_lines(body, context.temp_allocator)
+	testing.expect_value(t, len(lines), 5)
+	for line in lines {
+		testing.expect_value(t, app.display_width(line), 19) // cols-1 幅ちょうど(打ち切り+パディング)
+	}
+}
+
+@(test)
+test_render_shell_hint_right_aligned_and_dropped_when_narrow :: proc(t: ^testing.T) {
+	f := app.Shell_Frame{cols = 40, rows = 4, input = "x", hint = "Esc 戻る"}
+	s := app.tui_render_shell(f)
+	defer delete(s)
+	// 入力行(最終行)の末尾がヒントで終わる(右寄せ、パディング後)。
+	lines := strings.split_lines(s, context.temp_allocator)
+	last := lines[len(lines) - 1]
+	testing.expect(t, strings.has_suffix(last, "Esc 戻る"))
+
+	// 幅が足りない場合はヒントを省略し、入力だけをパディング表示する。
+	narrow := app.Shell_Frame{cols = 8, rows = 4, input = "x", hint = "とても長いヒント文字列"}
+	ns := app.tui_render_shell(narrow)
+	defer delete(ns)
+	testing.expect(t, !strings.contains(ns, "ヒント"))
+	testing.expect(t, strings.contains(ns, "> x_"))
+}
+
+@(test)
+test_render_shell_zero_size_falls_back :: proc(t: ^testing.T) {
+	f := app.Shell_Frame{cols = 0, rows = 0}
+	s := app.tui_render_shell(f)
+	defer delete(s)
+	// フォールバック 80x24: 改行23個。
+	testing.expect_value(t, strings.count(s, "\n"), 23)
+}
