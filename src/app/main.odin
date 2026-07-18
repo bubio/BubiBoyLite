@@ -173,6 +173,7 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 	menu_state: Menu_State
 	defer menu_state_destroy(&menu_state)
 	menu_last_cols := -1
+	menu_last_rows := -1
 	menu_dirty := false
 	live_cfg := cfg
 
@@ -280,6 +281,7 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 									tui_mode = .Menu
 									menu_state.selected = 0
 									menu_last_cols = -1
+									menu_last_rows = -1
 									menu_dirty = true
 									exit_to_play = false
 								} else {
@@ -429,7 +431,7 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 		case .Menu:
 			// T13-5: オーバーレイメニュー(幅変化検知+dirty時のみ描画)。メニュー中は paused のため
 			// 上の sdl.Delay(16) 経路で約60Hzのポーリングが回り続け、SDLポンプは止まらない。
-			game_menu_overlay_draw(menu_state, live_cfg, &menu_last_cols, &menu_dirty)
+			game_menu_overlay_draw(menu_state, live_cfg, &menu_last_cols, &menu_last_rows, &menu_dirty)
 		case .Command:
 			// T12-5: コマンドモード中は通常のステータス行の代わりに入力中の行をエコーする
 			// (入力があった時だけ再描画、status_line_tick の1秒間引きとは独立)。

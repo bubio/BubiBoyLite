@@ -795,10 +795,13 @@ menu_state_destroy :: proc(m: ^Menu_State) {
 // 「config_apply_set → ループ継続 → tui_term_size」と同型のため。まず素の実装で出荷し、
 // -o:speed 検証でアサーションが再発した場合は contextless 書き込みへの切替と
 // @(optimization_mode="none") 付与を段階的に適用する方針、phase-13 設計方針参照)。
-game_menu_overlay_draw :: proc(m: Menu_State, cfg: Config, last_cols: ^int, dirty: ^bool) {
-	cols, _ := tui_term_size()
-	if cols != last_cols^ {
+game_menu_overlay_draw :: proc(m: Menu_State, cfg: Config, last_cols: ^int, last_rows: ^int, dirty: ^bool) {
+	// 幅変化: 各行の打ち切り幅が変わるため再描画必須。高さ変化: 端末リサイズで表示内容が
+	// スクロール・再配置されオーバーレイが乱れうるため、同じく強制再描画する(T13-6)。
+	cols, rows := tui_term_size()
+	if cols != last_cols^ || rows != last_rows^ {
 		last_cols^ = cols
+		last_rows^ = rows
 		dirty^ = true
 	}
 	if !dirty^ {
