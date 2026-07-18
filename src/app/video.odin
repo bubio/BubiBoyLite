@@ -178,14 +178,33 @@ video_present :: proc(video: ^Video, framebuffer: []u32) {
 // macOSはCmd+Enterでも呼ばれる。main.odinのキーイベント処理から呼ぶ)。
 // SDL_SetWindowFullscreenが失敗した場合は video.fullscreen を変更前の値に戻す。
 video_toggle_fullscreen :: proc(video: ^Video) -> bool {
-	new_fullscreen := !video.fullscreen
-	flags: sdl.WindowFlags = new_fullscreen ? sdl.WINDOW_FULLSCREEN_DESKTOP : {}
+	return video_set_fullscreen(video, !video.fullscreen)
+}
+
+// video_set_fullscreen はフルスクリーン状態を明示的に want に設定する(T15-3、`/settings`/`/set`
+// の即時反映用、config.odin 由来の目標状態をそのまま渡せる)。既に一致していれば何もしない。
+// 失敗時は video.fullscreen を変更しない(video_toggle_fullscreen と同じ失敗時の挙動)。
+video_set_fullscreen :: proc(video: ^Video, want: bool) -> bool {
+	if video.fullscreen == want {
+		return true
+	}
+	flags: sdl.WindowFlags = want ? sdl.WINDOW_FULLSCREEN_DESKTOP : {}
 	if sdl.SetWindowFullscreen(video.window, flags) != 0 {
 		fmt.eprintfln("video: フルスクリーン切替に失敗しました: %s", sdl.GetError())
 		return false
 	}
-	video.fullscreen = new_fullscreen
+	video.fullscreen = want
 	return true
+}
+
+// video_apply_scale はウィンドウサイズを新しい scale に即時反映する(T15-3、`/settings`/`/set
+// scale` の即時反映用)。フルスクリーン中はウィンドウサイズが表示に影響しないため何もしない
+// (フルスクリーン解除後に反映される)。
+video_apply_scale :: proc(video: ^Video, scale: int) {
+	if video.fullscreen {
+		return
+	}
+	sdl.SetWindowSize(video.window, i32(core.SCREEN_WIDTH * scale), i32(core.SCREEN_HEIGHT * scale))
 }
 
 // video_set_title はウィンドウタイトルを更新する(T7-4: セーブステート操作の結果表示)。
