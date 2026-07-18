@@ -1718,62 +1718,18 @@ status_line_format :: proc(s: Status_Line, fps: f64, volume: int, slot: int, dou
 // T14-4: status_line_repaint(オーバーレイを閉じた直後の1行復元)はオーバーレイ撤去に伴い
 // 削除した。シェル描画は毎回全画面を再構築するため復元処理自体が不要になった。
 
-// --- ゲーム実行中のターミナルホットキー(T9-5) ---
-
-Game_Action :: enum {
-	None,
-	Volume_Up,
-	Volume_Down,
-	Select_Slot,
-	Save_State,
-	Load_State,
-	Toggle_Pause,
-	Enter_Command_Mode, // T12-5: `/` でコマンドモードに入る(/set のワンライナーのみ許可)
-}
-
-// game_key_to_action は T9-5 のホットキー(+/-音量、1-4スロット、s保存、l復元、p一時停止、
-// T12-5で追加した /)を解釈する純粋関数(単体テスト対象)。slot は .Select_Slot の時だけ
-// 意味を持つ(1-4)。T14-5: `/` の .Enter_Command_Mode は「入力行へ `/` を入れる」ことを
-// 意味するようになった(専用モードは廃止。game_input_route 参照)。
-game_key_to_action :: proc(ev: Key_Event) -> (action: Game_Action, slot: int) {
-	if ev.key != .Char {
-		return .None, 0
-	}
-	switch ev.ch {
-	case '+':
-		return .Volume_Up, 0
-	case '-':
-		return .Volume_Down, 0
-	case '1':
-		return .Select_Slot, 1
-	case '2':
-		return .Select_Slot, 2
-	case '3':
-		return .Select_Slot, 3
-	case '4':
-		return .Select_Slot, 4
-	case 's':
-		return .Save_State, 0
-	case 'l':
-		return .Load_State, 0
-	case 'p':
-		return .Toggle_Pause, 0
-	case '/':
-		return .Enter_Command_Mode, 0
-	}
-	return .None, 0
-}
-
-// --- ゲーム中の入力ルーティング(T14-5、純粋関数) ---
-// Claude Code と同様「タイプした文字は常に入力行へ」。1キーホットキー(+,-,1-4,s,l,p)は
-// **入力バッファが空のときだけ**解釈する(1文字でも入力があればすべて入力行行き)。
+// --- ゲーム中の入力ルーティング(T14-5、T15-1 で生ホットキー廃止に伴い簡素化、純粋関数) ---
+// T15-1: ユーザー要望「ゲーム中も同じモードで動くこと」により、1キーの生ホットキー
+// (+,-,1-4,s,l,p、旧 game_key_to_action/Game_Action)を完全に廃止した。
+// 印字可能な文字は常に入力行へ(バッファが空かどうかによる分岐は無くなった)。
+// 音量の相対増減・セーブ/ロード・スロット選択・一時停止は全てスラッシュコマンド
+// (/volume up|down、/save、/load、/slot N、/pause、/resume)経由になる(T15-2 参照)。
 // 設定ビュー表示中は ↑↓←→ を常にメニューへ、Enter/Esc はバッファが空のときだけメニューへ
 // (非空なら入力行の確定/クリア)、印字文字は入力行へ。
 
 Game_Input_Route :: enum {
 	None, // 無視(空バッファでの Enter 等)
 	Menu, // menu_step へ渡す(設定ビュー)
-	Hotkey, // 1キーホットキーとして実行(game_key_to_action)
 	Editor, // 入力行へ(Char/Backspace)
 	Submit, // コマンド確定(parse_game_command)
 	Clear, // 入力バッファをクリア
@@ -1796,16 +1752,7 @@ game_input_route :: proc(ev: Key_Event, buffer_empty: bool, view: Game_View) -> 
 	}
 
 	#partial switch ev.key {
-	case .Char:
-		if buffer_empty {
-			action, _ := game_key_to_action(ev)
-			// `/` (.Enter_Command_Mode) はホットキーではなく「入力行に `/` を入れる」扱い。
-			if action != .None && action != .Enter_Command_Mode {
-				return .Hotkey
-			}
-		}
-		return .Editor
-	case .Backspace:
+	case .Char, .Backspace:
 		return .Editor
 	case .Escape:
 		return .Clear

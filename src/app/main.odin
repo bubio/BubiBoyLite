@@ -279,8 +279,9 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 		if hotkeys_available {
 			ev, ok := key_reader_poll(&game_kr)
 			if ok {
-				// T14-5: 入力行は常時アクティブ。ルーティングは純粋関数 game_input_route に従う
-				// (バッファ空のときだけ1キーホットキー、設定ビュー中は ↑↓←→ をメニューへ等)。
+				// T15-1: 入力行は常時アクティブ、生ホットキーは廃止した。ルーティングは純粋関数
+				// game_input_route に従う(設定ビュー中は ↑↓←→ をメニューへ、それ以外は全て
+				// 入力行へ)。全操作はスラッシュコマンド(T15-2 以降)経由になる。
 				route := game_input_route(ev, len(command_editor.buf) == 0, game_view)
 				switch route {
 				case .None:
@@ -309,29 +310,6 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 						menu_state_destroy(&menu_state)
 						game_view = .Now_Playing
 						game_resume_after_command_mode(&paused, settings_was_paused)
-					}
-				case .Hotkey:
-					action, slot := game_key_to_action(ev)
-					#partial switch action {
-					case .Volume_Up:
-						v := audio_adjust_volume(&audio, AUDIO_VOLUME_STEP)
-						status_line_set_message(&status_line, fmt.tprintf("Volume %d%%", v))
-					case .Volume_Down:
-						v := audio_adjust_volume(&audio, -AUDIO_VOLUME_STEP)
-						status_line_set_message(&status_line, fmt.tprintf("Volume %d%%", v))
-					case .Select_Slot:
-						input_state.state_slot = slot
-						msg := handle_shortcut_action(.Select_Slot, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
-						status_line_set_message(&status_line, msg)
-					case .Save_State:
-						msg := handle_shortcut_action(.Save_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
-						status_line_set_message(&status_line, msg)
-					case .Load_State:
-						msg := handle_shortcut_action(.Load_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
-						status_line_set_message(&status_line, msg)
-					case .Toggle_Pause:
-						paused = !paused
-						status_line_set_message(&status_line, paused ? "Paused" : "Resumed")
 					}
 				case .Submit:
 					submitted, text := line_editor_feed(&command_editor, Key_Event{key = .Enter})

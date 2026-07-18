@@ -238,47 +238,10 @@ test_status_cart_label :: proc(t: ^testing.T) {
 	testing.expect(t, with_ram_label == "MBC5+RAM")
 }
 
-@(test)
-test_game_key_to_action_volume_and_pause :: proc(t: ^testing.T) {
-	up, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = '+'})
-	testing.expect(t, up == .Volume_Up)
-
-	down, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = '-'})
-	testing.expect(t, down == .Volume_Down)
-
-	pause, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = 'p'})
-	testing.expect(t, pause == .Toggle_Pause)
-}
-
-@(test)
-test_game_key_to_action_slots :: proc(t: ^testing.T) {
-	a1, s1 := app.game_key_to_action(app.Key_Event{key = .Char, ch = '1'})
-	testing.expect(t, a1 == .Select_Slot && s1 == 1)
-	a2, s2 := app.game_key_to_action(app.Key_Event{key = .Char, ch = '2'})
-	testing.expect(t, a2 == .Select_Slot && s2 == 2)
-	a3, s3 := app.game_key_to_action(app.Key_Event{key = .Char, ch = '3'})
-	testing.expect(t, a3 == .Select_Slot && s3 == 3)
-	a4, s4 := app.game_key_to_action(app.Key_Event{key = .Char, ch = '4'})
-	testing.expect(t, a4 == .Select_Slot && s4 == 4)
-}
-
-@(test)
-test_game_key_to_action_save_load :: proc(t: ^testing.T) {
-	save, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = 's'})
-	testing.expect(t, save == .Save_State)
-
-	load, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = 'l'})
-	testing.expect(t, load == .Load_State)
-}
-
-@(test)
-test_game_key_to_action_unmapped_key_is_none :: proc(t: ^testing.T) {
-	action, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = 'z'})
-	testing.expect(t, action == .None)
-
-	arrow_action, _ := app.game_key_to_action(app.Key_Event{key = .Up})
-	testing.expect(t, arrow_action == .None, "矢印キー等はゲームホットキーとしては未割当")
-}
+// T15-1: 生ホットキー(game_key_to_action/Game_Action、+,-,1-4,s,l,p)は完全に廃止された。
+// 「ゲーム中も同じモードで動くこと」の要望により、これらの文字キーは常に入力行へ行く
+// (test_game_input_route_now_playing_chars_always_go_to_editor 参照、下記
+// 「ゲーム中入力ルーティング」節)。旧テスト4本はここに置き換える形で削除した。
 
 // --- Line_Editor(T12-1)の単体テスト ---
 
@@ -447,11 +410,9 @@ test_parse_home_command_set_missing_key_and_value_is_unknown :: proc(t: ^testing
 
 // --- ゲーム実行中コマンドモード(T12-5)の単体テスト ---
 
-@(test)
-test_game_key_to_action_slash_enters_command_mode :: proc(t: ^testing.T) {
-	action, _ := app.game_key_to_action(app.Key_Event{key = .Char, ch = '/'})
-	testing.expect(t, action == .Enter_Command_Mode)
-}
+// T15-1: `/` が専用モードへの唯一のトリガーだった仕組み(game_key_to_action の
+// .Enter_Command_Mode)は廃止された。`/` は他の文字と同様、常に入力行へ追加される
+// (test_game_input_route_now_playing_chars_always_go_to_editor の書き換えテスト参照)。
 
 @(test)
 test_parse_game_command_set :: proc(t: ^testing.T) {
@@ -944,32 +905,21 @@ test_status_line_set_message_appends_to_log :: proc(t: ^testing.T) {
 	app.status_line_destroy(&s)
 }
 
-// --- ゲーム中入力ルーティング(T14-5) ---
+// --- ゲーム中入力ルーティング(T14-5、T15-1 で生ホットキー廃止に伴い書き換え) ---
 
 @(test)
-test_game_input_route_hotkey_only_when_buffer_empty :: proc(t: ^testing.T) {
-	s_key := app.Key_Event {
-		key = .Char,
-		ch  = 's',
+test_game_input_route_now_playing_chars_always_go_to_editor :: proc(t: ^testing.T) {
+	// T15-1: 「ゲーム中も同じモードで動くこと」の要望により、旧ホットキー文字
+	// (s,l,p,+,-,1-4)を含め、印字可能な文字は常に入力行へ行く(バッファの空/非空を
+	// 問わない)。1キーの即時発火は完全に廃止された。
+	for ch in ([]rune{'s', 'l', 'p', '+', '-', '1', 'q', '/'}) {
+		key := app.Key_Event {
+			key = .Char,
+			ch  = ch,
+		}
+		testing.expect(t, app.game_input_route(key, true, .Now_Playing) == .Editor)
+		testing.expect(t, app.game_input_route(key, false, .Now_Playing) == .Editor)
 	}
-	// バッファ空 → ホットキー(セーブ)
-	testing.expect(t, app.game_input_route(s_key, true, .Now_Playing) == .Hotkey)
-	// バッファ非空 → 入力行へ("save" 等の一部として)
-	testing.expect(t, app.game_input_route(s_key, false, .Now_Playing) == .Editor)
-
-	// 非ホットキー文字はバッファ空でも入力行へ
-	q_key := app.Key_Event {
-		key = .Char,
-		ch  = 'q',
-	}
-	testing.expect(t, app.game_input_route(q_key, true, .Now_Playing) == .Editor)
-
-	// `/` はホットキーではなく入力行へ(コマンドの始まり)
-	slash := app.Key_Event {
-		key = .Char,
-		ch  = '/',
-	}
-	testing.expect(t, app.game_input_route(slash, true, .Now_Playing) == .Editor)
 }
 
 @(test)
