@@ -180,14 +180,14 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 	paused := false
 	stop_reported := false
 
-	// T12-5/T13-5: ゲーム中TUIモード。`/` で .Command(Line_Editor によるコマンド入力)、
-	// `settings` 確定で .Menu(オーバーレイ設定メニュー)へ遷移する。.Menu はブロッキングループ
-	// ではなく menu_step を毎フレーム1ステップ呼ぶ状態機械なので、sdl.PollEvent は止まらない
-	// (0a78a66 のウィンドウ幽霊化パターンを構造的に回避)。/set・メニューで変更した値は
-	// live_cfg に反映し、以降の処理は live_cfg を参照する(cfg は関数パラメータでアドレスを
-	// 取れないため、ここでローカルコピーする)。
-	tui_mode: Game_Tui_Mode = .Play
-	mode_was_paused := false
+	// T14-5: ゲーム中TUI状態。入力行は常時アクティブ(command_editor が空かどうかで1キー
+	// ホットキーとタイプ入力を切り替える、game_input_route 参照)。表示ビューは Now Playing と
+	// 設定メニューの2種で、設定メニューは menu_step を毎フレーム1ステップ呼ぶ状態機械なので
+	// sdl.PollEvent は止まらない(0a78a66 のウィンドウ幽霊化パターンを構造的に回避、T13-5)。
+	// /set・メニューで変更した値は live_cfg に反映し、以降の処理は live_cfg を参照する
+	// (cfg は関数パラメータでアドレスを取れないため、ここでローカルコピーする)。
+	game_view: Game_View = .Now_Playing
+	settings_was_paused := false // 設定ビューを開く前の一時停止状態(閉じるときに復元)
 	command_editor: Line_Editor
 	defer line_editor_destroy(&command_editor)
 	command_dirty := false
@@ -279,83 +279,19 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 		if hotkeys_available {
 			ev, ok := key_reader_poll(&game_kr)
 			if ok {
-				switch tui_mode {
-				case .Command:
-					#partial switch ev.key {
-					case .Char, .Backspace:
-						line_editor_feed(&command_editor, ev)
-						command_dirty = true
-					case .Escape:
-						line_editor_feed(&command_editor, ev)
-						tui_mode = .Play
-						game_resume_after_command_mode(&paused, mode_was_paused)
-						status_line_set_message(&status_line, "Command cancelled")
-						if !shell_active {
-							fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(レガシー1行表示のみ)
-						}
-					case .Enter:
-						submitted, text := line_editor_feed(&command_editor, ev)
-						if submitted {
-							cmd := parse_game_command(text)
-							msg := ""
-							exit_to_play := true // .Settings で .Menu へ遷移するときだけ false
-							switch cmd.kind {
-							case .Empty:
-								msg = ""
-							case .Settings:
-								// T14-4: シェルの設定ビューへ遷移(オーバーレイは撤去)。pause は解除せず
-								// mode_was_paused をメニュー終了まで持ち越す(閉じるときに復元)。
-								if shell_active {
-									tui_mode = .Menu
-									menu_state.selected = 0
-									exit_to_play = false
-								} else {
-									msg = "設定メニューを表示できません(端末のシェル表示が無効です)"
-								}
-							case .Pause:
-								paused = true
-								// コマンドモード終了時の自動復元(game_resume_after_command_mode)で
-								// 即座に resume されてしまわないよう、突入前状態を「一時停止中」に上書きする。
-								mode_was_paused = true
-								msg = "Paused"
-							case .Resume:
-								paused = false
-								mode_was_paused = false
-								msg = "Resumed"
-							case .Save_State:
-								if cmd.slot > 0 {
-									input_state.state_slot = cmd.slot
-								}
-								msg = handle_shortcut_action(.Save_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
-							case .Load_State:
-								if cmd.slot > 0 {
-									input_state.state_slot = cmd.slot
-								}
-								msg = handle_shortcut_action(.Load_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
-							case .Select_Slot:
-								input_state.state_slot = cmd.slot
-								msg = handle_shortcut_action(.Select_Slot, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
-							case .Quit:
-								running = false
-							case .Unknown:
-								msg = fmt.tprintf("不明なコマンドです: %s", cmd.raw)
-							case .Set:
-								set_ok, apply_msg := config_apply_set(&live_cfg, config_dir, cmd.set_key, cmd.set_value)
-								if set_ok && cmd.set_key == "volume" {
-									audio_set_volume(&audio, live_cfg.volume)
-								}
-								msg = apply_msg
-							}
-							delete(text)
-							if !shell_active {
-								fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(レガシー1行表示のみ)
-							}
-							if exit_to_play {
-								tui_mode = .Play
-								game_resume_after_command_mode(&paused, mode_was_paused)
-								status_line_set_message(&status_line, msg)
-							}
-						}
+				// T14-5: 入力行は常時アクティブ。ルーティングは純粋関数 game_input_route に従う
+				// (バッファ空のときだけ1キーホットキー、設定ビュー中は ↑↓←→ をメニューへ等)。
+				route := game_input_route(ev, len(command_editor.buf) == 0, game_view)
+				switch route {
+				case .None:
+				case .Editor:
+					line_editor_feed(&command_editor, ev)
+					command_dirty = true
+				case .Clear:
+					line_editor_feed(&command_editor, Key_Event{key = .Escape}) // バッファクリア
+					command_dirty = true
+					if !shell_active {
+						fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(レガシー1行表示のみ)
 					}
 				case .Menu:
 					eff := menu_step(&menu_state, ev, live_cfg)
@@ -370,12 +306,11 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 						delete(eff.value)
 						menu_set_status(&menu_state, msg)
 					case .Close:
-						// T14-4: シェルは全画面再構築なのでオーバーレイ消去処理は不要。
 						menu_state_destroy(&menu_state)
-						tui_mode = .Play
-						game_resume_after_command_mode(&paused, mode_was_paused)
+						game_view = .Now_Playing
+						game_resume_after_command_mode(&paused, settings_was_paused)
 					}
-				case .Play:
+				case .Hotkey:
 					action, slot := game_key_to_action(ev)
 					#partial switch action {
 					case .Volume_Up:
@@ -397,11 +332,64 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 					case .Toggle_Pause:
 						paused = !paused
 						status_line_set_message(&status_line, paused ? "Paused" : "Resumed")
-					case .Enter_Command_Mode:
-						tui_mode = .Command
-						mode_was_paused = game_pause_for_command_mode(&paused)
-						line_editor_reset(&command_editor)
-						command_dirty = true
+					}
+				case .Submit:
+					submitted, text := line_editor_feed(&command_editor, Key_Event{key = .Enter})
+					if submitted {
+						cmd := parse_game_command(text)
+						msg := ""
+						switch cmd.kind {
+						case .Empty:
+							msg = ""
+						case .Settings:
+							// T14-5: 設定ビューへ切り替え(タイプ中の一時停止は廃止、設定表示中のみ
+							// pause し、閉じるときに元の状態を復元する。T13 の踏襲)。
+							if shell_active {
+								if game_view != .Settings {
+									game_view = .Settings
+									menu_state.selected = 0
+									settings_was_paused = game_pause_for_command_mode(&paused)
+								}
+							} else {
+								msg = "設定メニューを表示できません(端末のシェル表示が無効です)"
+							}
+						case .Pause:
+							paused = true
+							settings_was_paused = true // 設定ビューを閉じても一時停止のままにする
+							msg = "Paused"
+						case .Resume:
+							paused = false
+							settings_was_paused = false
+							msg = "Resumed"
+						case .Save_State:
+							if cmd.slot > 0 {
+								input_state.state_slot = cmd.slot
+							}
+							msg = handle_shortcut_action(.Save_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
+						case .Load_State:
+							if cmd.slot > 0 {
+								input_state.state_slot = cmd.slot
+							}
+							msg = handle_shortcut_action(.Load_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
+						case .Select_Slot:
+							input_state.state_slot = cmd.slot
+							msg = handle_shortcut_action(.Select_Slot, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
+						case .Quit:
+							running = false
+						case .Unknown:
+							msg = fmt.tprintf("不明なコマンドです: %s", cmd.raw)
+						case .Set:
+							set_ok, apply_msg := config_apply_set(&live_cfg, config_dir, cmd.set_key, cmd.set_value)
+							if set_ok && cmd.set_key == "volume" {
+								audio_set_volume(&audio, live_cfg.volume)
+							}
+							msg = apply_msg
+						}
+						delete(text)
+						if !shell_active {
+							fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(レガシー1行表示のみ)
+						}
+						status_line_set_message(&status_line, msg)
 					}
 				}
 				// T14-4: キーイベントを処理したら常にシェルを再描画する(入力行・選択・メッセージ
@@ -462,26 +450,23 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 			if status_line_update(&status_line, audio.volume, input_state.state_slot, emu.bus.double_speed, paused, underrun_now) {
 				game_dirty = true
 			}
-			view := tui_mode == .Menu ? Game_View.Settings : Game_View.Now_Playing
-			input_text := tui_mode == .Command ? line_editor_text(command_editor) : ""
 			info := Game_Panel_Info {
 				volume       = audio.volume,
 				slot         = input_state.state_slot,
 				double_speed = emu.bus.double_speed,
 				paused       = paused,
 			}
-			game_shell_draw(view, menu_state, live_cfg, &status_line, info, input_text, &game_last_cols, &game_last_rows, &game_dirty)
+			// T14-5: 入力行は常時アクティブなので、編集中バッファを常に入力行へ渡す。
+			game_shell_draw(game_view, menu_state, live_cfg, &status_line, info, line_editor_text(command_editor), &game_last_cols, &game_last_rows, &game_dirty)
 		} else {
 			// レガシーフォールバック(stdout 非TTY等でシェルを使えない場合): 従来の1行表示。
-			#partial switch tui_mode {
-			case .Command:
-				// T12-5: コマンドモード中は通常のステータス行の代わりに入力中の行をエコーする
-				// (入力があった時だけ再描画、status_line_tick の1秒間引きとは独立)。
+			// 入力バッファが空なら1行ステータス、非空なら入力中の行をエコー(T12-5 の方式)。
+			if len(command_editor.buf) > 0 {
 				if command_dirty {
-					fmt.eprintf("\r\x1b[K/%s_", line_editor_text(command_editor))
+					fmt.eprintf("\r\x1b[K> %s_", line_editor_text(command_editor))
 					command_dirty = false
 				}
-			case .Play:
+			} else {
 				status_line_tick(&status_line, audio.volume, input_state.state_slot, emu.bus.double_speed, paused, underrun_now)
 			}
 		}
@@ -535,16 +520,9 @@ save_rtc_now :: proc(emu: ^core.Emulator, rtc_path: string) {
 	}
 }
 
-// Game_Tui_Mode は run_rom_window のターミナル側の入出力モード(T13-5)。
-// .Play: 1文字ホットキー(game_key_to_action)+ステータス行。
-// .Command: `/` で入り Line_Editor でコマンドを組み立てる(エコー行表示)。
-// .Menu: オーバーレイ設定メニュー(menu_step を毎フレーム1ステップ。ブロッキングループでは
-// ないため sdl.PollEvent が止まらず、SDL ウィンドウの幽霊化(0a78a66)は構造的に起きない)。
-Game_Tui_Mode :: enum {
-	Play,
-	Command,
-	Menu,
-}
+// T14-5: T13-5 の Game_Tui_Mode(Play/Command/Menu)は廃止した。入力行が常時アクティブに
+// なったことで Command モードは不要になり(バッファ空/非空で判定)、表示ビューは
+// tui.odin の Game_View(Now_Playing/Settings)+ game_input_route が担う。
 
 // game_pause_for_command_mode / game_resume_after_command_mode は T12-5 のコマンドモード突入時に
 // エミュレーションを自動一時停止させるための小さなヘルパー。paused は run_rom_window 内の

@@ -169,7 +169,7 @@ exit すると画面が復元されないため、TUI経由の失敗時は tui_f
 
 ### T14-5: 入力ルーティング(常時入力行、空バッファ時のみホットキー)
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: Claude Code と同様「タイプした文字は常に入力行へ」を全画面で実現する。
 **作るもの**: `src/app/tui.odin` / `src/app/main.odin`:
@@ -262,3 +262,18 @@ os.exit(1) 失敗経路に tui_force_restore を前置(alt screen 内での exit
 同一構造、**home→game→home の全区間で ALT_SCREEN_EXIT が一切発行されない**こと、最終 /quit
 時のみ発行されること、ゲーム中設定ビューの ←→ 適用、直接起動(`bbl rom.gb`)でも alt screen+
 Now Playing シェルになること、を確認。`--debug` ビルドも成功。bbl.ini 検証前後バイト一致。
+
+2026-07-18 T14-5 完了: `odin test tests -collection:bbl=src` 474件全パス(新規4件:
+game_input_route の「バッファ空のときだけホットキー」「非ホットキー文字と `/` は常に入力行」
+「空/非空 Enter・Esc の振り分け」「設定ビューの ↑↓←→=メニュー・Enter/Esc=空時のみメニュー」、
+parse_game_command の先頭 `/` 両対応(/pause・/set・/save 2・`/`単体=Empty・従来形式維持))。
+実装: 純粋関数 `game_input_route`(tui.odin)を新設し、main.odin のキー処理を route 駆動に
+書き換え。`Game_Tui_Mode`(Play/Command/Menu)を廃止し「Game_View + 入力バッファ空/非空」に
+整理(Command モードは常時入力行に吸収)。タイプ中の自動一時停止は廃止し、設定ビュー表示中
+のみ pause(閉じるときに復元、/pause・/resume は明示操作)。`game_key_to_action` 自体は無変更
+(既存テスト維持、`/` の .Enter_Command_Mode は「入力行へ `/`」として解釈)。レガシー
+フォールバックも同じルーティングでエコー行表示のみ分岐。
+`-o:speed` pty 検証 12項目全パス: 空バッファ `p` の即時 pause/resume、`/pause`+素の `resume`
+両対応、`/slot 2`、`/save 3`(バッファ非空中の `s` がホットキー化しないこと)、Esc クリア後の
+ホットキー復活、設定ビュー開閉と←→適用、`/quit` 終了。T14-4 の画面構成検証19項目も再実行し
+全パス(リグレッションなし)。bbl.ini 検証前後バイト一致。

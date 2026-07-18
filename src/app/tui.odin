@@ -1732,8 +1732,9 @@ Game_Action :: enum {
 }
 
 // game_key_to_action は T9-5 のホットキー(+/-音量、1-4スロット、s保存、l復元、p一時停止、
-// T12-5で追加した / コマンドモード)を解釈する純粋関数(単体テスト対象)。slot は
-// .Select_Slot の時だけ意味を持つ(1-4)。
+// T12-5で追加した /)を解釈する純粋関数(単体テスト対象)。slot は .Select_Slot の時だけ
+// 意味を持つ(1-4)。T14-5: `/` の .Enter_Command_Mode は「入力行へ `/` を入れる」ことを
+// 意味するようになった(専用モードは廃止。game_input_route 参照)。
 game_key_to_action :: proc(ev: Key_Event) -> (action: Game_Action, slot: int) {
 	if ev.key != .Char {
 		return .None, 0
@@ -1761,6 +1762,57 @@ game_key_to_action :: proc(ev: Key_Event) -> (action: Game_Action, slot: int) {
 		return .Enter_Command_Mode, 0
 	}
 	return .None, 0
+}
+
+// --- ゲーム中の入力ルーティング(T14-5、純粋関数) ---
+// Claude Code と同様「タイプした文字は常に入力行へ」。1キーホットキー(+,-,1-4,s,l,p)は
+// **入力バッファが空のときだけ**解釈する(1文字でも入力があればすべて入力行行き)。
+// 設定ビュー表示中は ↑↓←→ を常にメニューへ、Enter/Esc はバッファが空のときだけメニューへ
+// (非空なら入力行の確定/クリア)、印字文字は入力行へ。
+
+Game_Input_Route :: enum {
+	None, // 無視(空バッファでの Enter 等)
+	Menu, // menu_step へ渡す(設定ビュー)
+	Hotkey, // 1キーホットキーとして実行(game_key_to_action)
+	Editor, // 入力行へ(Char/Backspace)
+	Submit, // コマンド確定(parse_game_command)
+	Clear, // 入力バッファをクリア
+}
+
+game_input_route :: proc(ev: Key_Event, buffer_empty: bool, view: Game_View) -> Game_Input_Route {
+	if view == .Settings {
+		#partial switch ev.key {
+		case .Up, .Down, .Left, .Right:
+			return .Menu
+		case .Enter, .Escape:
+			if buffer_empty {
+				return .Menu // menu_step が .Close を返す
+			}
+			return ev.key == .Enter ? .Submit : .Clear
+		case .Char, .Backspace:
+			return .Editor
+		}
+		return .None
+	}
+
+	#partial switch ev.key {
+	case .Char:
+		if buffer_empty {
+			action, _ := game_key_to_action(ev)
+			// `/` (.Enter_Command_Mode) はホットキーではなく「入力行に `/` を入れる」扱い。
+			if action != .None && action != .Enter_Command_Mode {
+				return .Hotkey
+			}
+		}
+		return .Editor
+	case .Backspace:
+		return .Editor
+	case .Escape:
+		return .Clear
+	case .Enter:
+		return buffer_empty ? .None : .Submit
+	}
+	return .None
 }
 
 // --- ゲーム実行中のコマンドモード(T12-5、T13-4 で拡張) ---
@@ -1809,6 +1861,12 @@ game_command_parse_slot :: proc(s: string) -> (slot: int, ok: bool) {
 // (/browse 等)は一切受け付けない(ゲーム中に ROM ブラウザへ遷移する概念が無いため)。
 parse_game_command :: proc(input: string) -> Game_Command {
 	trimmed := strings.trim_space(input)
+	// T14-5: 入力行は常時アクティブになり、ユーザーが「/pause」のように `/` 付きで打つのが
+	// 自然になった(ホーム画面のコマンド体系と同じ見た目)。先頭の `/` は1個だけ剥がして
+	// 両対応にする(「pause」も「/pause」も同じ)。
+	if strings.has_prefix(trimmed, "/") {
+		trimmed = strings.trim_space(trimmed[1:])
+	}
 	if trimmed == "" {
 		return Game_Command{kind = .Empty}
 	}

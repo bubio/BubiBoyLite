@@ -943,3 +943,100 @@ test_status_line_set_message_appends_to_log :: proc(t: ^testing.T) {
 	s.enabled = false // destroy の改行出力(TTY向け)を抑制してから後始末
 	app.status_line_destroy(&s)
 }
+
+// --- ゲーム中入力ルーティング(T14-5) ---
+
+@(test)
+test_game_input_route_hotkey_only_when_buffer_empty :: proc(t: ^testing.T) {
+	s_key := app.Key_Event {
+		key = .Char,
+		ch  = 's',
+	}
+	// バッファ空 → ホットキー(セーブ)
+	testing.expect(t, app.game_input_route(s_key, true, .Now_Playing) == .Hotkey)
+	// バッファ非空 → 入力行へ("save" 等の一部として)
+	testing.expect(t, app.game_input_route(s_key, false, .Now_Playing) == .Editor)
+
+	// 非ホットキー文字はバッファ空でも入力行へ
+	q_key := app.Key_Event {
+		key = .Char,
+		ch  = 'q',
+	}
+	testing.expect(t, app.game_input_route(q_key, true, .Now_Playing) == .Editor)
+
+	// `/` はホットキーではなく入力行へ(コマンドの始まり)
+	slash := app.Key_Event {
+		key = .Char,
+		ch  = '/',
+	}
+	testing.expect(t, app.game_input_route(slash, true, .Now_Playing) == .Editor)
+}
+
+@(test)
+test_game_input_route_enter_escape :: proc(t: ^testing.T) {
+	enter := app.Key_Event {
+		key = .Enter,
+	}
+	esc := app.Key_Event {
+		key = .Escape,
+	}
+	// Now Playing: 空Enterは無視、非空Enterは確定。Esc はクリア。
+	testing.expect(t, app.game_input_route(enter, true, .Now_Playing) == .None)
+	testing.expect(t, app.game_input_route(enter, false, .Now_Playing) == .Submit)
+	testing.expect(t, app.game_input_route(esc, false, .Now_Playing) == .Clear)
+}
+
+@(test)
+test_game_input_route_settings_view :: proc(t: ^testing.T) {
+	up := app.Key_Event {
+		key = .Up,
+	}
+	left := app.Key_Event {
+		key = .Left,
+	}
+	enter := app.Key_Event {
+		key = .Enter,
+	}
+	esc := app.Key_Event {
+		key = .Escape,
+	}
+	ch := app.Key_Event {
+		key = .Char,
+		ch  = 'x',
+	}
+
+	// ↑↓←→ は常にメニューへ(バッファの状態に関わらず)
+	testing.expect(t, app.game_input_route(up, true, .Settings) == .Menu)
+	testing.expect(t, app.game_input_route(left, false, .Settings) == .Menu)
+	// Enter/Esc はバッファ空のときだけメニューへ(menu_step が .Close を返す)
+	testing.expect(t, app.game_input_route(enter, true, .Settings) == .Menu)
+	testing.expect(t, app.game_input_route(esc, true, .Settings) == .Menu)
+	// 非空なら入力行の確定/クリア
+	testing.expect(t, app.game_input_route(enter, false, .Settings) == .Submit)
+	testing.expect(t, app.game_input_route(esc, false, .Settings) == .Clear)
+	// 印字文字は入力行へ
+	testing.expect(t, app.game_input_route(ch, true, .Settings) == .Editor)
+}
+
+@(test)
+test_parse_game_command_accepts_leading_slash :: proc(t: ^testing.T) {
+	// T14-5: 入力行常時アクティブ化に伴い `/` 付きも許容(両対応)。
+	testing.expect(t, app.parse_game_command("/pause").kind == .Pause)
+	testing.expect(t, app.parse_game_command("/quit").kind == .Quit)
+	testing.expect(t, app.parse_game_command("/settings").kind == .Settings)
+
+	set_cmd := app.parse_game_command("/set volume 50")
+	testing.expect(t, set_cmd.kind == .Set)
+	testing.expect(t, set_cmd.set_key == "volume")
+	testing.expect(t, set_cmd.set_value == "50")
+
+	save2 := app.parse_game_command("/save 2")
+	testing.expect(t, save2.kind == .Save_State && save2.slot == 2)
+
+	// `/` 単体・空白のみは Empty
+	testing.expect(t, app.parse_game_command("/").kind == .Empty)
+	testing.expect(t, app.parse_game_command("  /  ").kind == .Empty)
+
+	// `/` なしの従来形式も引き続き有効
+	testing.expect(t, app.parse_game_command("pause").kind == .Pause)
+}
