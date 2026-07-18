@@ -863,3 +863,66 @@ test_render_shell_zero_size_falls_back :: proc(t: ^testing.T) {
 	// フォールバック 80x24: 改行23個。
 	testing.expect_value(t, strings.count(s, "\n"), 23)
 }
+
+// --- メッセージログ(T14-3) ---
+
+@(test)
+test_message_log_append_and_order :: proc(t: ^testing.T) {
+	l: app.Message_Log
+	defer app.message_log_destroy(&l)
+
+	app.message_log_append(&l, "first")
+	app.message_log_append(&l, "second")
+	app.message_log_append(&l, "third")
+
+	testing.expect_value(t, app.message_log_len(&l), 3)
+	testing.expect_value(t, app.message_log_get(&l, 0), "first")
+	testing.expect_value(t, app.message_log_get(&l, 2), "third")
+	testing.expect_value(t, app.message_log_get(&l, 3), "") // 範囲外
+	testing.expect_value(t, app.message_log_get(&l, -1), "")
+}
+
+@(test)
+test_message_log_ring_evicts_oldest :: proc(t: ^testing.T) {
+	l: app.Message_Log
+	defer app.message_log_destroy(&l)
+
+	// CAP+1 件入れると最古の1件だけが押し出される。
+	for i in 0 ..< app.MESSAGE_LOG_CAP + 1 {
+		app.message_log_append(&l, fmt.tprintf("msg-%d", i))
+	}
+	testing.expect_value(t, app.message_log_len(&l), app.MESSAGE_LOG_CAP)
+	testing.expect_value(t, app.message_log_get(&l, 0), "msg-1") // msg-0 が消えた
+	testing.expect_value(t, app.message_log_get(&l, app.MESSAGE_LOG_CAP - 1), fmt.tprintf("msg-%d", app.MESSAGE_LOG_CAP))
+}
+
+@(test)
+test_message_log_clones_entries :: proc(t: ^testing.T) {
+	l: app.Message_Log
+	defer app.message_log_destroy(&l)
+
+	buf: [8]u8 = {'h', 'e', 'l', 'l', 'o', 0, 0, 0}
+	app.message_log_append(&l, string(buf[:5]))
+	buf[0] = 'X' // 呼び出し元のバッファを書き換えてもログは影響を受けない(clone 所有)
+	testing.expect_value(t, app.message_log_get(&l, 0), "hello")
+}
+
+@(test)
+test_status_line_set_message_appends_to_log :: proc(t: ^testing.T) {
+	l: app.Message_Log
+	defer app.message_log_destroy(&l)
+	s := app.Status_Line {
+		enabled = true,
+		log     = &l,
+	}
+	app.status_line_set_message(&s, "State saved to slot 2")
+	testing.expect_value(t, app.message_log_len(&l), 1)
+	testing.expect_value(t, app.message_log_get(&l, 0), "State saved to slot 2")
+	testing.expect_value(t, s.last_message, "State saved to slot 2")
+
+	app.status_line_set_message(&s, "") // 空メッセージはログに入らない
+	testing.expect_value(t, app.message_log_len(&l), 1)
+
+	s.enabled = false // destroy の改行出力(TTY向け)を抑制してから後始末
+	app.status_line_destroy(&s)
+}

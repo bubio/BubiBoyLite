@@ -121,7 +121,8 @@ pty 検証で「ゲーム起動前後で画面構成が同一」(区切り線・
 
 ### T14-3: メッセージログ(リングバッファ)+ status_line 統合
 
-- [ ] 完了
+- [x] 完了(タイムスタンプは付けない設計判断に変更: core:time の time.now() は UTC で、
+      ローカル時刻にはタイムゾーン処理が必要。UTC 表示はかえって誤解を招くため見送り)
 
 **目的**: 単発表示だった操作メッセージを履歴付きログにし、ゲーム中コンテンツ領域に直近数件を
 表示できるようにする。
@@ -234,3 +235,12 @@ tui_plat_write_raw 使用)/`shell_lines_destroy` を追加。
 `tui_write_home_screen` を撤去。`-o:speed` pty 検証: (1) ホーム→/settings→←→で volume/scale
 適用→Esc→/quit の一巡、(2) ホーム→/settings→/browse→ROM起動→ゲーム中メニュー→復帰→終了の
 フルラウンドトリップ、いずれもクラッシュなし・bbl.ini 検証前後バイト一致。
+
+2026-07-18 T14-3 完了: `odin test tests -collection:bbl=src` 471件全パス(新規4件:
+追記と順序(0=最古)+範囲外は ""、CAP+1 件で最古だけが押し出されるリング上書き、
+entries が clone 所有であること(呼び出し元バッファ書き換えの影響を受けない)、
+status_line_set_message がログへも追記し空メッセージは追記しないこと)。
+`Message_Log`(固定長32件リング)+`message_log_append/len/get/destroy` を追加、
+`Status_Line.log`(非所有ポインタ)経由で `status_line_set_message` と統合。
+タイムスタンプは見送り(UTC しか取れないため、上記の設計判断)。app 層 eprintf の
+付け替えはシェル有効フラグが入る T14-4 で実施。`-o:speed` ビルド成功。

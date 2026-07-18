@@ -1479,6 +1479,55 @@ status_cart_label :: proc(info: core.Cartridge_Info, allocator := context.alloca
 	return strings.clone(kind, allocator)
 }
 
+// --- メッセージログ(T14-3) ---
+// 単発表示だった操作メッセージ(音量変更/セーブ/ロード等)を履歴付きリングバッファに貯め、
+// ゲーム中の Now Playing 画面(T14-4)のコンテンツ領域に直近数件を表示する。
+// entries は必ず clone した所有文字列(借用を保持しない。呼び出し元の tprintf 借用が
+// 次フレームで無効になるため)。
+// タイムスタンプは付けない(core:time の time.now() は UTC で、ローカル時刻表示には
+// タイムゾーン処理が必要になる。UTC の時刻表示はかえって誤解を招くため見送り、
+// 将来 localtime 対応を入れる場合に再検討する)。
+
+MESSAGE_LOG_CAP :: 32
+
+Message_Log :: struct {
+	entries: [MESSAGE_LOG_CAP]string, // 所有(clone 済み)。リングバッファ
+	next:    int, // 次に書き込むインデックス
+	count:   int, // 現在の件数(最大 MESSAGE_LOG_CAP)
+}
+
+// message_log_append は msg を clone してリングへ追記する(満杯なら最古を上書き解放)。
+message_log_append :: proc(l: ^Message_Log, msg: string) {
+	delete(l.entries[l.next])
+	l.entries[l.next] = strings.clone(msg)
+	l.next = (l.next + 1) % MESSAGE_LOG_CAP
+	if l.count < MESSAGE_LOG_CAP {
+		l.count += 1
+	}
+}
+
+message_log_len :: proc(l: ^Message_Log) -> int {
+	return l.count
+}
+
+// message_log_get は i 番目(0=最古、count-1=最新)のメッセージを返す(借用)。範囲外は ""。
+message_log_get :: proc(l: ^Message_Log, i: int) -> string {
+	if i < 0 || i >= l.count {
+		return ""
+	}
+	start := (l.next - l.count + MESSAGE_LOG_CAP) % MESSAGE_LOG_CAP
+	return l.entries[(start + i) % MESSAGE_LOG_CAP]
+}
+
+message_log_destroy :: proc(l: ^Message_Log) {
+	for i in 0 ..< MESSAGE_LOG_CAP {
+		delete(l.entries[i])
+		l.entries[i] = ""
+	}
+	l.next = 0
+	l.count = 0
+}
+
 Status_Line :: struct {
 	enabled:      bool,
 	rom_name:     string, // 所有(basename)
@@ -1488,6 +1537,7 @@ Status_Line :: struct {
 	warn:         bool, // 窓内でアンダーランが発生したか(T9-4「アンダーラン発生時は警告色」相当)
 	last_message: string, // 所有。直前の操作結果(T9-5)。""なら無し
 	last_line:    string, // 所有。直近に描画したステータス行(T13-3、status_line_repaint 用)。""なら未描画
+	log:          ^Message_Log, // T14-3: 非nilなら set_message がここへも追記する(所有はしない)
 }
 
 // status_line_init は rom_path のベース名と cart_info から Status_Line を組み立てる。
@@ -1523,6 +1573,10 @@ status_line_set_message :: proc(s: ^Status_Line, msg: string) {
 	}
 	delete(s.last_message)
 	s.last_message = strings.clone(msg)
+	// T14-3: ログが接続されていれば履歴にも残す(空メッセージはログを汚さない)。
+	if s.log != nil && msg != "" {
+		message_log_append(s.log, msg)
+	}
 }
 
 STATUS_LINE_INTERVAL_SECONDS :: 1.0
