@@ -775,6 +775,41 @@ tui_render_menu_overlay :: proc(m: Menu_State, cfg: Config, cols: int, allocator
 	return strings.to_string(b)
 }
 
+// menu_set_status は Menu_State.status を所有権付きで差し替える(T13-5)。
+// config_apply_set の戻りメッセージは fmt.tprintf の借用のため、フレームをまたいで保持する
+// には clone が必要(temp_allocator の借用をループをまたいで持たない方針、T9-6 の教訓)。
+menu_set_status :: proc(m: ^Menu_State, msg: string) {
+	delete(m.status)
+	m.status = strings.clone(msg)
+}
+
+// menu_state_destroy は所有フィールドを解放する(メニューを閉じるときに呼ぶ)。
+menu_state_destroy :: proc(m: ^Menu_State) {
+	delete(m.status)
+	m.status = ""
+}
+
+// game_menu_overlay_draw はゲームループ(main.odin、T13-5)から毎フレーム呼ばれ、
+// 端末幅の変化検知と dirty フラグに応じてオーバーレイを stderr へ描画する。
+// tui_term_size 呼び出し+描画をこの1関数に隔離している(T12-6 の -o:speed バグの発火パターン
+// 「config_apply_set → ループ継続 → tui_term_size」と同型のため。まず素の実装で出荷し、
+// -o:speed 検証でアサーションが再発した場合は contextless 書き込みへの切替と
+// @(optimization_mode="none") 付与を段階的に適用する方針、phase-13 設計方針参照)。
+game_menu_overlay_draw :: proc(m: Menu_State, cfg: Config, last_cols: ^int, dirty: ^bool) {
+	cols, _ := tui_term_size()
+	if cols != last_cols^ {
+		last_cols^ = cols
+		dirty^ = true
+	}
+	if !dirty^ {
+		return
+	}
+	s := tui_render_menu_overlay(m, cfg, cols)
+	defer delete(s)
+	fmt.eprint(s)
+	dirty^ = false
+}
+
 // menu_item_info は設定メニューの List_Item.info 用の "◂ 3 ▸" 形式の文字列を作る
 // (純粋関数、単体テスト対象)。戻り値は fmt.tprintf の借用(既存 settings_field_value_string と
 // 同じ扱い、描画中のみ有効。ファイルI/Oをまたいで保持しないこと)。

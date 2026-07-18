@@ -159,15 +159,21 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 	paused := false
 	stop_reported := false
 
-	// T12-5: ゲーム中コマンドモード。`/set <key> <value>` のワンライナーのみ許可する
-	// (対話メニューを開くと sdl.PollEvent が止まりウィンドウ幽霊化を再発するため、対話メニューは
-	// ホーム画面(TUI)限定)。/set で変更した値は live_cfg に反映し、以降の処理は live_cfg を
-	// 参照する(cfg は関数パラメータでアドレスを取れないため、ここでローカルコピーする)。
-	command_mode := false
-	command_was_paused := false
+	// T12-5/T13-5: ゲーム中TUIモード。`/` で .Command(Line_Editor によるコマンド入力)、
+	// `settings` 確定で .Menu(オーバーレイ設定メニュー)へ遷移する。.Menu はブロッキングループ
+	// ではなく menu_step を毎フレーム1ステップ呼ぶ状態機械なので、sdl.PollEvent は止まらない
+	// (0a78a66 のウィンドウ幽霊化パターンを構造的に回避)。/set・メニューで変更した値は
+	// live_cfg に反映し、以降の処理は live_cfg を参照する(cfg は関数パラメータでアドレスを
+	// 取れないため、ここでローカルコピーする)。
+	tui_mode: Game_Tui_Mode = .Play
+	mode_was_paused := false
 	command_editor: Line_Editor
 	defer line_editor_destroy(&command_editor)
 	command_dirty := false
+	menu_state: Menu_State
+	defer menu_state_destroy(&menu_state)
+	menu_last_cols := -1
+	menu_dirty := false
 	live_cfg := cfg
 
 	config_dir, config_dir_ok := config_dir_path()
@@ -245,15 +251,16 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 		if hotkeys_available {
 			ev, ok := key_reader_poll(&game_kr)
 			if ok {
-				if command_mode {
+				switch tui_mode {
+				case .Command:
 					#partial switch ev.key {
 					case .Char, .Backspace:
 						line_editor_feed(&command_editor, ev)
 						command_dirty = true
 					case .Escape:
 						line_editor_feed(&command_editor, ev)
-						command_mode = false
-						game_resume_after_command_mode(&paused, command_was_paused)
+						tui_mode = .Play
+						game_resume_after_command_mode(&paused, mode_was_paused)
 						status_line_set_message(&status_line, "Command cancelled")
 						fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(次のstatus_line_tickまでの見た目対策)
 					case .Enter:
@@ -261,14 +268,48 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 						if submitted {
 							cmd := parse_game_command(text)
 							msg := ""
+							exit_to_play := true // .Settings で .Menu へ遷移するときだけ false
 							switch cmd.kind {
 							case .Empty:
 								msg = ""
-							case .Settings, .Pause, .Resume, .Save_State, .Load_State, .Select_Slot, .Quit:
-								// T13-4 時点の暫定: パーサは新コマンドを解釈するが、ゲームループへの
-								// 配線(オーバーレイ遷移・pause 制御・handle_shortcut_action 写像)は
-								// T13-5 で行う。それまでは案内メッセージのみ。
-								msg = "このコマンドは T13-5(ゲームループ統合)で有効になります"
+							case .Settings:
+								// T13-5: オーバーレイメニューへ遷移。pause は解除せず
+								// mode_was_paused をメニュー終了まで持ち越す(閉じるときに復元)。
+								_, rows := tui_term_size()
+								if rows >= MENU_OVERLAY_ROWS + 1 {
+									tui_mode = .Menu
+									menu_state.selected = 0
+									menu_last_cols = -1
+									menu_dirty = true
+									exit_to_play = false
+								} else {
+									msg = fmt.tprintf("端末の行数が足りません(%d行以上必要)", MENU_OVERLAY_ROWS + 1)
+								}
+							case .Pause:
+								paused = true
+								// コマンドモード終了時の自動復元(game_resume_after_command_mode)で
+								// 即座に resume されてしまわないよう、突入前状態を「一時停止中」に上書きする。
+								mode_was_paused = true
+								msg = "Paused"
+							case .Resume:
+								paused = false
+								mode_was_paused = false
+								msg = "Resumed"
+							case .Save_State:
+								if cmd.slot > 0 {
+									input_state.state_slot = cmd.slot
+								}
+								msg = handle_shortcut_action(.Save_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+							case .Load_State:
+								if cmd.slot > 0 {
+									input_state.state_slot = cmd.slot
+								}
+								msg = handle_shortcut_action(.Load_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+							case .Select_Slot:
+								input_state.state_slot = cmd.slot
+								msg = handle_shortcut_action(.Select_Slot, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+							case .Quit:
+								running = false
 							case .Unknown:
 								msg = fmt.tprintf("不明なコマンドです: %s", cmd.raw)
 							case .Set:
@@ -279,13 +320,36 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 								msg = apply_msg
 							}
 							delete(text)
-							command_mode = false
-							game_resume_after_command_mode(&paused, command_was_paused)
-							status_line_set_message(&status_line, msg)
-							fmt.eprintf("\r\x1b[K")
+							fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(オーバーレイ/ステータス行の描画前)
+							if exit_to_play {
+								tui_mode = .Play
+								game_resume_after_command_mode(&paused, mode_was_paused)
+								status_line_set_message(&status_line, msg)
+							}
 						}
 					}
-				} else {
+				case .Menu:
+					eff := menu_step(&menu_state, ev, live_cfg)
+					switch eff.op {
+					case .None:
+					case .Redraw:
+						menu_dirty = true
+					case .Adjust:
+						set_ok, msg := config_apply_set(&live_cfg, config_dir, eff.key, eff.value)
+						if set_ok && eff.key == "volume" {
+							audio_set_volume(&audio, live_cfg.volume)
+						}
+						delete(eff.value)
+						menu_set_status(&menu_state, msg)
+						menu_dirty = true
+					case .Close:
+						fmt.eprint(MENU_OVERLAY_CLOSE) // カーソル行以降(オーバーレイ全体)を消去
+						menu_state_destroy(&menu_state)
+						tui_mode = .Play
+						game_resume_after_command_mode(&paused, mode_was_paused)
+						status_line_repaint(&status_line)
+					}
+				case .Play:
 					action, slot := game_key_to_action(ev)
 					#partial switch action {
 					case .Volume_Up:
@@ -308,8 +372,8 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 						paused = !paused
 						status_line_set_message(&status_line, paused ? "Paused" : "Resumed")
 					case .Enter_Command_Mode:
-						command_mode = true
-						command_was_paused = game_pause_for_command_mode(&paused)
+						tui_mode = .Command
+						mode_was_paused = game_pause_for_command_mode(&paused)
 						line_editor_reset(&command_editor)
 						command_dirty = true
 					}
@@ -361,14 +425,19 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 			sdl.Delay(paused ? 16 : 1)
 		}
 		underrun_now := audio.underrun_events > underrun_before
-		if command_mode {
+		switch tui_mode {
+		case .Menu:
+			// T13-5: オーバーレイメニュー(幅変化検知+dirty時のみ描画)。メニュー中は paused のため
+			// 上の sdl.Delay(16) 経路で約60Hzのポーリングが回り続け、SDLポンプは止まらない。
+			game_menu_overlay_draw(menu_state, live_cfg, &menu_last_cols, &menu_dirty)
+		case .Command:
 			// T12-5: コマンドモード中は通常のステータス行の代わりに入力中の行をエコーする
 			// (入力があった時だけ再描画、status_line_tick の1秒間引きとは独立)。
 			if command_dirty {
 				fmt.eprintf("\r\x1b[K/%s_", line_editor_text(command_editor))
 				command_dirty = false
 			}
-		} else {
+		case .Play:
 			status_line_tick(&status_line, audio.volume, input_state.state_slot, emu.bus.double_speed, paused, underrun_now)
 		}
 	}
@@ -417,6 +486,17 @@ save_rtc_now :: proc(emu: ^core.Emulator, rtc_path: string) {
 	if !rtc_save(rtc_path, snapshot) {
 		fmt.eprintfln("RTCの書き込みに失敗しました: %s", rtc_path)
 	}
+}
+
+// Game_Tui_Mode は run_rom_window のターミナル側の入出力モード(T13-5)。
+// .Play: 1文字ホットキー(game_key_to_action)+ステータス行。
+// .Command: `/` で入り Line_Editor でコマンドを組み立てる(エコー行表示)。
+// .Menu: オーバーレイ設定メニュー(menu_step を毎フレーム1ステップ。ブロッキングループでは
+// ないため sdl.PollEvent が止まらず、SDL ウィンドウの幽霊化(0a78a66)は構造的に起きない)。
+Game_Tui_Mode :: enum {
+	Play,
+	Command,
+	Menu,
 }
 
 // game_pause_for_command_mode / game_resume_after_command_mode は T12-5 のコマンドモード突入時に
