@@ -194,7 +194,22 @@ exit すると画面が復元されないため、TUI経由の失敗時は tui_f
 
 ### T14-6: 仕上げ(リサイズ、-o:speed 往復、crash restore 確認、docs 記録)
 
-- [ ] 完了
+- [ ] 完了(自動検証は全て完了・クラッシュなし。実機 GUI での目視確認のみ残、下記
+      チェックリストと検証ログ参照。T12-6/T13-6 と同じ扱いでチェックは付けない)
+
+チェックリスト:
+- [x] リサイズ時の全画面再描画(ゲーム中に 80→60 列・24→30 行へ変更して再描画を確認。
+      TUI側3画面も last_cols/last_rows 監視で同様)
+- [x] `-o:speed` フルラウンドトリップ(ホーム→/settings→/browse→ROM起動→ゲーム中
+      /settings→←→調整→Esc→/quit→ホーム→/quit)5回連続クリーン、T12-6 型アサーション
+      再発なし(新設 game_shell_draw への opt-none 付与は不要と判断)
+- [x] crash restore: ゲーム中(alt screen 維持状態)に SIGTERM → ALT_SCREEN_EXIT が
+      出力されプロセス終了することを確認
+- [x] `-debug` ビルドでも同じ往復 1回クリーン、`./scripts/build_macos.sh --test` 成功
+- [ ] macOS Terminal / Linux 実機での目視確認(SDL ウィンドウの実応答性・フォーカス切替、
+      リサイズ時の実際の見た目、Now Playing 画面の視認性。この開発環境には対話的GUI
+      セッションが無く実施不能、T9-6/T12-6/T13-6 と同じ既知の制約。ユーザーによる
+      実機確認が必要)
 
 **目的**: フェーズ14のマイルストーン。
 **作るもの**: 微修正+検証+docs:
@@ -277,3 +292,17 @@ parse_game_command の先頭 `/` 両対応(/pause・/set・/save 2・`/`単体=E
 両対応、`/slot 2`、`/save 3`(バッファ非空中の `s` がホットキー化しないこと)、Esc クリア後の
 ホットキー復活、設定ビュー開閉と←→適用、`/quit` 終了。T14-4 の画面構成検証19項目も再実行し
 全パス(リグレッションなし)。bbl.ini 検証前後バイト一致。
+
+2026-07-18 T14-6 途中経過(自動検証完了・実機GUI確認のみ残、チェックは付けない):
+`odin test tests -collection:bbl=src` 474件全パス、`./scripts/build_macos.sh --test`
+(-o:speed)と `--debug` の両ビルド成功。pty 検証: (1) ゲーム中の端末リサイズ
+(80→60列、24x60→30x100)で全画面再描画されること(TIOCSWINSZ で実際に master 側の
+winsize を変更して確認。SIGWINCH 不要のポーリング検知)、(2) ゲーム中 SIGTERM で
+ALT_SCREEN_EXIT が出力されてから終了すること(シグナルハンドラ経由の tui_force_restore、
+alt screen 常時化後も復元経路が機能)、(3) `-o:speed` フルラウンドトリップ5回連続クリーン
+(T12-6 型アサーション再発なし。game_shell_draw は素の実装のまま、opt-none 3点セット+
+tui_run_settings_menu の既存属性は無変更で維持)、(4) `-debug` でも同往復クリーン。
+いずれも bbl.ini は検証前後でバイト一致。
+**残項目**: macOS Terminal / Linux 実機での目視確認(SDLウィンドウの実応答性、リサイズ・
+Now Playing 画面の実際の見た目)。実施できたら T14-6 をチェックしフェーズを 🟢 に更新する
+こと。PLAN.md はこのため 🟡 のまま、タスク数 5/6 で据え置く。
