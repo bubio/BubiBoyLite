@@ -733,6 +733,47 @@ menu_step :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator := conte
 	return Menu_Effect{op = .None}
 }
 
+// --- ゲーム中オーバーレイ描画(T13-3、純粋関数) ---
+// カーソル不変条件: 描画後カーソルは常にブロック先頭行(元のステータス行)にある。
+// 既存 status_line_tick(`\r\x1b[K`、改行なし)とコマンドモードエコーはこれを満たすため衝突しない。
+// スクロール対策: 最下行では `\n` が自然にスクロールして場所を作る。カーソル移動は全て相対
+// (`\n` / `\x1b[5A`)なのでスクロール後も不変条件が保たれる(`\x1b[nB` は最下行で移動できず
+// 行数がズレるため使わない)。各行は cols-1 幅で打ち切り(write_padded)、自動折り返しによる
+// 行数ズレを防止する。alt screen には入らない(ゲーム中の絶対条件)。
+
+MENU_OVERLAY_ROWS :: 6 // 見出し1 + 項目4 + フッター1
+
+// MENU_OVERLAY_CLOSE はメニューを閉じるときに出力する(カーソル行以降を全消去)。
+// 出力後は status_line_repaint でステータス行を復元すること。
+MENU_OVERLAY_CLOSE :: "\r\x1b[0J"
+
+// tui_render_menu_overlay はゲーム中設定メニューのオーバーレイ描画文字列を組み立てる
+// (純粋関数、単体テスト対象)。戻り値は呼び出し側が delete する。
+// 構造: "\r\x1b[K"+見出し → ("\n\x1b[K"+項目行)×4 → "\n\x1b[K"+フッター → "\x1b[5A\r"
+// (見出しから5回改行するので5行上昇でブロック先頭行へ戻る)。
+tui_render_menu_overlay :: proc(m: Menu_State, cfg: Config, cols: int, allocator := context.allocator) -> string {
+	width := max(cols - 1, 1)
+	b: strings.Builder
+	strings.builder_init(&b, allocator)
+
+	strings.write_string(&b, "\r\x1b[K")
+	write_padded(&b, "─ 設定メニュー ─", width)
+
+	for f, i in settings_fields {
+		strings.write_string(&b, "\n\x1b[K")
+		marker := i == m.selected ? "▸ " : "  "
+		line := fmt.tprintf("%s%-10s %s", marker, settings_field_key(f), menu_item_info(cfg, f))
+		write_padded(&b, line, width)
+	}
+
+	strings.write_string(&b, "\n\x1b[K")
+	footer := m.status != "" ? m.status : "↑↓ 選択  ←→ 値を変更  Esc 閉じる"
+	write_padded(&b, footer, width)
+
+	strings.write_string(&b, "\x1b[5A\r")
+	return strings.to_string(b)
+}
+
 // menu_item_info は設定メニューの List_Item.info 用の "◂ 3 ▸" 形式の文字列を作る
 // (純粋関数、単体テスト対象)。戻り値は fmt.tprintf の借用(既存 settings_field_value_string と
 // 同じ扱い、描画中のみ有効。ファイルI/Oをまたいで保持しないこと)。
@@ -1406,6 +1447,7 @@ Status_Line :: struct {
 	frame_count:  int, // 窓内での実フレーム数
 	warn:         bool, // 窓内でアンダーランが発生したか(T9-4「アンダーラン発生時は警告色」相当)
 	last_message: string, // 所有。直前の操作結果(T9-5)。""なら無し
+	last_line:    string, // 所有。直近に描画したステータス行(T13-3、status_line_repaint 用)。""なら未描画
 }
 
 // status_line_init は rom_path のベース名と cart_info から Status_Line を組み立てる。
@@ -1424,6 +1466,7 @@ status_line_destroy :: proc(s: ^Status_Line) {
 	delete(s.rom_name)
 	delete(s.cart_label)
 	delete(s.last_message)
+	delete(s.last_line)
 	// ステータス行(\rで行頭に戻ったまま終わっている)の後にシェルのプロンプト等が
 	// そのまま続くと読みにくいので、有効だった場合だけ改行して終える。
 	if s.enabled {
@@ -1470,6 +1513,25 @@ status_line_tick :: proc(s: ^Status_Line, volume: int, slot: int, double_speed: 
 	}
 	fps := f64(s.frame_count) / elapsed_secs
 
+	line := status_line_format(s^, fps, volume, slot, double_speed, paused)
+	// T13-3: 直近の描画内容を保持する(ゲーム中オーバーレイを閉じた直後の status_line_repaint 用。
+	// 保持しないと次の1秒窓満了までステータス行が空白のままになる)。tprintf の借用を
+	// ループをまたいで持つことはできないため clone する(context.allocator、temp不可の方針どおり)。
+	delete(s.last_line)
+	s.last_line = strings.clone(line)
+	// "\x1b[K": カーソル位置から行末までクリアしてから書く(前回より短い行になった場合に
+	// 古い文字が右側に残るのを防ぐ)。行末に改行は付けない(次回も同じ行を上書きするため)。
+	fmt.eprintf("\r\x1b[K%s", line)
+
+	s.frame_count = 0
+	s.window_start = time.now()
+	s.warn = false
+}
+
+// status_line_format はステータス行の文字列を組み立てる(T13-3 で status_line_tick から抽出した
+// 純粋関数、単体テスト対象)。fps は呼び出し側(tick)が計測窓から算出して渡す。
+// 戻り値は fmt.tprintf の借用(使い捨て。保持する場合は呼び出し側が clone する)。
+status_line_format :: proc(s: Status_Line, fps: f64, volume: int, slot: int, double_speed: bool, paused: bool) -> string {
 	icon := paused ? "⏸" : "▶"
 	speed_label := double_speed ? " | 双速" : ""
 	// T9-4「オーディオアンダーラン発生時は警告色」。ANSIの黄色前景色(\x1b[33m)で挟む
@@ -1477,7 +1539,7 @@ status_line_tick :: proc(s: ^Status_Line, volume: int, slot: int, double_speed: 
 	warn_marker := s.warn ? " \x1b[33m⚠ underrun\x1b[0m" : ""
 	msg_suffix := s.last_message != "" ? fmt.tprintf(" | %s", s.last_message) : ""
 
-	line := fmt.tprintf(
+	return fmt.tprintf(
 		"%s %s | %.1f fps | vol %d%% | slot %d | %s%s%s%s",
 		icon,
 		s.rom_name,
@@ -1489,13 +1551,16 @@ status_line_tick :: proc(s: ^Status_Line, volume: int, slot: int, double_speed: 
 		warn_marker,
 		msg_suffix,
 	)
-	// "\x1b[K": カーソル位置から行末までクリアしてから書く(前回より短い行になった場合に
-	// 古い文字が右側に残るのを防ぐ)。行末に改行は付けない(次回も同じ行を上書きするため)。
-	fmt.eprintf("\r\x1b[K%s", line)
+}
 
-	s.frame_count = 0
-	s.window_start = time.now()
-	s.warn = false
+// status_line_repaint は直近に描画したステータス行をそのまま再描画する(T13-3)。
+// ゲーム中オーバーレイを MENU_OVERLAY_CLOSE で消した直後に呼び、次の1秒窓満了を待たずに
+// ステータス行を復元する(fps の再計算・計測窓のリセットは行わない)。
+status_line_repaint :: proc(s: ^Status_Line) {
+	if !s.enabled || s.last_line == "" {
+		return
+	}
+	fmt.eprintf("\r\x1b[K%s", s.last_line)
 }
 
 // --- ゲーム実行中のターミナルホットキー(T9-5) ---

@@ -683,3 +683,75 @@ test_menu_item_info_arrow_format :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.menu_item_info(cfg, .Shader), "◂ nearest ▸")
 	testing.expect_value(t, app.menu_item_info(cfg, .Volume), "◂ 80 ▸")
 }
+
+// --- ゲーム中オーバーレイ描画 / status_line_format(T13-3) ---
+
+@(test)
+test_render_menu_overlay_structure :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	m := app.Menu_State{selected = 1}
+	s := app.tui_render_menu_overlay(m, cfg, 80)
+	defer delete(s)
+
+	// カーソル不変条件: "\r\x1b[K" で始まり、改行はちょうど5個(見出し後4項目+フッター前)、
+	// 末尾は "\x1b[5A\r" で5行上昇してブロック先頭行に戻る。
+	testing.expect(t, strings.has_prefix(s, "\r\x1b[K"))
+	testing.expect_value(t, strings.count(s, "\n"), 5)
+	testing.expect(t, strings.has_suffix(s, "\x1b[5A\r"))
+
+	// 4項目と選択マーカー(selected=1 = fullscreen の行)が含まれる。
+	testing.expect(t, strings.contains(s, "scale"))
+	testing.expect(t, strings.contains(s, "▸ fullscreen"))
+	testing.expect(t, strings.contains(s, "shader"))
+	testing.expect(t, strings.contains(s, "volume"))
+	testing.expect(t, strings.contains(s, "◂"))
+}
+
+@(test)
+test_render_menu_overlay_status_replaces_footer :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	m := app.Menu_State{status = "volume = 55 に更新しました"}
+	s := app.tui_render_menu_overlay(m, cfg, 80)
+	defer delete(s)
+	testing.expect(t, strings.contains(s, "volume = 55 に更新しました"))
+	testing.expect(t, !strings.contains(s, "Esc 閉じる")) // status がフッターを置き換える
+}
+
+@(test)
+test_render_menu_overlay_truncates_to_cols :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	m := app.Menu_State{}
+	s := app.tui_render_menu_overlay(m, cfg, 20)
+	defer delete(s)
+
+	// 制御シーケンスを除いた各行の表示幅が cols-1(=19)ちょうどに揃っている
+	// (write_padded による打ち切り+パディング。自動折り返しによる行数ズレ防止)。
+	body, _ := strings.replace_all(s, "\r\x1b[K", "", context.temp_allocator)
+	body, _ = strings.replace_all(body, "\x1b[K", "", context.temp_allocator)
+	body, _ = strings.replace_all(body, "\x1b[5A\r", "", context.temp_allocator)
+	lines := strings.split_lines(body, context.temp_allocator)
+	testing.expect_value(t, len(lines), 6)
+	for line in lines {
+		testing.expect_value(t, app.display_width(line), 19)
+	}
+}
+
+@(test)
+test_status_line_format_contents :: proc(t: ^testing.T) {
+	s := app.Status_Line {
+		enabled    = true,
+		rom_name   = "game.gbc",
+		cart_label = "MBC5+RAM",
+	}
+	line := app.status_line_format(s, 59.7, 80, 2, false, false)
+	testing.expect(t, strings.contains(line, "▶ game.gbc"))
+	testing.expect(t, strings.contains(line, "59.7 fps"))
+	testing.expect(t, strings.contains(line, "vol 80%"))
+	testing.expect(t, strings.contains(line, "slot 2"))
+	testing.expect(t, strings.contains(line, "MBC5+RAM"))
+	testing.expect(t, !strings.contains(line, "双速"))
+
+	paused_line := app.status_line_format(s, 0.0, 80, 2, true, true)
+	testing.expect(t, strings.contains(paused_line, "⏸"))
+	testing.expect(t, strings.contains(paused_line, "双速"))
+}

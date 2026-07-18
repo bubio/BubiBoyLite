@@ -132,7 +132,7 @@ changed=false 等)、Esc/q/Enter で .Close を検証できる。
 
 ### T13-3: オーバーレイ描画(tui_render_menu_overlay)と status_line_format 抽出
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: ゲーム中オーバーレイの描画文字列を純粋関数として実装し、閉じた後のステータス行復帰
 (repaint)手段を用意する。
@@ -254,3 +254,12 @@ volume 選択→`←`で「volume = NN に更新しました」→`→`で復元
 「scale = N に更新しました」→`←`で復元→Esc でホーム復帰→`/quit` で exit 0。
 増減を対で行ったため終了後の bbl.ini はバイト単位で検証前と一致(書き戻し配線と
 行パッチの両方が機能している証拠)。クラッシュ・アサーションなし。
+
+2026-07-18 T13-3 完了: `odin test tests -collection:bbl=src` 460件全パス(新規4件:
+オーバーレイ構造(`\r\x1b[K` 開始・`\n` ちょうど5個・末尾 `\x1b[5A\r`・4項目+選択マーカー▸)、
+m.status がフッターを置き換えること、cols=20 で全6行の表示幅が cols-1=19 に揃うこと
+(write_padded 打ち切り)、status_line_format の内容(fps/vol/slot/⏸/双速))。
+`./scripts/build_macos.sh`(-o:speed)成功。`tui_render_menu_overlay`/`MENU_OVERLAY_ROWS`/
+`MENU_OVERLAY_CLOSE` を追加、`status_line_tick` の行組み立てを `status_line_format`(純粋)に
+抽出し、`Status_Line.last_line`(所有、destroy で delete)+ `status_line_repaint` を追加。
+カーソル移動は全て相対(`\n`/`\x1b[5A`)で最下行スクロール時も不変条件が保たれる設計どおり。
