@@ -1007,3 +1007,20 @@ test_parse_game_command_volume_requires_up_or_down :: proc(t: ^testing.T) {
 	testing.expect(t, app.parse_game_command("volume 50").kind == .Unknown)
 	testing.expect(t, app.parse_game_command("volume sideways").kind == .Unknown)
 }
+
+// --- 設定の即時反映(T15-4) ---
+
+@(test)
+test_live_setting_kind_maps_known_keys :: proc(t: ^testing.T) {
+	testing.expect(t, app.live_setting_kind("volume") == .Volume)
+	testing.expect(t, app.live_setting_kind("shader") == .Shader)
+	testing.expect(t, app.live_setting_kind("fullscreen") == .Fullscreen)
+	testing.expect(t, app.live_setting_kind("scale") == .Scale)
+}
+
+@(test)
+test_live_setting_kind_unknown_key_is_none :: proc(t: ^testing.T) {
+	testing.expect(t, app.live_setting_kind("save_dir") == .None)
+	testing.expect(t, app.live_setting_kind("") == .None)
+	testing.expect(t, app.live_setting_kind("Volume") == .None) // 大文字小文字を区別する
+}

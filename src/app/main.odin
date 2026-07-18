@@ -301,8 +301,10 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 					// 再描画はキーイベント処理後の一括 dirty 化(下記)で行う
 					case .Adjust:
 						set_ok, msg := config_apply_set(&live_cfg, config_dir, eff.key, eff.value)
-						if set_ok && eff.key == "volume" {
-							audio_set_volume(&audio, live_cfg.volume)
+						// T15-4: config_apply_set 成功後、その場で SDL 側にも反映する
+						// (volume だけでなく shader/fullscreen/scale も次回起動を待たず即時反映)。
+						if set_ok {
+							apply_live_setting(&video, &audio, eff.key, live_cfg)
 						}
 						delete(eff.value)
 						menu_set_status(&menu_state, msg)
@@ -366,8 +368,10 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 							msg = fmt.tprintf("不明なコマンドです: %s", cmd.raw)
 						case .Set:
 							set_ok, apply_msg := config_apply_set(&live_cfg, config_dir, cmd.set_key, cmd.set_value)
-							if set_ok && cmd.set_key == "volume" {
-								audio_set_volume(&audio, live_cfg.volume)
+							// T15-4: apply_live_setting に一本化(volume/shader/fullscreen/scale
+							// いずれも即時反映、config_apply_set 成功時の重複ロジックを解消)。
+							if set_ok {
+								apply_live_setting(&video, &audio, cmd.set_key, live_cfg)
 							}
 							msg = apply_msg
 						}
@@ -528,6 +532,54 @@ game_pause_for_command_mode :: proc(paused: ^bool) -> (was_paused: bool) {
 game_resume_after_command_mode :: proc(paused: ^bool, was_paused: bool) {
 	if !was_paused {
 		paused^ = false
+	}
+}
+
+// Live_Setting_Kind は config_apply_set のキー文字列を「何を即時反映すべきか」に写像した
+// もの(T15-4)。apply_live_setting 自体は SDL/オーディオ実デバイスに触れるため単体テスト
+// できない(このリポジトリの既存方針: video_compute_layout のように実SDL呼び出しが無い
+// 部分だけをテスト対象にする、video_layout_test.odin 参照)。この写像だけを切り出すことで
+// 「どのキーがどの反映処理に対応するか」を実SDL呼び出し無しに検証できるようにする。
+Live_Setting_Kind :: enum {
+	None,
+	Volume,
+	Shader,
+	Fullscreen,
+	Scale,
+}
+
+live_setting_kind :: proc(key: string) -> Live_Setting_Kind {
+	switch key {
+	case "volume":
+		return .Volume
+	case "shader":
+		return .Shader
+	case "fullscreen":
+		return .Fullscreen
+	case "scale":
+		return .Scale
+	}
+	return .None
+}
+
+// apply_live_setting は config_apply_set が成功した直後に呼び、その場で SDL 側の実行状態へ
+// 反映する(T15-4)。従来 volume だけ audio_set_volume で即時反映されていたが、
+// shader/fullscreen/scale は live_cfg/bbl.ini は更新されても次回 ROM 起動まで見た目に
+// 反映されなかった(ユーザー要望「/settings の値変更を即座に反映してほしい」)。
+// config_apply_set は既に cfg^(=live_cfg)を更新済みなので、ここでは cfg の該当フィールドを
+// 読むだけでよく、文字列の再パースは不要。shader は video.shader を直接書き換えるだけで
+// 次フレームの video_present から反映される(専用のSDL APIは無い)。
+apply_live_setting :: proc(video: ^Video, audio: ^Audio, key: string, cfg: Config) {
+	switch live_setting_kind(key) {
+	case .Volume:
+		audio_set_volume(audio, cfg.volume)
+	case .Shader:
+		video.shader = cfg.shader
+	case .Fullscreen:
+		video_set_fullscreen(video, cfg.fullscreen)
+	case .Scale:
+		video_apply_scale(video, cfg.scale)
+	case .None:
 	}
 }
 
