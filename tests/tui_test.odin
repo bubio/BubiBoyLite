@@ -990,3 +990,20 @@ test_parse_game_command_accepts_leading_slash :: proc(t: ^testing.T) {
 	// `/` なしの従来形式も引き続き有効
 	testing.expect(t, app.parse_game_command("pause").kind == .Pause)
 }
+
+// --- volume up/down コマンド(T15-2、旧 +/- ホットキーの移植) ---
+
+@(test)
+test_parse_game_command_volume_up_down :: proc(t: ^testing.T) {
+	testing.expect(t, app.parse_game_command("volume up").kind == .Volume_Up)
+	testing.expect(t, app.parse_game_command("volume down").kind == .Volume_Down)
+	testing.expect(t, app.parse_game_command("/volume up").kind == .Volume_Up)
+}
+
+@(test)
+test_parse_game_command_volume_requires_up_or_down :: proc(t: ^testing.T) {
+	// "volume" 単体や不正な引数は Unknown(/set volume <n> と混同しないこと)。
+	testing.expect(t, app.parse_game_command("volume").kind == .Unknown)
+	testing.expect(t, app.parse_game_command("volume 50").kind == .Unknown)
+	testing.expect(t, app.parse_game_command("volume sideways").kind == .Unknown)
+}

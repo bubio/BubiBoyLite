@@ -352,6 +352,14 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 						case .Select_Slot:
 							input_state.state_slot = cmd.slot
 							msg = handle_shortcut_action(.Select_Slot, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
+						case .Volume_Up:
+							// T15-2: 旧 `+` ホットキーと全く同じロジック(相対増減、非永続)。
+							v := audio_adjust_volume(&audio, AUDIO_VOLUME_STEP)
+							msg = fmt.tprintf("Volume %d%%", v)
+						case .Volume_Down:
+							// T15-2: 旧 `-` ホットキーと全く同じロジック(相対増減、非永続)。
+							v := audio_adjust_volume(&audio, -AUDIO_VOLUME_STEP)
+							msg = fmt.tprintf("Volume %d%%", v)
 						case .Quit:
 							running = false
 						case .Unknown:

@@ -1777,6 +1777,8 @@ Game_Command_Kind :: enum {
 	Save_State, // slot 引数は省略可(0=現在のスロット)
 	Load_State, // slot 引数は省略可(0=現在のスロット)
 	Select_Slot, // slot 引数必須(1-4)
+	Volume_Up, // T15-2: 旧 `+` ホットキーの相対増減(AUDIO_VOLUME_STEP、非永続)を移植
+	Volume_Down, // T15-2: 旧 `-` ホットキーの相対増減(AUDIO_VOLUME_STEP、非永続)を移植
 	Quit,
 	Unknown,
 	Empty, // 空Enter(何もしない、コマンドモードを抜けるだけ)
@@ -1853,6 +1855,15 @@ parse_game_command :: proc(input: string) -> Game_Command {
 	case "slot":
 		if slot, ok := game_command_parse_slot(rest); ok {
 			return Game_Command{kind = .Select_Slot, slot = slot}
+		}
+	case "volume":
+		// T15-2: 旧 `+`/`-` ホットキーの相対増減を移植(AUDIO_VOLUME_STEP刻み、非永続)。
+		// `/set volume <n>`(絶対値・config_apply_set 経由で bbl.ini へ永続化)とは別物として共存する。
+		if rest == "up" {
+			return Game_Command{kind = .Volume_Up}
+		}
+		if rest == "down" {
+			return Game_Command{kind = .Volume_Down}
 		}
 	case "set":
 		sp := strings.index_byte(rest, ' ')
