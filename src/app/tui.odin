@@ -424,20 +424,18 @@ tui_exit_process :: proc(code: int) -> ! {
 // 状態からでも安全に両方まとめて復元できる(ALT_SCREEN_EXITは既に代替スクリーン外でも
 // 端末側で無視される冪等なシーケンスなので、サブ状態を追跡する必要が無い)。
 
-// tui_suspend_for_game は ROM 選択画面から SDL ゲーム実行へ移る前に呼ぶ: 代替スクリーンを
-// 抜けてカーソルを表示し(SDLウィンドウが主役になるため、起動元ターミナルはBluePrint
-// 「TUIを活かすアイデア」のステータス行表示に使う、T9-4)、ターミナル読み取りを
-// 完全ノンブロッキング(VMIN=0/VTIME=0)に切り替える(T9-5「メインループを止めない」)。
+// tui_suspend_for_game は ROM 選択画面から SDL ゲーム実行へ移る前に呼ぶ。
+// T14-4: **alt screen は抜けない**(ゲーム中も TUI と同一の固定レイアウト画面構成を維持する、
+// phase-14 の中核要件。ゲーム中のシェル描画は run_rom_window 側が行う)。
+// ターミナル読み取りだけ完全ノンブロッキング(VMIN=0/VTIME=0)に切り替える
+// (T9-5「メインループを止めない」)。
 tui_suspend_for_game :: proc() {
-	tui_plat_write_raw(CURSOR_SHOW)
-	tui_plat_write_raw(ALT_SCREEN_EXIT)
 	tui_plat_set_read_timeout_deciseconds(0)
 }
 
 // tui_resume_from_game は SDL ゲーム終了後に ROM 選択画面へ戻るときに呼ぶ。
+// T14-4: alt screen は維持されたままなので読み取りタイムアウトを戻すだけ(100ms=1)。
 tui_resume_from_game :: proc() {
-	tui_plat_write_raw(ALT_SCREEN_ENTER)
-	tui_plat_write_raw(CURSOR_HIDE)
 	tui_plat_set_read_timeout_deciseconds(1)
 }
 
@@ -455,23 +453,32 @@ tui_game_terminal_available :: proc() -> bool {
 }
 
 // tui_game_terminal_begin は直接起動経路でホットキーを使えるようにする。成功したら
-// true を返す(呼び出し側は対になる tui_exit() を必ず呼ぶこと)。TUI経由の場合はこの関数を
+// ok=true を返す(呼び出し側は対になる tui_exit() を必ず呼ぶこと)。TUI経由の場合はこの関数を
 // 呼ばないこと(既にtui_enterでraw modeが有効なため、ここで再度tcgetattrすると
 // 復元用に保存した「本来の端末状態」を上書きしてしまう)。
+// T14-4: stdout も TTY なら alt screen へ入り(shell=true)、直接起動でも TUI 経由と同一の
+// 固定レイアウトシェルを使えるようにする。stdout 非TTY(リダイレクト等)なら従来の
+// 1行ステータス表示にフォールバックする(shell=false、非TTYフォールバック無変更の方針)。
+// 復元は tui_exit() → tui_force_restore が ALT_SCREEN_EXIT を含むため追加処理不要。
 // 落とし穴(tui_enterのコメント参照): `context.assertion_failure_proc` の代入はこの関数の
 // 中で行っても呼び出し元には伝播しないため、呼び出し側(run_rom_window)自身の関数本体で
 // `context.assertion_failure_proc = tui_assertion_failure` を設定すること。
-tui_game_terminal_begin :: proc() -> bool {
+tui_game_terminal_begin :: proc() -> (ok: bool, shell: bool) {
 	if !tui_game_terminal_available() {
-		return false
+		return false, false
 	}
 	if !tui_plat_enable_raw() {
-		return false
+		return false, false
 	}
 	tui_restored = false
 	tui_plat_install_crash_restore()
 	tui_plat_set_read_timeout_deciseconds(0) // 完全ノンブロッキング(T9-5「メインループを止めない」)
-	return true
+	shell = terminal.is_terminal(os.stdout)
+	if shell {
+		tui_plat_write_raw(ALT_SCREEN_ENTER)
+		tui_plat_write_raw(CURSOR_HIDE)
+	}
+	return true, shell
 }
 
 // --- 端末サイズ ---
@@ -734,46 +741,9 @@ menu_step :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator := conte
 	return Menu_Effect{op = .None}
 }
 
-// --- ゲーム中オーバーレイ描画(T13-3、純粋関数) ---
-// カーソル不変条件: 描画後カーソルは常にブロック先頭行(元のステータス行)にある。
-// 既存 status_line_tick(`\r\x1b[K`、改行なし)とコマンドモードエコーはこれを満たすため衝突しない。
-// スクロール対策: 最下行では `\n` が自然にスクロールして場所を作る。カーソル移動は全て相対
-// (`\n` / `\x1b[5A`)なのでスクロール後も不変条件が保たれる(`\x1b[nB` は最下行で移動できず
-// 行数がズレるため使わない)。各行は cols-1 幅で打ち切り(write_padded)、自動折り返しによる
-// 行数ズレを防止する。alt screen には入らない(ゲーム中の絶対条件)。
-
-MENU_OVERLAY_ROWS :: 6 // 見出し1 + 項目4 + フッター1
-
-// MENU_OVERLAY_CLOSE はメニューを閉じるときに出力する(カーソル行以降を全消去)。
-// 出力後は status_line_repaint でステータス行を復元すること。
-MENU_OVERLAY_CLOSE :: "\r\x1b[0J"
-
-// tui_render_menu_overlay はゲーム中設定メニューのオーバーレイ描画文字列を組み立てる
-// (純粋関数、単体テスト対象)。戻り値は呼び出し側が delete する。
-// 構造: "\r\x1b[K"+見出し → ("\n\x1b[K"+項目行)×4 → "\n\x1b[K"+フッター → "\x1b[5A\r"
-// (見出しから5回改行するので5行上昇でブロック先頭行へ戻る)。
-tui_render_menu_overlay :: proc(m: Menu_State, cfg: Config, cols: int, allocator := context.allocator) -> string {
-	width := max(cols - 1, 1)
-	b: strings.Builder
-	strings.builder_init(&b, allocator)
-
-	strings.write_string(&b, "\r\x1b[K")
-	write_padded(&b, "─ 設定メニュー ─", width)
-
-	for f, i in settings_fields {
-		strings.write_string(&b, "\n\x1b[K")
-		marker := i == m.selected ? "▸ " : "  "
-		line := fmt.tprintf("%s%-10s %s", marker, settings_field_key(f), menu_item_info(cfg, f))
-		write_padded(&b, line, width)
-	}
-
-	strings.write_string(&b, "\n\x1b[K")
-	footer := m.status != "" ? m.status : "↑↓ 選択  ←→ 値を変更  Esc 閉じる"
-	write_padded(&b, footer, width)
-
-	strings.write_string(&b, "\x1b[5A\r")
-	return strings.to_string(b)
-}
+// T14-4: T13-3 のオーバーレイ描画(tui_render_menu_overlay/MENU_OVERLAY_CLOSE/
+// game_menu_overlay_draw)は固定レイアウトシェル(game_shell_draw、下記)に置き換えられて
+// 撤去した。状態機械(menu_step/menu_adjust_value)はそのまま再利用している。
 
 // menu_set_status は Menu_State.status を所有権付きで差し替える(T13-5)。
 // config_apply_set の戻りメッセージは fmt.tprintf の借用のため、フレームをまたいで保持する
@@ -789,15 +759,72 @@ menu_state_destroy :: proc(m: ^Menu_State) {
 	m.status = ""
 }
 
-// game_menu_overlay_draw はゲームループ(main.odin、T13-5)から毎フレーム呼ばれ、
-// 端末幅の変化検知と dirty フラグに応じてオーバーレイを stderr へ描画する。
+// --- ゲーム中シェル描画(T14-4) ---
+// ゲーム実行中もホーム画面と同一の固定レイアウト(コンテンツ+区切り線+ステータス行+入力行)を
+// 描画する。コンテンツ領域は Now Playing パネル(ROM名/状態/fps/音量/スロット+メッセージログ)
+// または設定メニュー(menu_step 状態機械、T13 から再利用)。
+
+Game_View :: enum {
+	Now_Playing,
+	Settings,
+}
+
+// Game_Panel_Info は Now Playing パネルに表示する毎フレームの動的値(描画専用の入力)。
+Game_Panel_Info :: struct {
+	volume:       int,
+	slot:         int,
+	double_speed: bool,
+	paused:       bool,
+}
+
+// shell_content_now_playing はゲーム中コンテンツ領域を組み立てる(T14-4、純粋関数)。
+// Now Playing パネル+メッセージログ直近数件(残り行数に収まる分、古→新の順)。
+// 戻り値は所有 []string(shell_lines_destroy で解放)。
+shell_content_now_playing :: proc(s: ^Status_Line, info: Game_Panel_Info, avail_rows: int, allocator := context.allocator) -> []string {
+	lines := make([dynamic]string, 0, avail_rows, allocator)
+	append(&lines, fmt.aprintf("BubiBoyLite v%s — Now Playing", VERSION, allocator = allocator))
+	append(&lines, strings.clone("", allocator))
+	append(&lines, fmt.aprintf("  ROM:      %s  %s", s.rom_name, s.cart_label, allocator = allocator))
+	state_label := info.paused ? "⏸ 一時停止" : "▶ 実行中"
+	speed_label := info.double_speed ? "(双速)" : ""
+	append(&lines, fmt.aprintf("  状態:     %s %s", state_label, speed_label, allocator = allocator))
+	append(&lines, fmt.aprintf("  fps:      %.1f", s.last_fps, allocator = allocator))
+	append(&lines, fmt.aprintf("  音量:     %d%%", info.volume, allocator = allocator))
+	append(&lines, fmt.aprintf("  スロット: %d", info.slot, allocator = allocator))
+
+	// 残り行にメッセージログ(見出し1行+ログ行)。表示できる分だけ最新側から選び、古→新で並べる。
+	if s.log != nil && message_log_len(s.log) > 0 {
+		remaining := avail_rows - len(lines) - 2 // 空行+見出し
+		if remaining >= 1 {
+			append(&lines, strings.clone("", allocator))
+			append(&lines, strings.clone("─ メッセージ ─", allocator))
+			total := message_log_len(s.log)
+			show := min(total, remaining)
+			for i in total - show ..< total {
+				append(&lines, fmt.aprintf("  %s", message_log_get(s.log, i), allocator = allocator))
+			}
+		}
+	}
+	return lines[:]
+}
+
+// game_shell_draw はゲームループ(main.odin)から毎フレーム呼ばれ、端末サイズの変化検知と
+// dirty フラグに応じてシェル画面全体を再描画する。書き出しは tui_write_shell(contextless)。
 // tui_term_size 呼び出し+描画をこの1関数に隔離している(T12-6 の -o:speed バグの発火パターン
 // 「config_apply_set → ループ継続 → tui_term_size」と同型のため。まず素の実装で出荷し、
-// -o:speed 検証でアサーションが再発した場合は contextless 書き込みへの切替と
-// @(optimization_mode="none") 付与を段階的に適用する方針、phase-13 設計方針参照)。
-game_menu_overlay_draw :: proc(m: Menu_State, cfg: Config, last_cols: ^int, last_rows: ^int, dirty: ^bool) {
-	// 幅変化: 各行の打ち切り幅が変わるため再描画必須。高さ変化: 端末リサイズで表示内容が
-	// スクロール・再配置されオーバーレイが乱れうるため、同じく強制再描画する(T13-6)。
+// -o:speed 検証でアサーションが再発した場合は @(optimization_mode="none") 付与を適用する方針、
+// T13-6 の前例)。
+game_shell_draw :: proc(
+	view: Game_View,
+	m: Menu_State,
+	cfg: Config,
+	s: ^Status_Line,
+	info: Game_Panel_Info,
+	input: string,
+	last_cols: ^int,
+	last_rows: ^int,
+	dirty: ^bool,
+) {
 	cols, rows := tui_term_size()
 	if cols != last_cols^ || rows != last_rows^ {
 		last_cols^ = cols
@@ -807,9 +834,36 @@ game_menu_overlay_draw :: proc(m: Menu_State, cfg: Config, last_cols: ^int, last
 	if !dirty^ {
 		return
 	}
-	s := tui_render_menu_overlay(m, cfg, cols)
-	defer delete(s)
-	fmt.eprint(s)
+
+	avail := rows - SHELL_RESERVED_ROWS
+	content: []string
+	hint: string
+	status := s.last_line
+	switch view {
+	case .Settings:
+		items := make([]List_Item, len(settings_fields))
+		defer delete(items)
+		for f, i in settings_fields {
+			items[i] = List_Item{label = settings_field_key(f), info = menu_item_info(cfg, f)}
+		}
+		content = shell_content_list(
+			fmt.tprintf("BubiBoyLite v%s 設定 — 設定項目を選択(←→ で値を変更)", VERSION),
+			items,
+			m.selected,
+			avail,
+			cols,
+		)
+		hint = "↑↓ 選択  ←→ 値を変更  Esc 戻る"
+		if m.status != "" {
+			status = m.status
+		}
+	case .Now_Playing:
+		content = shell_content_now_playing(s, info, avail)
+		hint = "+/- 音量  1-4 スロット  s/l 保存/復元  p 一時停止  / コマンド"
+	}
+	defer shell_lines_destroy(content)
+
+	tui_write_shell(Shell_Frame{cols = cols, rows = rows, content = content, status = status, input = input, hint = hint})
 	dirty^ = false
 }
 
@@ -1536,7 +1590,8 @@ Status_Line :: struct {
 	frame_count:  int, // 窓内での実フレーム数
 	warn:         bool, // 窓内でアンダーランが発生したか(T9-4「アンダーラン発生時は警告色」相当)
 	last_message: string, // 所有。直前の操作結果(T9-5)。""なら無し
-	last_line:    string, // 所有。直近に描画したステータス行(T13-3、status_line_repaint 用)。""なら未描画
+	last_line:    string, // 所有。直近に組み立てたステータス行(T13-3。シェルのステータス行にも使う)。""なら未組み立て
+	last_fps:     f64, // T14-4: 直近の1秒窓で算出した fps(Now Playing パネル表示用)
 	log:          ^Message_Log, // T14-3: 非nilなら set_message がここへも追記する(所有はしない)
 }
 
@@ -1593,9 +1648,12 @@ status_line_record_frame :: proc(s: ^Status_Line) {
 	s.frame_count += 1
 }
 
-status_line_tick :: proc(s: ^Status_Line, volume: int, slot: int, double_speed: bool, paused: bool, underrun_now: bool) {
+// status_line_update は1秒窓の満了判定と last_line/last_fps の更新だけを行う(T14-4 で
+// tick から分離)。窓が満了して内容を更新したら true を返す(シェル有効時は呼び出し側が
+// これを dirty フラグに変換して再描画する。stderr への書き出しは行わない)。
+status_line_update :: proc(s: ^Status_Line, volume: int, slot: int, double_speed: bool, paused: bool, underrun_now: bool) -> (updated: bool) {
 	if !s.enabled {
-		return
+		return false
 	}
 	if underrun_now {
 		s.warn = true
@@ -1603,23 +1661,33 @@ status_line_tick :: proc(s: ^Status_Line, volume: int, slot: int, double_speed: 
 
 	elapsed_secs := time.duration_seconds(time.since(s.window_start))
 	if elapsed_secs < STATUS_LINE_INTERVAL_SECONDS {
-		return
+		return false
 	}
 	fps := f64(s.frame_count) / elapsed_secs
+	s.last_fps = fps
 
 	line := status_line_format(s^, fps, volume, slot, double_speed, paused)
-	// T13-3: 直近の描画内容を保持する(ゲーム中オーバーレイを閉じた直後の status_line_repaint 用。
-	// 保持しないと次の1秒窓満了までステータス行が空白のままになる)。tprintf の借用を
-	// ループをまたいで持つことはできないため clone する(context.allocator、temp不可の方針どおり)。
+	// 直近の描画内容を保持する(T13-3)。tprintf の借用をループをまたいで持つことはできない
+	// ため clone する(context.allocator、temp不可の方針どおり)。
 	delete(s.last_line)
 	s.last_line = strings.clone(line)
-	// "\x1b[K": カーソル位置から行末までクリアしてから書く(前回より短い行になった場合に
-	// 古い文字が右側に残るのを防ぐ)。行末に改行は付けない(次回も同じ行を上書きするため)。
-	fmt.eprintf("\r\x1b[K%s", line)
 
 	s.frame_count = 0
 	s.window_start = time.now()
 	s.warn = false
+	return true
+}
+
+// status_line_tick は従来の1行ステータス表示(レガシーフォールバック: シェルを使えない
+// 非TTY stdout 等の環境)。毎フレーム呼ぶ(落とし穴: architecture.md「フレーム毎の
+// アロケーション禁止」を守るため、1秒の窓が満了した時だけ文字列を組み立てて書き出す)。
+status_line_tick :: proc(s: ^Status_Line, volume: int, slot: int, double_speed: bool, paused: bool, underrun_now: bool) {
+	if !status_line_update(s, volume, slot, double_speed, paused, underrun_now) {
+		return
+	}
+	// "\x1b[K": カーソル位置から行末までクリアしてから書く(前回より短い行になった場合に
+	// 古い文字が右側に残るのを防ぐ)。行末に改行は付けない(次回も同じ行を上書きするため)。
+	fmt.eprintf("\r\x1b[K%s", s.last_line)
 }
 
 // status_line_format はステータス行の文字列を組み立てる(T13-3 で status_line_tick から抽出した
@@ -1647,15 +1715,8 @@ status_line_format :: proc(s: Status_Line, fps: f64, volume: int, slot: int, dou
 	)
 }
 
-// status_line_repaint は直近に描画したステータス行をそのまま再描画する(T13-3)。
-// ゲーム中オーバーレイを MENU_OVERLAY_CLOSE で消した直後に呼び、次の1秒窓満了を待たずに
-// ステータス行を復元する(fps の再計算・計測窓のリセットは行わない)。
-status_line_repaint :: proc(s: ^Status_Line) {
-	if !s.enabled || s.last_line == "" {
-		return
-	}
-	fmt.eprintf("\r\x1b[K%s", s.last_line)
-}
+// T14-4: status_line_repaint(オーバーレイを閉じた直後の1行復元)はオーバーレイ撤去に伴い
+// 削除した。シェル描画は毎回全画面を再構築するため復元処理自体が不要になった。
 
 // --- ゲーム実行中のターミナルホットキー(T9-5) ---
 

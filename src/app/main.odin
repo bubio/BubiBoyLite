@@ -73,6 +73,10 @@ main :: proc() {
 run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) {
 	rom_data, read_err := os.read_entire_file(opts.rom_path, context.allocator)
 	if read_err != nil {
+		// T14-4: TUI経由の起動失敗時は alt screen が張られたまま(tui_suspend_for_game が
+		// alt screen を抜けなくなった)なので、メッセージ表示と exit の前に必ず復元する
+		// (tui_force_restore は未突入なら no-op の冪等関数)。以下の失敗経路も同様。
+		tui_force_restore()
 		fmt.eprintfln("ROM を読み込めません: %s (%v)", opts.rom_path, read_err)
 		os.exit(1)
 	}
@@ -84,6 +88,7 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 	defer free(emu)
 	if !core.emulator_load_rom(emu, rom_data) {
 		message := core.cartridge_error_message(emu.bus.cart_load_error, emu.bus.cart.info.type_code)
+		tui_force_restore() // T14-4: alt screen 内での exit を避ける(上記コメント参照)
 		fmt.eprintfln("ROM のロードに失敗しました: %s (%s)", opts.rom_path, message)
 		os.exit(1)
 	}
@@ -121,12 +126,14 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 
 	video, video_ok := video_init(cfg.scale, cfg.fullscreen, cfg.shader)
 	if !video_ok {
+		tui_force_restore() // T14-4: alt screen 内での exit を避ける
 		os.exit(1)
 	}
 	defer video_destroy(&video)
 
 	audio: Audio
 	if !audio_init(&audio, emu, cfg.volume) {
+		tui_force_restore() // T14-4: alt screen 内での exit を避ける
 		os.exit(1)
 	}
 	defer audio_destroy(&audio)
@@ -136,8 +143,9 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 	// context.assertion_failure_proc の代入は「同じ関数の中で」行う必要がある
 	// (tui_enter/tui_game_terminal_begin のコメント参照: 代入は呼び出し元には伝播しない)。
 	owns_terminal := false
+	standalone_shell := false
 	if standalone_terminal {
-		owns_terminal = tui_game_terminal_begin()
+		owns_terminal, standalone_shell = tui_game_terminal_begin()
 		if owns_terminal {
 			context.assertion_failure_proc = tui_assertion_failure
 		}
@@ -146,10 +154,23 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 		tui_exit()
 	}
 
+	// T14-4: 固定レイアウトシェルの有効判定。TUI経由(呼び出し元が alt screen を維持したまま)
+	// か、直接起動で stdout も TTY(tui_game_terminal_begin が alt screen へ入った)なら、
+	// ゲーム中もホーム画面と同一のシェル画面構成で描画する。どちらでもなければ従来の
+	// 1行ステータス表示にフォールバック(非TTYフォールバック無変更の方針)。
+	shell_active := !standalone_terminal || standalone_shell
+
 	// T9-4: 実行中ステータス表示。standalone_terminal(直接起動)かTUI経由かに関わらず、
 	// stderr が TTY なら表示する(T9-4「TUI経由でない起動でもTTYなら表示」)。
+	// T14-3/T14-4: シェル有効時は操作メッセージを Message_Log にも貯め、Now Playing 画面の
+	// コンテンツ領域に直近数件を表示する。
+	msg_log: Message_Log
+	defer message_log_destroy(&msg_log)
 	status_line := status_line_init(opts.rom_path, emu.bus.cart.info)
 	defer status_line_destroy(&status_line)
+	if shell_active {
+		status_line.log = &msg_log
+	}
 
 	// T9-5: ターミナルからのホットキー読み取り用(非ブロッキング)。raw modeが有効な場合
 	// (TUI経由 or owns_terminal)だけ実際に何か読める。無効なら tui_plat_read が常に0を
@@ -172,9 +193,9 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 	command_dirty := false
 	menu_state: Menu_State
 	defer menu_state_destroy(&menu_state)
-	menu_last_cols := -1
-	menu_last_rows := -1
-	menu_dirty := false
+	game_last_cols := -1
+	game_last_rows := -1
+	game_dirty := true // 初回は必ず描画(以降はキー入力・1秒窓満了・サイズ変化で dirty)
 	live_cfg := cfg
 
 	config_dir, config_dir_ok := config_dir_path()
@@ -233,7 +254,13 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 				// このイテレーションでまだ emulator_run_frame を呼んでいない時点なので、
 				// 直接処理してよい(次のフレーム実行の「外」であることが保証される)。
 				action := input_handle_shortcut_key(&input_state, event.key)
-				handle_shortcut_action(action, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+				sdl_msg := handle_shortcut_action(action, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
+				// T14-4: シェル有効時は SDL 側ショートカット(F1-F4/F5/F9等)の結果も
+				// メッセージログ+ステータス行に載せる(stderr 直書きは画面を汚すため抑制)。
+				if shell_active && sdl_msg != "" {
+					status_line_set_message(&status_line, sdl_msg)
+					game_dirty = true
+				}
 			case .KEYUP:
 				input_handle_key_event(emu, cfg.key_map, event.key, false)
 			case .CONTROLLERDEVICEADDED:
@@ -263,7 +290,9 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 						tui_mode = .Play
 						game_resume_after_command_mode(&paused, mode_was_paused)
 						status_line_set_message(&status_line, "Command cancelled")
-						fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(次のstatus_line_tickまでの見た目対策)
+						if !shell_active {
+							fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(レガシー1行表示のみ)
+						}
 					case .Enter:
 						submitted, text := line_editor_feed(&command_editor, ev)
 						if submitted {
@@ -274,18 +303,14 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 							case .Empty:
 								msg = ""
 							case .Settings:
-								// T13-5: オーバーレイメニューへ遷移。pause は解除せず
+								// T14-4: シェルの設定ビューへ遷移(オーバーレイは撤去)。pause は解除せず
 								// mode_was_paused をメニュー終了まで持ち越す(閉じるときに復元)。
-								_, rows := tui_term_size()
-								if rows >= MENU_OVERLAY_ROWS + 1 {
+								if shell_active {
 									tui_mode = .Menu
 									menu_state.selected = 0
-									menu_last_cols = -1
-									menu_last_rows = -1
-									menu_dirty = true
 									exit_to_play = false
 								} else {
-									msg = fmt.tprintf("端末の行数が足りません(%d行以上必要)", MENU_OVERLAY_ROWS + 1)
+									msg = "設定メニューを表示できません(端末のシェル表示が無効です)"
 								}
 							case .Pause:
 								paused = true
@@ -301,15 +326,15 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 								if cmd.slot > 0 {
 									input_state.state_slot = cmd.slot
 								}
-								msg = handle_shortcut_action(.Save_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+								msg = handle_shortcut_action(.Save_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
 							case .Load_State:
 								if cmd.slot > 0 {
 									input_state.state_slot = cmd.slot
 								}
-								msg = handle_shortcut_action(.Load_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+								msg = handle_shortcut_action(.Load_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
 							case .Select_Slot:
 								input_state.state_slot = cmd.slot
-								msg = handle_shortcut_action(.Select_Slot, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+								msg = handle_shortcut_action(.Select_Slot, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
 							case .Quit:
 								running = false
 							case .Unknown:
@@ -322,7 +347,9 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 								msg = apply_msg
 							}
 							delete(text)
-							fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(オーバーレイ/ステータス行の描画前)
+							if !shell_active {
+								fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(レガシー1行表示のみ)
+							}
 							if exit_to_play {
 								tui_mode = .Play
 								game_resume_after_command_mode(&paused, mode_was_paused)
@@ -333,9 +360,8 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 				case .Menu:
 					eff := menu_step(&menu_state, ev, live_cfg)
 					switch eff.op {
-					case .None:
-					case .Redraw:
-						menu_dirty = true
+					case .None, .Redraw:
+					// 再描画はキーイベント処理後の一括 dirty 化(下記)で行う
 					case .Adjust:
 						set_ok, msg := config_apply_set(&live_cfg, config_dir, eff.key, eff.value)
 						if set_ok && eff.key == "volume" {
@@ -343,13 +369,11 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 						}
 						delete(eff.value)
 						menu_set_status(&menu_state, msg)
-						menu_dirty = true
 					case .Close:
-						fmt.eprint(MENU_OVERLAY_CLOSE) // カーソル行以降(オーバーレイ全体)を消去
+						// T14-4: シェルは全画面再構築なのでオーバーレイ消去処理は不要。
 						menu_state_destroy(&menu_state)
 						tui_mode = .Play
 						game_resume_after_command_mode(&paused, mode_was_paused)
-						status_line_repaint(&status_line)
 					}
 				case .Play:
 					action, slot := game_key_to_action(ev)
@@ -362,13 +386,13 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 						status_line_set_message(&status_line, fmt.tprintf("Volume %d%%", v))
 					case .Select_Slot:
 						input_state.state_slot = slot
-						msg := handle_shortcut_action(.Select_Slot, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+						msg := handle_shortcut_action(.Select_Slot, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
 						status_line_set_message(&status_line, msg)
 					case .Save_State:
-						msg := handle_shortcut_action(.Save_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+						msg := handle_shortcut_action(.Save_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
 						status_line_set_message(&status_line, msg)
 					case .Load_State:
-						msg := handle_shortcut_action(.Load_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state)
+						msg := handle_shortcut_action(.Load_State, emu, &video, &audio, opts.rom_path, cfg.state_dir, &input_state, quiet_terminal = shell_active)
 						status_line_set_message(&status_line, msg)
 					case .Toggle_Pause:
 						paused = !paused
@@ -380,6 +404,9 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 						command_dirty = true
 					}
 				}
+				// T14-4: キーイベントを処理したら常にシェルを再描画する(入力行・選択・メッセージ
+				// ログのいずれかが変わった可能性がある。キー押下時のみなのでコストは無視できる)。
+				game_dirty = true
 			}
 		}
 
@@ -427,24 +454,42 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 			sdl.Delay(paused ? 16 : 1)
 		}
 		underrun_now := audio.underrun_events > underrun_before
-		switch tui_mode {
-		case .Menu:
-			// T13-5: オーバーレイメニュー(幅変化検知+dirty時のみ描画)。メニュー中は paused のため
-			// 上の sdl.Delay(16) 経路で約60Hzのポーリングが回り続け、SDLポンプは止まらない。
-			game_menu_overlay_draw(menu_state, live_cfg, &menu_last_cols, &menu_last_rows, &menu_dirty)
-		case .Command:
-			// T12-5: コマンドモード中は通常のステータス行の代わりに入力中の行をエコーする
-			// (入力があった時だけ再描画、status_line_tick の1秒間引きとは独立)。
-			if command_dirty {
-				fmt.eprintf("\r\x1b[K/%s_", line_editor_text(command_editor))
-				command_dirty = false
+		if shell_active {
+			// T14-4: ゲーム中もホーム画面と同一の固定レイアウトシェルで描画する。
+			// 1秒窓の満了(fps・ステータス行の更新)も dirty 化して反映する。
+			// メニュー表示中は paused のため sdl.Delay(16) 経路で約60Hzのポーリングが回り続け、
+			// SDLポンプは止まらない(T13-5 と同じ構造)。
+			if status_line_update(&status_line, audio.volume, input_state.state_slot, emu.bus.double_speed, paused, underrun_now) {
+				game_dirty = true
 			}
-		case .Play:
-			status_line_tick(&status_line, audio.volume, input_state.state_slot, emu.bus.double_speed, paused, underrun_now)
+			view := tui_mode == .Menu ? Game_View.Settings : Game_View.Now_Playing
+			input_text := tui_mode == .Command ? line_editor_text(command_editor) : ""
+			info := Game_Panel_Info {
+				volume       = audio.volume,
+				slot         = input_state.state_slot,
+				double_speed = emu.bus.double_speed,
+				paused       = paused,
+			}
+			game_shell_draw(view, menu_state, live_cfg, &status_line, info, input_text, &game_last_cols, &game_last_rows, &game_dirty)
+		} else {
+			// レガシーフォールバック(stdout 非TTY等でシェルを使えない場合): 従来の1行表示。
+			#partial switch tui_mode {
+			case .Command:
+				// T12-5: コマンドモード中は通常のステータス行の代わりに入力中の行をエコーする
+				// (入力があった時だけ再描画、status_line_tick の1秒間引きとは独立)。
+				if command_dirty {
+					fmt.eprintf("\r\x1b[K/%s_", line_editor_text(command_editor))
+					command_dirty = false
+				}
+			case .Play:
+				status_line_tick(&status_line, audio.volume, input_state.state_slot, emu.bus.double_speed, paused, underrun_now)
+			}
 		}
 	}
 
-	if audio.underrun_events > 0 {
+	// T14-4: シェル有効時(alt screen 内)は書いても復元時に消える上に画面を汚すため出さない
+	// (アンダーランはプレイ中のステータス行 "⚠ underrun" で既に可視化されている)。
+	if audio.underrun_events > 0 && !shell_active {
 		fmt.eprintfln(
 			"audio: アンダーラン %d 回(無音で埋めたサンプル数 %d)",
 			audio.underrun_events,
@@ -538,6 +583,7 @@ handle_shortcut_action :: proc(
 	rom_path: string,
 	state_dir: string,
 	input_state: ^Input_State,
+	quiet_terminal := false, // T14-4: シェル有効時は stderr への直書きを抑制(ログ経由で表示)
 ) -> (
 	message: string,
 ) {
@@ -571,13 +617,17 @@ handle_shortcut_action :: proc(
 			message = fmt.tprintf("State loaded from slot %d", input_state.state_slot)
 		}
 	}
-	show_status(video, message)
+	show_status(video, message, quiet_terminal)
 	return message
 }
 
 // show_status は実行結果を stderr とウィンドウタイトルの両方に表示する(T7-4)。
-show_status :: proc(video: ^Video, message: string) {
-	fmt.eprintln(message)
+// T14-4: quiet_terminal=true(固定レイアウトシェル有効時)は stderr への直書きが alt screen の
+// 画面を汚すため抑制し、ウィンドウタイトルのみ更新する(ターミナル側はメッセージログが担う)。
+show_status :: proc(video: ^Video, message: string, quiet_terminal := false) {
+	if !quiet_terminal {
+		fmt.eprintln(message)
+	}
 	video_set_title(video, message)
 }
 

@@ -667,56 +667,73 @@ test_menu_item_info_arrow_format :: proc(t: ^testing.T) {
 	testing.expect_value(t, app.menu_item_info(cfg, .Volume), "◂ 80 ▸")
 }
 
-// --- ゲーム中オーバーレイ描画 / status_line_format(T13-3) ---
+// --- ゲーム中コンテンツ(T14-4、T13-3 のオーバーレイ描画テストは撤去して置き換え) ---
 
 @(test)
-test_render_menu_overlay_structure :: proc(t: ^testing.T) {
-	cfg := app.default_config()
-	m := app.Menu_State{selected = 1}
-	s := app.tui_render_menu_overlay(m, cfg, 80)
-	defer delete(s)
+test_shell_content_now_playing_panel :: proc(t: ^testing.T) {
+	log: app.Message_Log
+	defer app.message_log_destroy(&log)
+	app.message_log_append(&log, "Volume 80%")
+	app.message_log_append(&log, "State saved to slot 2")
 
-	// カーソル不変条件: "\r\x1b[K" で始まり、改行はちょうど5個(見出し後4項目+フッター前)、
-	// 末尾は "\x1b[5A\r" で5行上昇してブロック先頭行に戻る。
-	testing.expect(t, strings.has_prefix(s, "\r\x1b[K"))
-	testing.expect_value(t, strings.count(s, "\n"), 5)
-	testing.expect(t, strings.has_suffix(s, "\x1b[5A\r"))
-
-	// 4項目と選択マーカー(selected=1 = fullscreen の行)が含まれる。
-	testing.expect(t, strings.contains(s, "scale"))
-	testing.expect(t, strings.contains(s, "▸ fullscreen"))
-	testing.expect(t, strings.contains(s, "shader"))
-	testing.expect(t, strings.contains(s, "volume"))
-	testing.expect(t, strings.contains(s, "◂"))
-}
-
-@(test)
-test_render_menu_overlay_status_replaces_footer :: proc(t: ^testing.T) {
-	cfg := app.default_config()
-	m := app.Menu_State{status = "volume = 55 に更新しました"}
-	s := app.tui_render_menu_overlay(m, cfg, 80)
-	defer delete(s)
-	testing.expect(t, strings.contains(s, "volume = 55 に更新しました"))
-	testing.expect(t, !strings.contains(s, "Esc 閉じる")) // status がフッターを置き換える
-}
-
-@(test)
-test_render_menu_overlay_truncates_to_cols :: proc(t: ^testing.T) {
-	cfg := app.default_config()
-	m := app.Menu_State{}
-	s := app.tui_render_menu_overlay(m, cfg, 20)
-	defer delete(s)
-
-	// 制御シーケンスを除いた各行の表示幅が cols-1(=19)ちょうどに揃っている
-	// (write_padded による打ち切り+パディング。自動折り返しによる行数ズレ防止)。
-	body, _ := strings.replace_all(s, "\r\x1b[K", "", context.temp_allocator)
-	body, _ = strings.replace_all(body, "\x1b[K", "", context.temp_allocator)
-	body, _ = strings.replace_all(body, "\x1b[5A\r", "", context.temp_allocator)
-	lines := strings.split_lines(body, context.temp_allocator)
-	testing.expect_value(t, len(lines), 6)
-	for line in lines {
-		testing.expect_value(t, app.display_width(line), 19)
+	s := app.Status_Line {
+		enabled    = true,
+		rom_name   = "game.gbc",
+		cart_label = "MBC5+RAM",
+		last_fps   = 59.7,
+		log        = &log,
 	}
+	info := app.Game_Panel_Info {
+		volume       = 80,
+		slot         = 2,
+		double_speed = false,
+		paused       = false,
+	}
+	content := app.shell_content_now_playing(&s, info, 21)
+	defer app.shell_lines_destroy(content)
+
+	joined := strings.join(content, "\n", context.temp_allocator)
+	testing.expect(t, strings.contains(joined, "Now Playing"))
+	testing.expect(t, strings.contains(joined, "game.gbc"))
+	testing.expect(t, strings.contains(joined, "MBC5+RAM"))
+	testing.expect(t, strings.contains(joined, "59.7"))
+	testing.expect(t, strings.contains(joined, "80%"))
+	testing.expect(t, strings.contains(joined, "▶ 実行中"))
+	// メッセージログ直近分(古→新)が含まれる。
+	testing.expect(t, strings.contains(joined, "─ メッセージ ─"))
+	testing.expect(t, strings.contains(joined, "Volume 80%"))
+	testing.expect(t, strings.contains(joined, "State saved to slot 2"))
+
+	// destroy は呼ばない(rom_name 等に静的リテラルを使っており、heap free すると壊れるため)
+}
+
+@(test)
+test_shell_content_now_playing_paused_and_log_capped_to_rows :: proc(t: ^testing.T) {
+	log: app.Message_Log
+	defer app.message_log_destroy(&log)
+	for i in 0 ..< 10 {
+		app.message_log_append(&log, fmt.tprintf("log-%d", i))
+	}
+	s := app.Status_Line {
+		enabled  = true,
+		rom_name = "r",
+		log      = &log,
+	}
+	info := app.Game_Panel_Info {
+		paused = true,
+	}
+	// avail_rows=12 → パネル7行+空行+見出しで9行、ログは3件だけ(最新側 log-7..log-9)。
+	content := app.shell_content_now_playing(&s, info, 12)
+	defer app.shell_lines_destroy(content)
+
+	joined := strings.join(content, "\n", context.temp_allocator)
+	testing.expect(t, strings.contains(joined, "⏸ 一時停止"))
+	testing.expect(t, len(content) <= 12)
+	testing.expect(t, strings.contains(joined, "log-9"))
+	testing.expect(t, strings.contains(joined, "log-7"))
+	testing.expect(t, !strings.contains(joined, "log-6"))
+
+	// destroy は呼ばない(rom_name 等に静的リテラルを使っており、heap free すると壊れるため)
 }
 
 @(test)
