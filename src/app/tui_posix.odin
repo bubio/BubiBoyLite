@@ -95,8 +95,25 @@ when ODIN_OS == .Darwin {
 	foreign import libc_ioctl "system:c"
 }
 
+// T17-1: ioctl(2) は C の可変引数関数(`int ioctl(int fd, unsigned long request, ...)`)。
+// これを固定3引数として宣言していたことが実機(Apple Silicon macOS、ARM64/AAPCS64)で
+// 深刻なバグを引き起こしていた: AAPCS64 では可変引数呼び出しの可変部分は固定引数とは
+// 異なる規約(スタック経由)で渡されるため、固定引数として宣言すると呼び出し側と
+// 実際の ioctl 実装(内部で va_arg 的にスタックから読み出す)側で引数の渡し方がずれ、
+// 3番目の引数(`&ws` へのポインタ)が正しく伝わらない。結果、tui_plat_term_size は
+// ARM64 上で常に ioctl 失敗(EFAULT)→ ok=false を返し、tui_term_size() は毎回
+// TERM_FALLBACK_COLS=80/TERM_FALLBACK_ROWS=24 にフォールバックしていた
+// (フェーズ16で「サンドボックス固有」と誤診断していたが、実機 Apple Silicon Mac の
+// macOS Terminal.app でも同一の症状(コマンドエリアが常に24行目付近で止まる、
+// リサイズしても位置が変わらない)が再現し、これが真因と判明。T17-3 参照)。
+// `#c_vararg args: ..any` を付けることで可変引数として正しくコンパイルされ、呼び出し側
+// (tui_plat_term_size)は `ioctl(fd, request, &ws)` のまま変更不要で修正される。
+// なぜ既存の pty 検証(T13〜T16)で見つからなかったか: いずれも「ioctl 失敗時の
+// フォールバック挙動」や `printf` によるwinsize事前設定など間接的な手法が中心で、
+// tui_plat_term_size が実際に正しい値を返すかどうかを直接アサートするテストが
+// 無かったため(T17-3 でこの直接検証を追加する)。
 foreign libc_ioctl {
-	ioctl :: proc(fd: c.int, request: c.ulong, arg: rawptr) -> c.int ---
+	ioctl :: proc(fd: c.int, request: c.ulong, #c_vararg args: ..any) -> c.int ---
 }
 
 @(private = "file")
