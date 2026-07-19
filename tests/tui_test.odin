@@ -705,6 +705,11 @@ test_shell_content_now_playing_log_capped_to_rows :: proc(t: ^testing.T) {
 	// destroy は呼ばない(rom_name 等に静的リテラルを使っており、heap free すると壊れるため)
 }
 
+// T18-1: 実機でユーザーから「ステータス行に詰め込みすぎ」との指摘を受け、ROM名・
+// カートリッジ種別(→ shell_content_now_playing の見出しへ移動、T18-2)とコマンド実行
+// 結果(last_message、→ コンテンツ領域のメッセージログに既出のため重複表示をやめた)を
+// status_line_format から削除し、fps/vol/slot/速度/警告のみの簡潔な形式にした。
+// 「双速」は分かりにくいとの指摘を受け「2倍速」に変更。
 @(test)
 test_status_line_format_contents :: proc(t: ^testing.T) {
 	s := app.Status_Line {
@@ -713,16 +718,34 @@ test_status_line_format_contents :: proc(t: ^testing.T) {
 		cart_label = "MBC5+RAM",
 	}
 	line := app.status_line_format(s, 59.7, 80, 2, false, false)
-	testing.expect(t, strings.contains(line, "▶ game.gbc"))
+	testing.expect(t, strings.contains(line, "▶"))
 	testing.expect(t, strings.contains(line, "59.7 fps"))
 	testing.expect(t, strings.contains(line, "vol 80%"))
 	testing.expect(t, strings.contains(line, "slot 2"))
-	testing.expect(t, strings.contains(line, "MBC5+RAM"))
-	testing.expect(t, !strings.contains(line, "双速"))
+	testing.expect(t, !strings.contains(line, "2倍速"))
+	// ROM名・カートリッジ種別はコンテンツ領域の見出しへ移動済みなので、ステータス行には
+	// 出てこない(回帰防止: 再度詰め込まれていないことを確認)。
+	testing.expect(t, !strings.contains(line, "game.gbc"))
+	testing.expect(t, !strings.contains(line, "MBC5+RAM"))
 
 	paused_line := app.status_line_format(s, 0.0, 80, 2, true, true)
 	testing.expect(t, strings.contains(paused_line, "⏸"))
-	testing.expect(t, strings.contains(paused_line, "双速"))
+	testing.expect(t, strings.contains(paused_line, "2倍速"))
+	testing.expect(t, !strings.contains(paused_line, "双速"))
+}
+
+@(test)
+test_status_line_format_omits_last_message :: proc(t: ^testing.T) {
+	// コマンド実行結果はコンテンツ領域のメッセージログに既に表示されるため、ステータス
+	// 行には重複させない(T18-1)。
+	s := app.Status_Line {
+		enabled      = true,
+		rom_name     = "game.gbc",
+		cart_label   = "MBC5+RAM",
+		last_message = "State loaded from slot 1",
+	}
+	line := app.status_line_format(s, 59.0, 80, 1, false, false)
+	testing.expect(t, !strings.contains(line, "State loaded from slot 1"))
 }
 
 // --- parse_game_command 拡張(T13-4) ---

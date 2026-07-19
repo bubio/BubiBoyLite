@@ -1703,26 +1703,27 @@ status_line_tick :: proc(s: ^Status_Line, volume: int, slot: int, double_speed: 
 
 // status_line_format はステータス行の文字列を組み立てる(T13-3 で status_line_tick から抽出した
 // 純粋関数、単体テスト対象)。fps は呼び出し側(tick)が計測窓から算出して渡す。
+// T18-1: 実機でユーザーから「1行に詰め込みすぎ」との指摘があり整理した。
+// ROM名・カートリッジ種別は shell_content_now_playing のコンテンツ領域見出しへ移動済み
+// (T18-2)。コマンド実行結果(last_message)はコンテンツ領域のメッセージログに既に
+// 表示されている(status_line_set_message が message_log へも追記する、tui.odin参照)ため
+// ステータス行への重複表示をやめた。「双速」は分かりにくいとの指摘を受け「2倍速」に変更。
 // 戻り値は fmt.tprintf の借用(使い捨て。保持する場合は呼び出し側が clone する)。
 status_line_format :: proc(s: Status_Line, fps: f64, volume: int, slot: int, double_speed: bool, paused: bool) -> string {
 	icon := paused ? "⏸" : "▶"
-	speed_label := double_speed ? " | 双速" : ""
+	speed_label := double_speed ? " | 2倍速" : ""
 	// T9-4「オーディオアンダーラン発生時は警告色」。ANSIの黄色前景色(\x1b[33m)で挟む
 	// (色が出ない端末でも "⚠" 自体がテキストとして意味を持つのでフォールバックになる)。
 	warn_marker := s.warn ? " \x1b[33m⚠ underrun\x1b[0m" : ""
-	msg_suffix := s.last_message != "" ? fmt.tprintf(" | %s", s.last_message) : ""
 
 	return fmt.tprintf(
-		"%s %s | %.1f fps | vol %d%% | slot %d | %s%s%s%s",
+		"%s %.1f fps | vol %d%% | slot %d%s%s",
 		icon,
-		s.rom_name,
 		fps,
 		volume,
 		slot,
-		s.cart_label,
 		speed_label,
 		warn_marker,
-		msg_suffix,
 	)
 }
 
