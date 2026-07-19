@@ -31,7 +31,7 @@ BubiBoyLite（実行ファイル名 `bbl`）の開発計画のマスタードキ
 | 13 | ゲーム中TUIメニュー(状態機械+オーバーレイ) | 🟡 | 5/6 | ROM実行中に `/` → `settings` でオーバーレイメニューを開閉・←→で値変更でき、SDLウィンドウが応答不能にならない | [詳細](phases/phase-13-tui-game-menu.md) |
 | 14 | 固定レイアウトTUI(ゲーム中も同一画面構成) | 🟡 | 5/6 | ホーム〜ゲーム実行〜終了まで「コンテンツ+区切り線+ステータス行+入力行」の同一レイアウトを維持、入力行は常時アクティブ | [詳細](phases/phase-14-tui-shell.md) |
 | 15 | 操作の完全スラッシュコマンド化+設定即時反映 | 🟡 | 4/5 | ゲーム中の生ホットキーを廃止し全操作をスラッシュコマンドに統一、`/settings`/`/set` の変更が即座にSDL表示へ反映 | [詳細](phases/phase-15-tui-slash-only.md) |
-| 16 | Now Playingパネル簡素化+最下部固定バグ調査 | 🟡 | 2/4 | Now Playingパネルの重複表示行を削除、フェーズ15消し忘れバグのヒント修正、alt screen進入時のDECSTBMリセットで最下部固定バグを防御 | [詳細](phases/phase-16-tui-panel-fix.md) |
+| 16 | Now Playingパネル簡素化+最下部固定バグ調査 | 🟡 | 3/4 | Now Playingパネルの重複表示行を削除、フェーズ15消し忘れバグのヒント修正、alt screen進入時のDECSTBMリセットで最下部固定バグを防御 | [詳細](phases/phase-16-tui-panel-fix.md) |
 
 ---
 
