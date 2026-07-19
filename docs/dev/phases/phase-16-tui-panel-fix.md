@@ -112,7 +112,7 @@ Now Playing ビュー用 `hint` を実態に合わせる。生ホットキーは
 
 ### T16-2: alt screen 進入時に DECSTBM リセットを追加
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: 直前のターミナル状態(他プログラムが残したスクロール領域制限)が alt screen
 突入後も引き継がれる可能性への防御。
@@ -182,3 +182,11 @@ pty で検証する。
 "音量:"・"スロット:" のいずれのラベルも出現しないこと、"一時停止"・"保存/復元" 等の
 旧ヒント文言も出現しないこと、一方でステータス行の fps/vol/slot 表示は引き続き
 出ていることを確認、`/quit` で正常終了。
+
+2026-07-19 T16-2 完了: `odin test tests -collection:bbl=src` 474件全パス(新規1件:
+`ALT_SCREEN_ENTER` が `\x1b[?1049h` で始まり `\x1b[r`(パラメータなし)を含み、
+`\x1b[r;`(パラメータ付き)は含まないこと。`ALT_SCREEN_EXIT` は無変更であることも確認)。
+`ALT_SCREEN_ENTER` 定数を `"\x1b[?1049h\x1b[r"` に変更し、alt screen 突入+DECSTBM全画面
+リセットを1つの定数にまとめた(送出箇所 tui_enter/tui_game_terminal_begin の2箇所どちらも
+自動的にリセットを送るようになり、片方だけ追加し忘れるリスクを排除)。
+`./scripts/build_macos.sh`(-o:speed)成功。

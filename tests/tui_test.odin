@@ -1032,3 +1032,18 @@ test_live_setting_kind_unknown_key_is_none :: proc(t: ^testing.T) {
 	testing.expect(t, app.live_setting_kind("") == .None)
 	testing.expect(t, app.live_setting_kind("Volume") == .None) // 大文字小文字を区別する
 }
+
+// --- alt screen 進入時の DECSTBM リセット(T16-2) ---
+
+@(test)
+test_alt_screen_enter_includes_scroll_region_reset :: proc(t: ^testing.T) {
+	// 直前のターミナル状態(他プログラムが残したスクロール領域制限)が alt screen 突入後も
+	// 引き継がれる可能性への防御(2026-07-19、実機 macOS Terminal.app での報告に対応)。
+	// "\x1b[r"(パラメータなしのDECSTBM)は「全画面をスクロール領域にする」の意味であり、
+	// 上下端を数値指定するとその値が固定されてしまうため、パラメータなしであることが重要。
+	testing.expect(t, strings.has_prefix(app.ALT_SCREEN_ENTER, "\x1b[?1049h"))
+	testing.expect(t, strings.contains(app.ALT_SCREEN_ENTER, "\x1b[r"))
+	testing.expect(t, !strings.contains(app.ALT_SCREEN_ENTER, "\x1b[r;")) // パラメータ付きではない
+	// EXIT側は変更していない(元の代替スクリーン退出シーケンスのみ)。
+	testing.expect_value(t, app.ALT_SCREEN_EXIT, "\x1b[?1049l")
+}
