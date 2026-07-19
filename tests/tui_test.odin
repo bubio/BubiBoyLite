@@ -709,10 +709,12 @@ test_shell_content_now_playing_log_capped_to_rows :: proc(t: ^testing.T) {
 }
 
 // T18-1: 実機でユーザーから「ステータス行に詰め込みすぎ」との指摘を受け、ROM名・
-// カートリッジ種別(→ shell_content_now_playing の見出しへ移動、T18-2)とコマンド実行
+// カートリッジ種別(→ 固定フッターのmeta行、T19-1/T19-2で最終的に移動)とコマンド実行
 // 結果(last_message、→ コンテンツ領域のメッセージログに既出のため重複表示をやめた)を
-// status_line_format から削除し、fps/vol/slot/速度/警告のみの簡潔な形式にした。
-// 「双速」は分かりにくいとの指摘を受け「2倍速」に変更。
+// status_line_format から削除し、fps/vol/slot/警告のみの簡潔な形式にした。
+// 「双速」→「2倍速」(T18-1)の表記変更を経て、T19-4で「2倍速で実行なんてしていない」
+// というユーザー指摘を受け、CPUクロック倍速モードの表示自体をステータス行から削除した
+// (double_speed 引数もシグネチャから削除。emu.bus.double_speed 自体は削除していない)。
 @(test)
 test_status_line_format_contents :: proc(t: ^testing.T) {
 	s := app.Status_Line {
@@ -720,20 +722,22 @@ test_status_line_format_contents :: proc(t: ^testing.T) {
 		rom_name   = "game.gbc",
 		cart_label = "MBC5+RAM",
 	}
-	line := app.status_line_format(s, 59.7, 80, 2, false, false)
+	line := app.status_line_format(s, 59.7, 80, 2, false)
 	testing.expect(t, strings.contains(line, "▶"))
 	testing.expect(t, strings.contains(line, "59.7 fps"))
 	testing.expect(t, strings.contains(line, "vol 80%"))
 	testing.expect(t, strings.contains(line, "slot 2"))
+	// CPU倍速モードの表示は削除済み(T19-4、回帰防止)。
 	testing.expect(t, !strings.contains(line, "2倍速"))
-	// ROM名・カートリッジ種別はコンテンツ領域の見出しへ移動済みなので、ステータス行には
+	testing.expect(t, !strings.contains(line, "双速"))
+	// ROM名・カートリッジ種別は固定フッターのmeta行へ移動済みなので、ステータス行には
 	// 出てこない(回帰防止: 再度詰め込まれていないことを確認)。
 	testing.expect(t, !strings.contains(line, "game.gbc"))
 	testing.expect(t, !strings.contains(line, "MBC5+RAM"))
 
-	paused_line := app.status_line_format(s, 0.0, 80, 2, true, true)
+	paused_line := app.status_line_format(s, 0.0, 80, 2, true)
 	testing.expect(t, strings.contains(paused_line, "⏸"))
-	testing.expect(t, strings.contains(paused_line, "2倍速"))
+	testing.expect(t, !strings.contains(paused_line, "2倍速"))
 	testing.expect(t, !strings.contains(paused_line, "双速"))
 }
 
@@ -747,7 +751,7 @@ test_status_line_format_omits_last_message :: proc(t: ^testing.T) {
 		cart_label   = "MBC5+RAM",
 		last_message = "State loaded from slot 1",
 	}
-	line := app.status_line_format(s, 59.0, 80, 1, false, false)
+	line := app.status_line_format(s, 59.0, 80, 1, false)
 	testing.expect(t, !strings.contains(line, "State loaded from slot 1"))
 }
 

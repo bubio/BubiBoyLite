@@ -1679,7 +1679,7 @@ status_line_record_frame :: proc(s: ^Status_Line) {
 // status_line_update は1秒窓の満了判定と last_line/last_fps の更新だけを行う(T14-4 で
 // tick から分離)。窓が満了して内容を更新したら true を返す(シェル有効時は呼び出し側が
 // これを dirty フラグに変換して再描画する。stderr への書き出しは行わない)。
-status_line_update :: proc(s: ^Status_Line, volume: int, slot: int, double_speed: bool, paused: bool, underrun_now: bool) -> (updated: bool) {
+status_line_update :: proc(s: ^Status_Line, volume: int, slot: int, paused: bool, underrun_now: bool) -> (updated: bool) {
 	if !s.enabled {
 		return false
 	}
@@ -1694,7 +1694,7 @@ status_line_update :: proc(s: ^Status_Line, volume: int, slot: int, double_speed
 	fps := f64(s.frame_count) / elapsed_secs
 	s.last_fps = fps
 
-	line := status_line_format(s^, fps, volume, slot, double_speed, paused)
+	line := status_line_format(s^, fps, volume, slot, paused)
 	// 直近の描画内容を保持する(T13-3)。tprintf の借用をループをまたいで持つことはできない
 	// ため clone する(context.allocator、temp不可の方針どおり)。
 	delete(s.last_line)
@@ -1709,8 +1709,8 @@ status_line_update :: proc(s: ^Status_Line, volume: int, slot: int, double_speed
 // status_line_tick は従来の1行ステータス表示(レガシーフォールバック: シェルを使えない
 // 非TTY stdout 等の環境)。毎フレーム呼ぶ(落とし穴: architecture.md「フレーム毎の
 // アロケーション禁止」を守るため、1秒の窓が満了した時だけ文字列を組み立てて書き出す)。
-status_line_tick :: proc(s: ^Status_Line, volume: int, slot: int, double_speed: bool, paused: bool, underrun_now: bool) {
-	if !status_line_update(s, volume, slot, double_speed, paused, underrun_now) {
+status_line_tick :: proc(s: ^Status_Line, volume: int, slot: int, paused: bool, underrun_now: bool) {
+	if !status_line_update(s, volume, slot, paused, underrun_now) {
 		return
 	}
 	// "\x1b[K": カーソル位置から行末までクリアしてから書く(前回より短い行になった場合に
@@ -1721,25 +1721,27 @@ status_line_tick :: proc(s: ^Status_Line, volume: int, slot: int, double_speed: 
 // status_line_format はステータス行の文字列を組み立てる(T13-3 で status_line_tick から抽出した
 // 純粋関数、単体テスト対象)。fps は呼び出し側(tick)が計測窓から算出して渡す。
 // T18-1: 実機でユーザーから「1行に詰め込みすぎ」との指摘があり整理した。
-// ROM名・カートリッジ種別は shell_content_now_playing のコンテンツ領域見出しへ移動済み
-// (T18-2)。コマンド実行結果(last_message)はコンテンツ領域のメッセージログに既に
-// 表示されている(status_line_set_message が message_log へも追記する、tui.odin参照)ため
-// ステータス行への重複表示をやめた。「双速」は分かりにくいとの指摘を受け「2倍速」に変更。
+// ROM名・カートリッジ種別は固定フッターのmeta行(T19-1/T19-2)へ移設済み。コマンド実行結果
+// (last_message)はコンテンツ領域のメッセージログに既に表示されている
+// (status_line_set_message が message_log へも追記する、tui.odin参照)ため
+// ステータス行への重複表示をやめた。
+// T19-4: 「双速」→「2倍速」(T18-1)の表記はゲーム全体の速度が2倍になっていると誤解を
+// 招くとの指摘を受け、CPUクロック倍速モードの表示自体をステータス行から削除した
+// (double_speed 自体はエミュレーションコアの内部状態としてそのまま保持され、削除した
+// のは表示のみ)。そのため double_speed 引数もシグネチャから削除した。
 // 戻り値は fmt.tprintf の借用(使い捨て。保持する場合は呼び出し側が clone する)。
-status_line_format :: proc(s: Status_Line, fps: f64, volume: int, slot: int, double_speed: bool, paused: bool) -> string {
+status_line_format :: proc(s: Status_Line, fps: f64, volume: int, slot: int, paused: bool) -> string {
 	icon := paused ? "⏸" : "▶"
-	speed_label := double_speed ? " | 2倍速" : ""
 	// T9-4「オーディオアンダーラン発生時は警告色」。ANSIの黄色前景色(\x1b[33m)で挟む
 	// (色が出ない端末でも "⚠" 自体がテキストとして意味を持つのでフォールバックになる)。
 	warn_marker := s.warn ? " \x1b[33m⚠ underrun\x1b[0m" : ""
 
 	return fmt.tprintf(
-		"%s %.1f fps | vol %d%% | slot %d%s%s",
+		"%s %.1f fps | vol %d%% | slot %d%s",
 		icon,
 		fps,
 		volume,
 		slot,
-		speed_label,
 		warn_marker,
 	)
 }

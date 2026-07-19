@@ -437,7 +437,7 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 			// 1秒窓の満了(fps・ステータス行の更新)も dirty 化して反映する。
 			// メニュー表示中は paused のため sdl.Delay(16) 経路で約60Hzのポーリングが回り続け、
 			// SDLポンプは止まらない(T13-5 と同じ構造)。
-			if status_line_update(&status_line, audio.volume, input_state.state_slot, emu.bus.double_speed, paused, underrun_now) {
+			if status_line_update(&status_line, audio.volume, input_state.state_slot, paused, underrun_now) {
 				game_dirty = true
 			}
 			info := Game_Panel_Info {
@@ -457,7 +457,7 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 					command_dirty = false
 				}
 			} else {
-				status_line_tick(&status_line, audio.volume, input_state.state_slot, emu.bus.double_speed, paused, underrun_now)
+				status_line_tick(&status_line, audio.volume, input_state.state_slot, paused, underrun_now)
 			}
 		}
 	}
