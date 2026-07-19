@@ -759,10 +759,11 @@ menu_state_destroy :: proc(m: ^Menu_State) {
 	m.status = ""
 }
 
-// --- ゲーム中シェル描画(T14-4) ---
+// --- ゲーム中シェル描画(T14-4、T16-1 で Now Playing パネルを簡素化) ---
 // ゲーム実行中もホーム画面と同一の固定レイアウト(コンテンツ+区切り線+ステータス行+入力行)を
-// 描画する。コンテンツ領域は Now Playing パネル(ROM名/状態/fps/音量/スロット+メッセージログ)
-// または設定メニュー(menu_step 状態機械、T13 から再利用)。
+// 描画する。コンテンツ領域は Now Playing パネル(タイトル+メッセージログのみ。ROM名/状態/
+// fps/音量/スロットはステータス行と重複するため T16-1 で削除)または設定メニュー
+// (menu_step 状態機械、T13 から再利用)。
 
 Game_View :: enum {
 	Now_Playing,
@@ -778,19 +779,16 @@ Game_Panel_Info :: struct {
 }
 
 // shell_content_now_playing はゲーム中コンテンツ領域を組み立てる(T14-4、純粋関数)。
-// Now Playing パネル+メッセージログ直近数件(残り行数に収まる分、古→新の順)。
+// タイトル行+メッセージログ直近数件(残り行数に収まる分、古→新の順)。
+// T16-1: ROM名/状態/fps/音量/スロットの詳細行は削除した(ユーザー指摘: ステータス行
+// (status_line_format)が既に同じ情報を全て含んでおり完全に重複表示だったため)。
+// info(Game_Panel_Info)はこの関数では使わなくなったが、呼び出し元 game_shell_draw の
+// シグネチャ・Settings ビューとの対称性を保つため引数自体は残す。
 // 戻り値は所有 []string(shell_lines_destroy で解放)。
 shell_content_now_playing :: proc(s: ^Status_Line, info: Game_Panel_Info, avail_rows: int, allocator := context.allocator) -> []string {
 	lines := make([dynamic]string, 0, avail_rows, allocator)
 	append(&lines, fmt.aprintf("BubiBoyLite v%s — Now Playing", VERSION, allocator = allocator))
 	append(&lines, strings.clone("", allocator))
-	append(&lines, fmt.aprintf("  ROM:      %s  %s", s.rom_name, s.cart_label, allocator = allocator))
-	state_label := info.paused ? "⏸ 一時停止" : "▶ 実行中"
-	speed_label := info.double_speed ? "(双速)" : ""
-	append(&lines, fmt.aprintf("  状態:     %s %s", state_label, speed_label, allocator = allocator))
-	append(&lines, fmt.aprintf("  fps:      %.1f", s.last_fps, allocator = allocator))
-	append(&lines, fmt.aprintf("  音量:     %d%%", info.volume, allocator = allocator))
-	append(&lines, fmt.aprintf("  スロット: %d", info.slot, allocator = allocator))
 
 	// 残り行にメッセージログ(見出し1行+ログ行)。表示できる分だけ最新側から選び、古→新で並べる。
 	if s.log != nil && message_log_len(s.log) > 0 {
@@ -859,7 +857,11 @@ game_shell_draw :: proc(
 		}
 	case .Now_Playing:
 		content = shell_content_now_playing(s, info, avail)
-		hint = "+/- 音量  1-4 スロット  s/l 保存/復元  p 一時停止  / コマンド"
+		// T16-1: フェーズ15(T15-1)で全ての生ホットキー(+,-,1-4,s,l,p)を廃止した際、
+		// この案内文言を消し忘れていた(存在しない操作を案内するバグ)。入力行は常時
+		// アクティブでスラッシュコマンドのみなので、特筆すべき固定ヒントは無い(空文字なら
+		// tui_render_shell がヒント自体を表示しない)。
+		hint = ""
 	}
 	defer shell_lines_destroy(content)
 

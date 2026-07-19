@@ -630,6 +630,10 @@ test_menu_item_info_arrow_format :: proc(t: ^testing.T) {
 
 // --- ゲーム中コンテンツ(T14-4、T13-3 のオーバーレイ描画テストは撤去して置き換え) ---
 
+// T16-1: shell_content_now_playing から ROM名/状態/fps/音量/スロットの詳細行を削除した
+// (ユーザー指摘: ステータス行(status_line_format)が既に同じ情報を全て含んでおり完全に
+// 重複表示だったため)。以下2本はその新仕様(タイトル+メッセージログのみ)に書き換え。
+
 @(test)
 test_shell_content_now_playing_panel :: proc(t: ^testing.T) {
 	log: app.Message_Log
@@ -655,12 +659,13 @@ test_shell_content_now_playing_panel :: proc(t: ^testing.T) {
 
 	joined := strings.join(content, "\n", context.temp_allocator)
 	testing.expect(t, strings.contains(joined, "Now Playing"))
-	testing.expect(t, strings.contains(joined, "game.gbc"))
-	testing.expect(t, strings.contains(joined, "MBC5+RAM"))
-	testing.expect(t, strings.contains(joined, "59.7"))
-	testing.expect(t, strings.contains(joined, "80%"))
-	testing.expect(t, strings.contains(joined, "▶ 実行中"))
-	// メッセージログ直近分(古→新)が含まれる。
+	// ROM名/状態/fps/音量/スロットの詳細行は削除済み(ステータス行と重複するため)。
+	// 回帰防止: これらが復活していないことを確認する。
+	testing.expect(t, !strings.contains(joined, "game.gbc"))
+	testing.expect(t, !strings.contains(joined, "MBC5+RAM"))
+	testing.expect(t, !strings.contains(joined, "59.7"))
+	testing.expect(t, !strings.contains(joined, "▶ 実行中"))
+	// メッセージログ直近分(古→新)は引き続き含まれる。
 	testing.expect(t, strings.contains(joined, "─ メッセージ ─"))
 	testing.expect(t, strings.contains(joined, "Volume 80%"))
 	testing.expect(t, strings.contains(joined, "State saved to slot 2"))
@@ -669,7 +674,7 @@ test_shell_content_now_playing_panel :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_shell_content_now_playing_paused_and_log_capped_to_rows :: proc(t: ^testing.T) {
+test_shell_content_now_playing_log_capped_to_rows :: proc(t: ^testing.T) {
 	log: app.Message_Log
 	defer app.message_log_destroy(&log)
 	for i in 0 ..< 10 {
@@ -683,16 +688,19 @@ test_shell_content_now_playing_paused_and_log_capped_to_rows :: proc(t: ^testing
 	info := app.Game_Panel_Info {
 		paused = true,
 	}
-	// avail_rows=12 → パネル7行+空行+見出しで9行、ログは3件だけ(最新側 log-7..log-9)。
+	// avail_rows=12 → タイトル+空行で2行、残り(見出し1+ログ分)= 12-2-2=8件、
+	// 最新側 log-2..log-9 の8件が表示される(log-0/log-1 は溢れて非表示)。
 	content := app.shell_content_now_playing(&s, info, 12)
 	defer app.shell_lines_destroy(content)
 
 	joined := strings.join(content, "\n", context.temp_allocator)
-	testing.expect(t, strings.contains(joined, "⏸ 一時停止"))
+	// paused/double_speed 等の詳細行はもう出力されない(回帰防止)。
+	testing.expect(t, !strings.contains(joined, "一時停止"))
 	testing.expect(t, len(content) <= 12)
 	testing.expect(t, strings.contains(joined, "log-9"))
-	testing.expect(t, strings.contains(joined, "log-7"))
-	testing.expect(t, !strings.contains(joined, "log-6"))
+	testing.expect(t, strings.contains(joined, "log-2"))
+	testing.expect(t, !strings.contains(joined, "log-1"))
+	testing.expect(t, !strings.contains(joined, "log-0"))
 
 	// destroy は呼ばない(rom_name 等に静的リテラルを使っており、heap free すると壊れるため)
 }
