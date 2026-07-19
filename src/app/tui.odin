@@ -788,15 +788,18 @@ Game_Panel_Info :: struct {
 }
 
 // shell_content_now_playing はゲーム中コンテンツ領域を組み立てる(T14-4、純粋関数)。
-// タイトル行+メッセージログ直近数件(残り行数に収まる分、古→新の順)。
-// T16-1: ROM名/状態/fps/音量/スロットの詳細行は削除した(ユーザー指摘: ステータス行
-// (status_line_format)が既に同じ情報を全て含んでおり完全に重複表示だったため)。
+// 見出し行(ROM名+カートリッジ種別)+メッセージログ直近数件(残り行数に収まる分、古→新の順)。
+// T16-1でROM名/状態/fps/音量/スロットの詳細行を一旦削除した(ステータス行と完全に
+// 重複表示だったため)が、T18-2で見出し行を「BubiBoyLite v...」から ROM名+カートリッジ
+// 種別に置き換えた(実機でユーザーから「ステータス行に詰め込みすぎ、ROM名は別の行に」との
+// 指摘を受け、ROM識別情報をコンテンツ領域の見出しへ移した。status_line_format 側は
+// 同時に ROM名/カートリッジ種別を出さなくなったので重複はしない)。
 // info(Game_Panel_Info)はこの関数では使わなくなったが、呼び出し元 game_shell_draw の
 // シグネチャ・Settings ビューとの対称性を保つため引数自体は残す。
 // 戻り値は所有 []string(shell_lines_destroy で解放)。
 shell_content_now_playing :: proc(s: ^Status_Line, info: Game_Panel_Info, avail_rows: int, allocator := context.allocator) -> []string {
 	lines := make([dynamic]string, 0, avail_rows, allocator)
-	append(&lines, fmt.aprintf("BubiBoyLite v%s — Now Playing", VERSION, allocator = allocator))
+	append(&lines, fmt.aprintf("%s  %s", s.rom_name, s.cart_label, allocator = allocator))
 	append(&lines, strings.clone("", allocator))
 
 	// 残り行にメッセージログ(見出し1行+ログ行)。表示できる分だけ最新側から選び、古→新で並べる。

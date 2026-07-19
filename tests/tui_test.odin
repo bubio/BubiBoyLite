@@ -631,8 +631,11 @@ test_menu_item_info_arrow_format :: proc(t: ^testing.T) {
 // --- ゲーム中コンテンツ(T14-4、T13-3 のオーバーレイ描画テストは撤去して置き換え) ---
 
 // T16-1: shell_content_now_playing から ROM名/状態/fps/音量/スロットの詳細行を削除した
-// (ユーザー指摘: ステータス行(status_line_format)が既に同じ情報を全て含んでおり完全に
-// 重複表示だったため)。以下2本はその新仕様(タイトル+メッセージログのみ)に書き換え。
+// (ステータス行と完全に重複表示だったため)。T18-2: 見出し行を「BubiBoyLite v...」から
+// ROM名+カートリッジ種別に変更した(実機でユーザーから「ステータス行に詰め込みすぎ、
+// ROM名は別の行に」との指摘を受け、ROM識別情報をコンテンツ領域の見出しへ移した。
+// status_line_format 側は同時にROM名/カートリッジ種別を出さなくなったので重複はしない)。
+// 以下2本はその新仕様(ROM名+カートリッジ種別の見出し+メッセージログのみ)に書き換え。
 
 @(test)
 test_shell_content_now_playing_panel :: proc(t: ^testing.T) {
@@ -658,11 +661,10 @@ test_shell_content_now_playing_panel :: proc(t: ^testing.T) {
 	defer app.shell_lines_destroy(content)
 
 	joined := strings.join(content, "\n", context.temp_allocator)
-	testing.expect(t, strings.contains(joined, "Now Playing"))
-	// ROM名/状態/fps/音量/スロットの詳細行は削除済み(ステータス行と重複するため)。
-	// 回帰防止: これらが復活していないことを確認する。
-	testing.expect(t, !strings.contains(joined, "game.gbc"))
-	testing.expect(t, !strings.contains(joined, "MBC5+RAM"))
+	// 見出し行にROM名+カートリッジ種別が出る(T18-2)。
+	testing.expect(t, strings.contains(joined, "game.gbc"))
+	testing.expect(t, strings.contains(joined, "MBC5+RAM"))
+	// 状態/fps/音量/スロットの詳細行は引き続き出ない(ステータス行の担当、回帰防止)。
 	testing.expect(t, !strings.contains(joined, "59.7"))
 	testing.expect(t, !strings.contains(joined, "▶ 実行中"))
 	// メッセージログ直近分(古→新)は引き続き含まれる。
