@@ -823,14 +823,55 @@ test_render_shell_row_count_and_structure :: proc(t: ^testing.T) {
 
 @(test)
 test_render_shell_truncates_content_to_available_rows :: proc(t: ^testing.T) {
-	// rows=6 → コンテンツ領域は 3 行。4行目以降は切り捨てられる。
+	// rows=7、SHELL_RESERVED_ROWS=4(区切り線+meta行+ステータス行+入力行、T19-1)なので
+	// コンテンツ領域は 3 行。4行目以降は切り捨てられる。
 	content := []string{"c0", "c1", "c2", "c3-overflow"}
-	f := app.Shell_Frame{cols = 40, rows = 6, content = content}
+	f := app.Shell_Frame{cols = 40, rows = 7, content = content}
 	s := app.tui_render_shell(f)
 	defer delete(s)
 	testing.expect(t, strings.contains(s, "c2"))
 	testing.expect(t, !strings.contains(s, "c3-overflow"))
-	testing.expect_value(t, strings.count(s, "\n"), 5)
+	testing.expect_value(t, strings.count(s, "\n"), 6)
+}
+
+@(test)
+test_render_shell_meta_row_between_separator_and_status :: proc(t: ^testing.T) {
+	// T19-1: 区切り線の直後・ステータス行の直前に meta 行(ゲーム中はROM名+カートリッジ
+	// 種別)が1行入る。
+	f := app.Shell_Frame {
+		cols   = 40,
+		rows   = 8,
+		meta   = "rom.gbc  MBC5+RAM",
+		status = "status here",
+		input  = "abc",
+	}
+	s := app.tui_render_shell(f)
+	defer delete(s)
+
+	body, _ := strings.replace_all(s, "\x1b[H", "", context.temp_allocator)
+	body, _ = strings.replace_all(body, "\x1b[K", "", context.temp_allocator)
+	lines := strings.split_lines(body, context.temp_allocator)
+	testing.expect_value(t, len(lines), 8)
+	// 最後の4行が 区切り線/meta/status/input の順(SHELL_RESERVED_ROWS=4)。
+	testing.expect(t, strings.has_prefix(lines[4], "───"))
+	testing.expect(t, strings.contains(lines[5], "rom.gbc  MBC5+RAM"))
+	testing.expect(t, strings.contains(lines[6], "status here"))
+	testing.expect(t, strings.contains(lines[7], "> abc_"))
+}
+
+@(test)
+test_render_shell_empty_meta_is_blank_row :: proc(t: ^testing.T) {
+	// meta を指定しない(ホーム/ブラウザ/設定画面)場合は空行になるだけで、レイアウト自体は
+	// 崩れない(T19-1)。
+	f := app.Shell_Frame{cols = 40, rows = 8, status = "status here", input = "abc"}
+	s := app.tui_render_shell(f)
+	defer delete(s)
+
+	body, _ := strings.replace_all(s, "\x1b[H", "", context.temp_allocator)
+	body, _ = strings.replace_all(body, "\x1b[K", "", context.temp_allocator)
+	lines := strings.split_lines(body, context.temp_allocator)
+	testing.expect_value(t, len(lines), 8)
+	testing.expect_value(t, strings.trim_space(lines[5]), "")
 }
 
 @(test)

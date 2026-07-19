@@ -194,17 +194,23 @@ List_Item :: struct {
 FRAME_MIN_WIDTH :: 40
 FRAME_MAX_WIDTH :: 100
 
-// --- 固定レイアウトシェル(T14-1) ---
-// Claude Code 風の固定レイアウト: 上部コンテンツ領域(rows-3)+区切り線+ステータス行+
-// 入力行。ホーム/ブラウザ/設定/ゲーム中の全画面がこの1本のレンダラで描画され、
-// **ゲーム起動中も全く同じ画面構成を維持する**(phase-14 の中核要件)。
+// --- 固定レイアウトシェル(T14-1、T19-1 で meta 行を追加) ---
+// Claude Code 風の固定レイアウト: 上部コンテンツ領域(rows-4)+区切り線+meta行+
+// ステータス行+入力行。ホーム/ブラウザ/設定/ゲーム中の全画面がこの1本のレンダラで
+// 描画され、**ゲーム起動中も全く同じ画面構成を維持する**(phase-14 の中核要件)。
+// T19-1: 実機でユーザーから「ROM名は(コンテンツ領域でなく)固定フッターの中で別行に」
+// との指摘を受け、区切り線とステータス行の間に meta 行(ゲーム中は ROM名+カートリッジ
+// 種別)を追加した(T18-2 でコンテンツ領域見出しに移した対応は誤りだったため巻き戻し、
+// T19-3 参照)。
 
-SHELL_RESERVED_ROWS :: 3 // 区切り線 + ステータス行 + 入力行
+SHELL_RESERVED_ROWS :: 4 // 区切り線 + meta行 + ステータス行 + 入力行
 
 Shell_Frame :: struct {
 	cols:    int, // 端末の列数(0 以下ならフォールバック値)
 	rows:    int,
-	content: []string, // コンテンツ領域の行。rows-3 を超える分は切り捨て、不足分は空行
+	content: []string, // コンテンツ領域の行。rows-4 を超える分は切り捨て、不足分は空行
+	meta:    string, // 区切り線とステータス行の間の1行(ゲーム中はROM名+カートリッジ種別、
+	// それ以外の画面では空文字=空行のまま、T19-1)
 	status:  string, // ステータス行(fps / vol / 操作結果メッセージ等)
 	input:   string, // 入力行。"> " + input + "_" の形式で表示(擬似カーソル)
 	hint:    string, // 入力行の右端に右寄せ表示するキーヒント(幅が足りなければ省略)
@@ -241,6 +247,11 @@ tui_render_shell :: proc(f: Shell_Frame, allocator := context.allocator) -> stri
 		for _ in 0 ..< width {
 			strings.write_string(&b, "─")
 		}
+		strings.write_string(&b, "\n")
+
+		// meta行(T19-1: ROM名+カートリッジ種別。非ゲーム画面では空文字=空行)
+		strings.write_string(&b, "\x1b[K")
+		write_padded(&b, f.meta, width)
 		strings.write_string(&b, "\n")
 
 		// ステータス行
