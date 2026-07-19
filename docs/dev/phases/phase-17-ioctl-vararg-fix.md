@@ -120,7 +120,7 @@ foreign libc_ioctl {
 
 ### T17-2: 他の foreign import 宣言の横展開チェック
 
-- [ ] 完了
+- [x] 完了(該当なし。修正が必要な箇所は見つからなかった)
 
 **目的**: 同種の可変引数ABIバグが他に無いか確認する。
 **作るもの**: 調査のみ(`grep -n "foreign" src/app/*.odin` で全 `foreign` ブロックを
@@ -186,3 +186,12 @@ pty検証(一時的なデバッグ計装 `fmt.eprintfln("DEBUG tui_term_size: c=
 - **修正後**(`#c_vararg`): 同じ4サイズ全てで `ok=true` かつ返り値が設定値と完全一致
   (例: 119x44指定 → `c=119 r=44 ok=true`)
 Fableの実機での発見・検証結果と完全に一致することを本開発環境のpty上でも再現・確認した。
+
+2026-07-19 T17-2 完了: `grep -n "foreign import\|foreign .*{" src/app/*.odin` および
+`src/` 全体(core パッケージ含む)を横展開調査した結果、自前の `foreign import` ブロックは
+`src/app/tui_posix.odin` の `libc_ioctl`(T17-1で修正済みの `ioctl` 1関数のみ)であることを
+確認した。`tui_windows.odin` は Windows API 呼び出しに `core:sys/windows`(Odin公式の
+バインディング、`win` エイリアス)を使っており自前の `foreign import` は無い。SDL関連は
+`vendor:sdl2`(Odin公式vendorライブラリ)経由でのみ呼び出しており、こちらも自前のFFI
+宣言ではない。**結論: T17-1で修正した `ioctl` 以外に同種の可変引数ABIバグは存在しない**
+(修正が必要な追加箇所なし)。
