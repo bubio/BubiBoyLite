@@ -1,4 +1,4 @@
-# フェーズ19: 固定フッターにROM行を追加 + CPU倍速表記の明確化
+# フェーズ19: 固定フッターにROM行を追加 + 「2倍速」表示の削除
 
 ## 前提
 
@@ -12,13 +12,19 @@
   2. **「2倍速」表記が誤解を招く**: 「2倍速で実行なんてしてない」という指摘どおり、
      この表記はゲーム全体の再生速度が2倍になっていると誤解させる。実際はGBC実機の
      CPUクロックが内部的に2倍になるハードウェアモード(fps自体は変わらない)。
-     **CPUの話だと明確にわかる表記に変更する**
+     当初は「CPUクロック倍速」のようにCPUの話だと明確にする表記変更を計画していたが、
+     この説明に対しユーザーから「CPU内部モードとはなんでしょうか、よくわからないので
+     必要ありません」との追加指摘があり、**表記変更ではなく、この表示自体をステータス
+     行から削除する**方針に変更(2026-07-19)。プレイヤーにとって意味のある情報ではなく、
+     説明を尽くしても理解負担になるため、無くすのが妥当と判断。ただし
+     `emu.bus.double_speed`(エミュレーションコアの内部状態)自体は削除しない
 
 ## ゴール
 
 固定フッターを「区切り線+meta行(ROM名+カートリッジ種別)+ステータス行+入力行」の
 4行構成にする。コンテンツ領域からはT18-2で追加したROM見出し行を削除する(巻き戻し)。
-「2倍速」を「CPUクロック倍速」のようなCPUの話だと明確な表記に変更する。
+「2倍速」表記は(CPUの話だと明確にする表記変更ではなく)ステータス行から**削除**する
+(方針変更、2026-07-19。上記Context 2.参照)。
 
 ## フェーズ完了の検証コマンド
 
@@ -26,7 +32,7 @@
 odin test tests -collection:bbl=src   # tui_render_shell/shell_content_now_playing/status_line_format のテスト PASS
 ./scripts/build_macos.sh --test       # -o:speed ビルド+全テスト成功
 ./bbl game.gbc                        # 固定フッターが区切り線/ROM名+カートリッジ種別/
-                                       # ステータス(CPUクロック倍速表記含む)/入力行の
+                                       # ステータス(fps/vol/slotのみ、速度表記なし)/入力行の
                                        # 4行構成、コンテンツ領域にROM名の重複が無い
 ```
 
@@ -55,11 +61,15 @@ odin test tests -collection:bbl=src   # tui_render_shell/shell_content_now_playi
 必要がなくなった)。先頭の空行だけは間隔として残す。この削除によりメッセージログの
 表示可能行数が1行増える。
 
-### C. 「2倍速」表記の明確化
+### C. 「2倍速」表示の削除(方針変更: 表記修正ではなく削除)
 
-`status_line_format` の `speed_label` を、CPUクロックの話だと明確にわかる表記に
-変更する:「CPUクロック倍速」。「CPU」という語を含め、単に「2倍速」だけの表記には
-戻さない。
+`status_line_format` から `speed_label`(CPU倍速モードの表示)自体を削除する。
+`double_speed` 引数は呼び出し元(`status_line_update`/`status_line_tick`)からそのまま
+渡ってくる想定だったが、表示に使わなくなるため、関数シグネチャから `double_speed: bool`
+パラメータ自体を削除してよい(呼び出し元 `main.odin` の `status_line_update`/
+`status_line_tick` 呼び出し箇所も合わせて整理する)。ただし `emu.bus.double_speed` の
+値自体はエミュレーションコアの内部状態としてそのまま保持され続け、削除するのは
+「表示」だけであること。
 
 ## 壊してはいけない既存資産
 
@@ -94,7 +104,7 @@ meta 未指定時は空行になりレイアウトが崩れないこと、行数
 
 ### T19-2: game_shell_draw でROM中のみ meta を設定
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: ゲーム中(Now Playing・設定ビューの両方)は固定フッターにROM名+カートリッジ
 種別を表示し、それ以外の画面(ホーム/ブラウザ/設定(非ゲーム中))は空行のままにする。
@@ -114,7 +124,7 @@ meta 未指定時は空行になりレイアウトが崩れないこと、行数
 
 ### T19-3: shell_content_now_playing からROM見出し行を削除(フェーズ18の巻き戻し)
 
-- [ ] 完了
+- [x] 完了
 
 **目的**: T18-2でコンテンツ領域に追加したROM見出し行を取り除く(固定フッターに
 移ったため不要)。
@@ -131,16 +141,21 @@ meta 未指定時は空行になりレイアウトが崩れないこと、行数
 
 ---
 
-### T19-4: status_line_format の「2倍速」→CPU明記の表記に変更
+### T19-4: status_line_format から「2倍速」表示を削除
 
-- [ ] 完了
+- [x] 完了
 
-**目的**: 「2倍速」がゲーム全体の速度と誤解される問題を解消する。
+**目的**: 「2倍速で実行なんてしていない」というユーザー指摘を受け、ゲーム全体の速度が
+2倍になっていると誤解される表示自体を無くす(表記変更ではなく削除、方針変更2026-07-19)。
 **作るもの**: `src/app/tui.odin`:
-- `speed_label` を `" | 2倍速"` から `" | CPUクロック倍速"` に変更
+- `status_line_format` から `speed_label`(`" | 2倍速"`)と `double_speed` パラメータを
+  削除
+- `status_line_update`/`status_line_tick` からも `double_speed` パラメータを削除
+- `src/app/main.odin` の呼び出し箇所(2箇所)から `emu.bus.double_speed` 引数を削除
 **参照**: フェーズ18 T18-1(元は「双速」→「2倍速」)
-**完了条件 (DoD)**: 単体テストで新表記に「CPU」という語が含まれ、「双速」「2倍速」
-単独の表記が残っていないことを検証できる。grep で他に該当箇所が無いことを確認する。
+**完了条件 (DoD)**: 単体テストで「2倍速」「双速」のどちらの表記も含まれないことを
+検証できる。grep で他に該当箇所が無いことを確認する。`emu.bus.double_speed` 自体は
+削除しない(コア側の内部状態として保持)。
 **検証方法**: `odin test tests -collection:bbl=src` + `grep -rn "2倍速\|双速" src tests`
 **落とし穴**: `src/core` パッケージ内の「2倍速」はCPU/Timer動作の技術的説明コメントで
 あり無関係(TUI表示文字列ではない)。書き換えないこと。
@@ -150,7 +165,8 @@ meta 未指定時は空行になりレイアウトが崩れないこと、行数
 
 ### T19-5: 仕上げ(複数winsize回帰確認、-o:speed往復、docs記録)
 
-- [ ] 完了
+- [ ] 完了(自動検証は全て完了・クラッシュなし。実機 macOS Terminal.app での最終確認
+      のみ残、下記参照)
 
 **目的**: フェーズ19のマイルストーン。
 **作るもの**: デバッグと検証のみ。
@@ -175,3 +191,47 @@ meta行が区切り線とステータス行の間(SHELL_RESERVED_ROWS=4のうち
 reserved rows 増加分(+1)を反映)。`Shell_Frame` に `meta: string` を追加、
 `SHELL_RESERVED_ROWS` を3→4に変更、`tui_render_shell` で区切り線の直後・ステータス行の
 直前に meta 行を描画するよう追加。`./scripts/build_macos.sh`(-o:speed)成功。
+
+2026-07-19 T19-2 完了(前任エージェントが実装、本エージェントが引き継ぎテスト・
+コミット): `game_shell_draw` で `meta := fmt.tprintf("%s  %s", s.rom_name, s.cart_label)`
+を計算し `Shell_Frame` 構築へ渡すよう変更。`odin test tests -collection:bbl=src` 477件
+全パス、`./scripts/build_macos.sh --test`(-o:speed)成功。pty検証(pty + pyte、
+100x30、`tests/roms/acid2/dmg-acid2.gb`): 区切り線(row26)/meta行(row27、
+"dmg-acid2.gb  ROM ONLY")/ステータス行(row28、"▶ fps | vol | slot")/入力行(row29)の
+4行構成を確認。コミット `837ce10`。
+
+2026-07-19 T19-3 完了: `shell_content_now_playing` から見出し行
+(`fmt.aprintf("%s  %s", s.rom_name, s.cart_label, ...)`)の append を削除、先頭の空行のみ
+残した。単体テスト2本を更新: `test_shell_content_now_playing_panel` はコンテンツ領域に
+ROM名/カートリッジ種別が含まれないことを検証するよう反転、
+`test_shell_content_now_playing_log_capped_to_rows` は表示可能行数が1件増えたこと
+(avail_rows=12でlog-1..log-9の9件、旧仕様のlog-2..log-9の8件から+1件)を反映。
+`odin test tests -collection:bbl=src` 477件全パス。pty検証(100x30):
+コンテンツ領域(row0-25)にROM名の重複が無いこと、固定フッターのmeta行のみに表示される
+ことを確認。コミット `7594cce`。
+
+2026-07-19 T19-4 完了: `status_line_format` から `speed_label`(`" | 2倍速"`)と
+`double_speed` パラメータを削除、`status_line_update`/`status_line_tick` のシグネチャ
+からも `double_speed` を削除し、`main.odin` の呼び出し2箇所(`status_line_update`/
+`status_line_tick`)から `emu.bus.double_speed` 引数を除去(`emu.bus.double_speed` 自体は
+無変更)。単体テスト2本(`test_status_line_format_contents`/
+`test_status_line_format_omits_last_message`)を新シグネチャに合わせて更新し、
+「2倍速」「双速」のどちらも含まれないことを検証する回帰防止アサーションを追加。
+`odin test tests -collection:bbl=src` 477件全パス、`-o:speed`/`--debug` 両ビルド成功。
+`grep -rn "2倍速\|双速" src tests` で確認したところ、残る出現箇所は `src/core`
+(CPU/Timerのダブルスピード動作を説明する技術コメント、無関係)と、今回の削除を記録する
+tui.odin/tui_test.odinの履歴コメント・回帰防止アサーションのみで、表示文字列としては
+残っていない。pty検証(100x30): ステータス行が `▶ 62.0 fps | vol 80% | slot 1` のみで
+速度表記が無いことを確認。コミット `129b520`。
+
+2026-07-19 T19-5 完了(自動検証のみ、実機確認は残): pty + pyte による複数winsize
+(80x24, 119x41, 119x44, 100x30)回帰確認スクリプトで、`tests/roms/acid2/dmg-acid2.gb` を
+`./bbl` 経由でゲーム中表示させ、各サイズについて区切り線(rows-4行目)・meta行
+(rows-3行目、ROM名+カートリッジ種別)・ステータス行(rows-2行目、fps/vol/slotのみ、
+速度表記なし)・入力行(rows-1行目、"> "で始まる)が期待どおりの位置に来ることを確認
+(4サイズ全てPASS)。`./scripts/build_macos.sh --test`(-o:speed)/
+`./scripts/build_macos.sh --debug --test` の両方で477件全テストがパス。
+検証の過程でpty検証スクリプト自身のバグ(チャンク境界でUTF-8マルチバイト文字
+"─"が分割されデコードが化ける)を発見・修正(`codecs.getincrementaldecoder`で
+チャンクを跨いだデコードに変更、検証環境のスクリプトのみでプロダクトコードとは無関係)。
+**残項目**: 実機 macOS Terminal.app での最終確認(本環境では実施不可、ユーザー側で実施)。

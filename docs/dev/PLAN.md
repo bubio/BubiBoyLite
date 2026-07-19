@@ -34,7 +34,7 @@ BubiBoyLite（実行ファイル名 `bbl`）の開発計画のマスタードキ
 | 16 | Now Playingパネル簡素化+最下部固定バグ調査 | 🟡 | 3/4 | Now Playingパネルの重複表示行を削除、フェーズ15消し忘れバグのヒント修正、alt screen進入時のDECSTBMリセットで最下部固定バグを防御 | [詳細](phases/phase-16-tui-panel-fix.md) |
 | 17 | ioctl可変引数ABIバグ修正(最下部固定の真因) | 🟡 | 3/4 | ARM64でioctl(TIOCGWINSZ)が常に失敗し80x24フォールバックになっていたFFI宣言バグを修正、複数の実サイズで固定レイアウトが画面最下部まで届くことを直接確認 | [詳細](phases/phase-17-ioctl-vararg-fix.md) |
 | 18 | ステータス行の整理(ROM名分離・重複表示削除・表記修正) | 🟡 | 2/3 | ステータス行を簡潔化しROM名をコンテンツ領域見出しへ移動、コマンド結果の重複表示を解消、「双速」→「2倍速」に表記統一 | [詳細](phases/phase-18-status-line-cleanup.md) |
-| 19 | 固定フッターにROM行を追加+CPU倍速表記の明確化 | 🟡 | 1/5 | ROM名を固定フッター専用行に移動(フェーズ18の誤解を訂正)、「2倍速」→「CPUクロック倍速」に変更 | [詳細](phases/phase-19-footer-rom-row.md) |
+| 19 | 固定フッターにROM行を追加+「2倍速」表示の削除 | 🟡 | 4/5 | ROM名を固定フッター専用行に移動(フェーズ18の誤解を訂正)、「2倍速」表記をCPU明記に変更する計画から表示自体の削除に方針変更、実機Terminal.app最終確認のみ残 | [詳細](phases/phase-19-footer-rom-row.md) |
 
 ---
 
