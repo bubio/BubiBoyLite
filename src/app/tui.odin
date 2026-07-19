@@ -860,6 +860,10 @@ game_shell_draw :: proc(
 	content: []string
 	hint: string
 	status := s.last_line
+	// T19-1/T19-2: 固定フッターのmeta行にROM名+カートリッジ種別を表示する(実機で
+	// ユーザーから「ROM名は固定フッターの中で別行に」との指摘を受けての対応。
+	// Now Playing・ゲーム中設定ビューの両方で、ROMが読み込まれている間は常に表示する)。
+	meta := fmt.tprintf("%s  %s", s.rom_name, s.cart_label)
 	switch view {
 	case .Settings:
 		items := make([]List_Item, len(settings_fields))
@@ -888,7 +892,7 @@ game_shell_draw :: proc(
 	}
 	defer shell_lines_destroy(content)
 
-	tui_write_shell(Shell_Frame{cols = cols, rows = rows, content = content, status = status, input = input, hint = hint})
+	tui_write_shell(Shell_Frame{cols = cols, rows = rows, content = content, meta = meta, status = status, input = input, hint = hint})
 	dirty^ = false
 }
 
