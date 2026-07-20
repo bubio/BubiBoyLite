@@ -166,3 +166,60 @@ test_apu_sweep_negate_then_positive_disables_channel :: proc(t: ^testing.T) {
 	core.bus_write(&bus, core.NR10_ADDR, 0x17) // period=1, negate=0, shift=7
 	testing.expect(t, !bus.apu.pulse1.enabled, "negate計算後の正方向切替でch即停止")
 }
+
+// T21-2: shift==0でも周期的なapu_sweep_clockのオーバーフロー判定は必ず行われる
+// (フェーズ21で修正したバグの回帰テスト)。Fableの最小再現、BubiBoyの回帰テスト
+// `zero shift sweep still disables pulse channel on overflow` に相当するレジスタ値。
+@(test)
+test_apu_sweep_zero_shift_periodic_clock_still_disables_on_overflow :: proc(t: ^testing.T) {
+	bus: core.Bus
+	power_on_apu(&bus)
+
+	core.bus_write(&bus, core.NR10_ADDR, 0x20) // period=2, negate=0, shift=0
+	core.bus_write(&bus, core.NR11_ADDR, 0x40)
+	core.bus_write(&bus, core.NR12_ADDR, 0xF0)
+	core.bus_write(&bus, core.NR13_ADDR, 0x00)
+	core.bus_write(&bus, core.NR14_ADDR, 0x84) // freq=0x400=1024, トリガー
+
+	testing.expect(t, bus.apu.pulse1.enabled, "shift=0はトリガー時オーバーフロー判定の対象外(dmg_sound 06相当)")
+
+	// フレームシーケンサを7ステップ進める(sweepはstep2,6で発火。2回目の発火で
+	// shadow_frequency 1024 が shift=0でも delta=1024 として加算され2048でオーバーフロー)。
+	for _ in 0 ..< 7 {
+		core.bus_tick(&bus, core.FRAME_SEQUENCER_PERIOD)
+	}
+
+	testing.expect(
+		t,
+		!bus.apu.pulse1.enabled,
+		"shift=0でも周期的なapu_sweep_clockのオーバーフロー判定は必ず行われチャンネルが無効化される",
+	)
+}
+
+// T21-2: period==0かつshift==0(NR10=0x00、スイープ完全オフ)は、apu_trigger_pulseで
+// sweep.enabled=falseになりapu_sweep_clockの先頭ガードで即returnするため、
+// 本フェーズの修正の影響を受けない(回帰確認)。
+@(test)
+test_apu_sweep_fully_off_is_unaffected_by_overflow_fix :: proc(t: ^testing.T) {
+	bus: core.Bus
+	power_on_apu(&bus)
+
+	core.bus_write(&bus, core.NR10_ADDR, 0x00) // period=0, negate=0, shift=0(スイープ完全オフ)
+	core.bus_write(&bus, core.NR12_ADDR, 0xF0)
+	core.bus_write(&bus, core.NR13_ADDR, 0x00)
+	core.bus_write(&bus, core.NR14_ADDR, 0x84) // freq=0x400=1024, トリガー
+
+	testing.expect(t, bus.apu.pulse1.enabled)
+	testing.expect(t, !bus.apu.pulse1.sweep.enabled, "period=0かつshift=0はトリガー時にsweep.enabled=falseになる")
+
+	for _ in 0 ..< 7 {
+		core.bus_tick(&bus, core.FRAME_SEQUENCER_PERIOD)
+	}
+
+	testing.expect(
+		t,
+		bus.apu.pulse1.enabled,
+		"スイープ完全オフはapu_sweep_clockの先頭ガードで即returnし、周波数もオーバーフロー判定も行われない",
+	)
+	testing.expect(t, bus.apu.pulse1.frequency == 1024, "周波数は変化しない")
+}
