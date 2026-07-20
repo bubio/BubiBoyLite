@@ -1,144 +1,143 @@
 # BubiBoyLite
 
-Odin + SDL2 で実装する Game Boy Color エミュレーター（実行ファイル名 `bbl`）。
-仕様の唯一の源は [docs/dev/BluePrint.md](docs/dev/BluePrint.md)。
-開発計画は [docs/dev/PLAN.md](docs/dev/PLAN.md) を参照。
+A CLI-centric Game Boy Color emulator written in Odin + SDL2. The executable is named `bbl`.
 
 [![Build Linux](https://github.com/bubio/BubiBoyLite/actions/workflows/build-linux.yml/badge.svg)](https://github.com/bubio/BubiBoyLite/actions/workflows/build-linux.yml)
 [![Build macOS](https://github.com/bubio/BubiBoyLite/actions/workflows/build-macos.yml/badge.svg)](https://github.com/bubio/BubiBoyLite/actions/workflows/build-macos.yml)
 
-## 概要
+## Overview
 
-CLI 中心の Game Boy Color エミュレーターです。引数なしで起動すると Claude Code 風の
-TUI（テキストベース UI）が立ち上がり、ROM 選択からゲーム起動・終了までターミナル上で完結します。
-ゲームコントローラーにも対応しています。
+BubiBoyLite plays Game Boy and Game Boy Color games. Launch it with a ROM to jump
+straight into a game, or run it with no arguments to open a terminal UI (TUI) where
+you can browse and start ROMs, all without leaving your terminal. Game controllers are
+supported alongside the keyboard.
 
-<!--
-  スクリーンショット未収録（この環境には SDL2 ウィンドウを表示できるディスプレイが無いため撮影不可）。
-  実機で撮影後、以下のように差し替えてください:
-  ![TUI screenshot](docs/img/tui.png)
-  ![Game screenshot](docs/img/game.png)
--->
-TUI 画面とゲーム画面のスクリーンショットは未収録です。実機でお試しの際はぜひ撮影してみてください。
+## Supported platforms
 
-## 対応プラットフォーム
-
-| OS | アーキテクチャ |
+| OS | Architecture |
 |---|---|
-| macOS 13.5 以上 | x86_64, Apple Silicon (arm64) |
-| Ubuntu 22.04 以上 | amd64, arm64 |
+| macOS 13.5 or later | x86_64, Apple Silicon (arm64) |
+| Ubuntu 22.04 or later | amd64, arm64 |
 
-macOS 版はユニバーサルバイナリではなく、アーキテクチャごとに別バイナリで配布します。
-Windows・Raspberry Pi OS・FreeBSD には対応していません
-（2026-07-16、対応対象から除外。経緯は [phase-10-cicd.md](docs/dev/phases/phase-10-cicd.md) 参照）。
+macOS builds are shipped as separate binaries per architecture (not universal binaries).
+Windows, Raspberry Pi OS, and FreeBSD are not supported.
 
-## 動作要件
+## Requirements
 
-SDL2 がシステムにインストールされている必要があります（ビルド時・実行時とも動的リンク）。
+SDL2 must be installed on your system (BubiBoyLite links to it dynamically at runtime).
 
 ```sh
 brew install sdl2               # macOS
-sudo apt install libsdl2-2.0-0  # Linux（ビルドする場合は libsdl2-dev）
+sudo apt install libsdl2-2.0-0  # Linux
 ```
 
-## インストール
+## Install
 
-[Releases](https://github.com/bubio/BubiBoyLite/releases) から自分のプラットフォームに合った
-zip をダウンロードして展開するだけです。展開すると `bbl` 本体・`LICENSE`・`README.md` が
-同じ階層に並びます。
+Download the zip for your platform from the
+[Releases](https://github.com/bubio/BubiBoyLite/releases) page and extract it. Inside
+you will find the `bbl` executable, `LICENSE`, and `README.md` in the same directory.
 
 ```sh
 unzip bbl-<version>-<platform>-<arch>.zip
 ./bbl game.gbc
 ```
 
-macOS では初回実行時に Gatekeeper（quarantine）によって「開発元が未確認」の警告が出ることがあります。
-その場合は `xattr -d com.apple.quarantine ./bbl` を実行するか、Finder で右クリック →「開く」を選んでください。
+On macOS, Gatekeeper may warn that the developer cannot be verified the first time you
+run it. If so, either run `xattr -d com.apple.quarantine ./bbl`, or right-click the
+binary in Finder and choose **Open**.
 
-## 使い方
+## Usage
 
 ```
-使用法: bbl [options] game.gbc
+Usage: bbl [options] game.gbc
 
-  -h, --help        コマンドラインの使い方を表示
-  -v, --version     バージョンを表示
-  --scale N         表示倍率 (1-8、9以上は8に丸める、デフォルト 4)
-  --fullscreen      フルスクリーン表示 (--scale は無視される)
-  --shader KIND     シェーダー: nearest, smooth (デフォルト nearest)
-  --recent          最近使ったファイルを表示して選択
+  -h, --help        Show command-line usage
+  -v, --version     Show the version
+  --scale N         Display scale (1-8; values above 8 are clamped to 8, default 4)
+  --fullscreen      Fullscreen display (--scale is ignored)
+  --shader KIND     Shader: nearest, smooth (default nearest)
+  --recent          List recently used files and pick one
+```
 
-キーボードショートカット(ROM実行中):
-  矢印キー          十字キー
+Run `bbl` with no ROM to open the TUI, which lists the `.gb`/`.gbc` files in the current
+directory (or in `rom_dir` if configured). Use the arrow keys to select, Enter to start,
+and `q` to quit. Passing `--recent` lets you pick from your history of recently used files
+(up to 20). If a ROM is given on the command line, it takes priority and `--recent` is
+ignored.
+
+### Keyboard shortcuts (while a ROM is running)
+
+```
+  Arrow keys        D-pad
   Z / X             B / A
   Enter             Start
-  右Shift           Select
-  F1-F4             セーブステートのスロット選択 (1-4、デフォルト 1)
-  F5                現在のスロットへセーブステートを保存
-  F7                現在のスロットからセーブステートを復元
-  Esc               終了
+  Right Shift       Select
+  F1-F4             Select save-state slot (1-4, default 1)
+  F5                Save a save-state to the current slot
+  F7                Load a save-state from the current slot
+  Esc               Quit
 ```
 
-ROM を指定せずに `bbl` だけを実行すると TUI が起動し、カレントディレクトリ（`rom_dir` 設定時はそこ）の
-`.gb`/`.gbc` ファイルを一覧表示します。矢印キーで選択・Enter で起動・q で終了です。
-`--recent` を付けると最近使ったファイルの履歴（最大20件）から選べます。ROM ファイルの指定がある場合は
-そちらが優先され、`--recent` は無視されます。
+While a game is running, the SDL window takes center stage, but the launching terminal
+keeps showing a status line (FPS, volume, slot, cartridge type, etc.). You can also
+control the emulator from the terminal with the following keys (they behave the same as
+the SDL-window shortcuts):
 
-ゲーム実行中は SDL ウィンドウが主役になりますが、起動元のターミナルには FPS・音量・スロット・
-カートリッジ種別などのステータス行が表示され続けます。ターミナル側からも次のキーで操作できます
-（SDL ウィンドウ側のショートカットと同じ結果になります）:
-
-| キー | 動作 |
+| Key | Action |
 |---|---|
-| `+` / `-` | 音量を上下 |
-| `1`-`4` | セーブステートのスロット選択 |
-| `s` | 現在のスロットへ保存 |
-| `l` | 現在のスロットから復元 |
-| `p` | 一時停止 / 再開 |
+| `+` / `-` | Volume up / down |
+| `1`-`4` | Select save-state slot |
+| `s` | Save to the current slot |
+| `l` | Load from the current slot |
+| `p` | Pause / resume |
 
-## 設定ファイル (bbl.ini)
+## Configuration file (bbl.ini)
 
-初回起動時、実行ファイルと同じ場所に `bbl.ini` が全デフォルト値で自動生成されます。
-コマンドライン引数はここに書かれた値を一時的に上書きしますが、設定ファイルへの書き戻しはしません
-（優先順位: CLI 引数 > 設定ファイル > デフォルト）。`#` から行末まではコメントです。
+On first launch, a `bbl.ini` file is created with all default values in the same directory
+as the executable. Command-line arguments temporarily override the values written here but
+are never written back to the file (priority: CLI arguments > config file > defaults).
+Text from `#` to the end of a line is treated as a comment.
 
-| キー | 内容 | デフォルト |
+| Key | Description | Default |
 |---|---|---|
-| `scale` | 表示倍率 (1-8) | `4` |
-| `fullscreen` | フルスクリーン表示 (`true`/`false`) | `false` |
-| `shader` | シェーダー (`nearest`/`smooth`) | `nearest` |
-| `save_dir` | セーブファイル(`.sav`/`.rtc`)の保存先。空欄なら ROM と同じ場所 | (空欄) |
-| `state_dir` | ステートファイル(`.state`)の保存先。空欄なら ROM と同じ場所 | (空欄) |
-| `rom_dir` | TUI の ROM 一覧が開く起動ディレクトリ。空欄ならカレントディレクトリ | (空欄) |
-| `volume` | 音量 (0-100) | `100` |
-| `key_up`/`key_down`/`key_left`/`key_right`/`key_a`/`key_b`/`key_start`/`key_select` | キーボード割当（SDL キー名） | 矢印キー / Z・X / Enter / 右Shift |
-| `pad_up`/`pad_down`/`pad_left`/`pad_right`/`pad_a`/`pad_b`/`pad_start`/`pad_select` | ゲームコントローラー割当（SDL ボタン名） | 十字キー / B・A / Start / Back |
+| `scale` | Display scale (1-8) | `4` |
+| `fullscreen` | Fullscreen display (`true`/`false`) | `false` |
+| `shader` | Shader (`nearest`/`smooth`) | `nearest` |
+| `save_dir` | Where save files (`.sav`/`.rtc`) are stored. Empty means alongside the ROM | (empty) |
+| `state_dir` | Where state files (`.state`) are stored. Empty means alongside the ROM | (empty) |
+| `rom_dir` | Directory the TUI ROM list opens in. Empty means the current directory | (empty) |
+| `volume` | Volume (0-100) | `100` |
+| `key_up`/`key_down`/`key_left`/`key_right`/`key_a`/`key_b`/`key_start`/`key_select` | Keyboard bindings (SDL key names) | Arrow keys / Z·X / Enter / Right Shift |
+| `pad_up`/`pad_down`/`pad_left`/`pad_right`/`pad_a`/`pad_b`/`pad_start`/`pad_select` | Game controller bindings (SDL button names) | D-pad / B·A / Start / Back |
 
-`save_dir`/`state_dir` は `~` や環境変数（`HOME` 等）の展開に対応しています。
-キー/ボタン割当がセーブステート操作(F1-F5, F7)や終了(Esc)のショートカットと衝突する場合、
-起動時に警告が出ます。
+`save_dir`/`state_dir` support `~` and environment variable expansion (e.g. `HOME`). If a
+key/button binding conflicts with a save-state shortcut (F1-F5, F7) or the quit shortcut
+(Esc), a warning is shown at startup.
 
-## ビルド方法
+## Build from source
+
+You need [Odin](https://odin-lang.org/) and SDL2 (including development headers) installed.
+This project pins the Odin version via [mise](https://mise.jdx.dev/).
 
 ```sh
-mise install
-./scripts/build_macos.sh   # Linux なら build_linux.sh
+sudo apt install libsdl2-dev   # Linux: SDL2 development headers (macOS: brew install sdl2)
+mise install                   # Install the pinned Odin toolchain
+./scripts/build_macos.sh       # On Linux, use build_linux.sh
 ```
 
-`--debug` でデバッグビルド、`--release` でリリースビルド（最適化 + macOS は `-minimum-os-version` 指定）、
-`--test` でビルド後に `odin test tests -collection:bbl=src` も実行します。
+Build script options:
 
-テスト ROM（Blargg・Mooneye・dmg-acid2 等）はライセンスの都合でリポジトリに同梱していません。
-`./scripts/fetch_test_roms.sh` でピン止めされたバージョンを取得できます（詳細は
-[docs/dev/testing.md](docs/dev/testing.md)）。
+- `--debug` — debug build
+- `--release` — release build (optimized; on macOS also sets `-minimum-os-version`)
+- `--test` — after building, also run `odin test tests -collection:bbl=src`
 
-配布用 zip は `./scripts/package_zip.sh <binary> <platform> <arch>` で作成します
-(`bbl`/`LICENSE`/`README.md` を同梱、階層なし)。タグ付き GitHub Release を作成すると
-CI が自動的に全プラットフォームの zip を添付します。
+To create a distributable zip, run `./scripts/package_zip.sh <binary> <platform> <arch>`
+(it bundles `bbl`/`LICENSE`/`README.md` with no directory nesting). Creating a tagged
+GitHub Release automatically attaches the zips for every platform via CI.
 
-## ライセンス
+## License
 
-[MIT](LICENSE)。BubiBoy 自体のソースコードのみが対象で、テスト ROM（Blargg・Mooneye・dmg-acid2 等）は
-それぞれ別ライセンスの第三者成果物のためリポジトリに同梱していません。
+[MIT](LICENSE). Only the BubiBoyLite source code is covered.
 
-実 BIOS（ブートROM）の読み込みには対応していません。起動時は各モードのブート後レジスタ状態を
-直接セットします。
+BubiBoyLite does not support loading a real BIOS (boot ROM). At startup it sets the
+post-boot register state for each mode directly.
