@@ -86,12 +86,14 @@ test_config_apply_raw_invalid_shader_falls_back :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_config_apply_raw_fullscreen_bool_variants :: proc(t: ^testing.T) {
+test_config_apply_raw_fullscreen_is_ignored :: proc(t: ^testing.T) {
+	// fullscreen は bbl.ini から読み込まない(永続化しない方針、要件2026-07-20)。
+	// raw に fullscreen=TRUE があっても base の値(デフォルトfalse)のまま無視されること。
 	base := app.default_config()
 	raw := raw1("fullscreen", "TRUE")
 	defer delete(raw)
 	cfg := app.config_apply_raw(base, raw)
-	testing.expect(t, cfg.fullscreen)
+	testing.expect(t, !cfg.fullscreen)
 }
 
 @(test)
@@ -172,7 +174,8 @@ test_config_render_default_ini_contains_all_keys :: proc(t: ^testing.T) {
 	defer delete(content)
 
 	testing.expect(t, strings.contains(content, "scale = 4"))
-	testing.expect(t, strings.contains(content, "fullscreen = false"))
+	// fullscreen は永続化しない方針(要件2026-07-20)のためデフォルトiniには出力されない。
+	testing.expect(t, !strings.contains(content, "fullscreen"))
 	testing.expect(t, strings.contains(content, "shader = nearest"))
 	testing.expect(t, strings.contains(content, "save_dir ="))
 	testing.expect(t, strings.contains(content, "state_dir ="))

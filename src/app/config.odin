@@ -212,7 +212,8 @@ config_patch_file :: proc(path: string, changes: map[string]string) -> (ok: bool
 }
 
 // config_apply_set は TUI の `/set`/`/settings`(T12-4)で1キーの値を検証・適用する。
-// 対象は scale/fullscreen/shader/volume の基本項目のみ(key_*/pad_* は対象外、プラン方針)。
+// 対象は scale/shader/volume の基本項目のみ(key_*/pad_* は対象外、プラン方針。fullscreen は
+// 永続化しない方針のため設定対象外=Cmd+Enter/--fullscreen 専用、要件2026-07-20)。
 // 不正な値は cfg を変更せずエラーメッセージだけ返す。成功時は cfg^ を更新した上で、
 // config_dir が解決できていれば bbl.ini へそのキーだけを即時パッチする(config_patch_file、
 // map 再シリアライズではなく行単位パッチなのでコメント・他の設定は保持される)。
@@ -226,12 +227,6 @@ config_apply_set :: proc(cfg: ^Config, config_dir: string, key: string, value: s
 			return false, fmt.tprintf("scale の値が不正です(1〜8の整数): %q", value)
 		}
 		cfg.scale = n
-	case "fullscreen":
-		b, parse_ok := parse_bool(value)
-		if !parse_ok {
-			return false, fmt.tprintf("fullscreen の値が不正です(true/false): %q", value)
-		}
-		cfg.fullscreen = b
 	case "shader":
 		switch strings.to_lower(value, context.temp_allocator) {
 		case "nearest":
@@ -248,7 +243,7 @@ config_apply_set :: proc(cfg: ^Config, config_dir: string, key: string, value: s
 		}
 		cfg.volume = n
 	case:
-		return false, fmt.tprintf("不明な設定項目です: %q(scale/fullscreen/shader/volume のみ対応)", key)
+		return false, fmt.tprintf("不明な設定項目です: %q(scale/shader/volume のみ対応)", key)
 	}
 
 	if strings.trim_space(config_dir) == "" {
@@ -287,14 +282,8 @@ config_apply_raw :: proc(base: Config, raw: map[string]string) -> Config {
 		}
 	}
 
-	if v, ok := raw["fullscreen"]; ok {
-		b, parse_ok := parse_bool(v)
-		if !parse_ok {
-			warn_invalid("fullscreen", v, "true/false である必要があります")
-		} else {
-			cfg.fullscreen = b
-		}
-	}
+	// fullscreen は bbl.ini から読み込まない(永続化しない方針、要件2026-07-20)。
+	// 既存の bbl.ini に fullscreen= 行が残っていても無害に無視される。
 
 	if v, ok := raw["shader"]; ok {
 		switch strings.to_lower(v, context.temp_allocator) {
@@ -424,9 +413,6 @@ config_render_default_ini :: proc() -> string {
 
 	strings.write_string(&b, "# 表示倍率 (1-8、9以上は8として扱われます)\n")
 	strings.write_string(&b, fmt.tprintf("scale = %d\n\n", cfg.scale))
-
-	strings.write_string(&b, "# フルスクリーン表示 (true / false)\n")
-	strings.write_string(&b, fmt.tprintf("fullscreen = %s\n\n", cfg.fullscreen ? "true" : "false"))
 
 	strings.write_string(&b, "# シェーダー (nearest / smooth)\n")
 	strings.write_string(&b, fmt.tprintf("shader = %s\n\n", cfg.shader == .Smooth ? "smooth" : "nearest"))

@@ -515,14 +515,14 @@ test_menu_step_up_down_clamps_selection :: proc(t: ^testing.T) {
 	eff = app.menu_step(&m, app.Key_Event{key = .Down}, cfg)
 	testing.expect(t, eff.op == .Redraw && m.selected == 1)
 
-	// 末尾(3)まで下げてさらに Down → 動かない
-	m.selected = 3
+	// 末尾(2 = settings_fields は scale/shader/volume の3項目)まで下げてさらに Down → 動かない
+	m.selected = 2
 	eff = app.menu_step(&m, app.Key_Event{key = .Down}, cfg)
-	testing.expect(t, eff.op == .None && m.selected == 3)
+	testing.expect(t, eff.op == .None && m.selected == 2)
 
-	// Up で 2 に戻る
+	// Up で 1 に戻る
 	eff = app.menu_step(&m, app.Key_Event{key = .Up}, cfg)
-	testing.expect(t, eff.op == .Redraw && m.selected == 2)
+	testing.expect(t, eff.op == .Redraw && m.selected == 1)
 }
 
 @(test)
@@ -552,26 +552,6 @@ test_menu_adjust_value_scale_boundaries :: proc(t: ^testing.T) {
 	cfg.scale = 1
 	_, changed = app.menu_adjust_value(cfg, .Scale, -1)
 	testing.expect(t, !changed)
-}
-
-@(test)
-test_menu_adjust_value_fullscreen_toggles :: proc(t: ^testing.T) {
-	cfg := app.default_config()
-	cfg.fullscreen = false
-
-	// delta の符号に関わらずトグル
-	v, changed := app.menu_adjust_value(cfg, .Fullscreen, 1)
-	testing.expect(t, changed && v == "true")
-	delete(v)
-
-	v, changed = app.menu_adjust_value(cfg, .Fullscreen, -1)
-	testing.expect(t, changed && v == "true")
-	delete(v)
-
-	cfg.fullscreen = true
-	v, changed = app.menu_adjust_value(cfg, .Fullscreen, 1)
-	testing.expect(t, changed && v == "false")
-	delete(v)
 }
 
 @(test)
@@ -660,12 +640,10 @@ test_menu_step_close_keys :: proc(t: ^testing.T) {
 test_menu_item_info_arrow_format :: proc(t: ^testing.T) {
 	cfg := app.default_config()
 	cfg.scale = 3
-	cfg.fullscreen = false
 	cfg.shader = .Nearest
 	cfg.volume = 80
 
 	testing.expect_value(t, app.menu_item_info(cfg, .Scale), "◂ 3 ▸")
-	testing.expect_value(t, app.menu_item_info(cfg, .Fullscreen), "◂ false ▸")
 	testing.expect_value(t, app.menu_item_info(cfg, .Shader), "◂ nearest ▸")
 	testing.expect_value(t, app.menu_item_info(cfg, .Volume), "◂ 80 ▸")
 }
@@ -1162,8 +1140,9 @@ test_parse_game_command_volume_requires_up_or_down :: proc(t: ^testing.T) {
 test_live_setting_kind_maps_known_keys :: proc(t: ^testing.T) {
 	testing.expect(t, app.live_setting_kind("volume") == .Volume)
 	testing.expect(t, app.live_setting_kind("shader") == .Shader)
-	testing.expect(t, app.live_setting_kind("fullscreen") == .Fullscreen)
 	testing.expect(t, app.live_setting_kind("scale") == .Scale)
+	// fullscreen は設定対象外(Cmd+Enter/--fullscreen 専用、要件2026-07-20)なので .None
+	testing.expect(t, app.live_setting_kind("fullscreen") == .None)
 }
 
 @(test)

@@ -19,6 +19,7 @@ Video :: struct {
 	intermediate:      ^sdl.Texture, // smooth用の中間テクスチャ(TEXTUREACCESS_TARGET、遅延生成)
 	shader:            Shader_Kind,
 	fullscreen:        bool,
+	scale:             int, // 現在の表示倍率(フルスクリーン解除時にこのサイズへ戻す)
 	last_logged_scale: int, // T8-2 DoD: 算出倍率をログ出力するための直近値(変化時のみログ)
 }
 
@@ -34,7 +35,9 @@ video_init :: proc(scale: int, fullscreen: bool, shader: Shader_Kind) -> (video:
 	// テクスチャ生成時にも参照されるため、streamingテクスチャ生成前に既定値を設定しておく。
 	sdl.SetHint(sdl.HINT_RENDER_SCALE_QUALITY, "0")
 
-	window_flags: sdl.WindowFlags = sdl.WINDOW_SHOWN | sdl.WINDOW_RESIZABLE
+	// WINDOW_RESIZABLE は付けない(ドラッグ等での任意リサイズを禁止、要件2026-07-20)。
+	// ウィンドウサイズの変更は video_apply_scale による明示的な SetWindowSize のみで行う。
+	window_flags: sdl.WindowFlags = sdl.WINDOW_SHOWN
 	if fullscreen {
 		window_flags |= sdl.WINDOW_FULLSCREEN_DESKTOP
 	}
@@ -86,30 +89,32 @@ video_init :: proc(scale: int, fullscreen: bool, shader: Shader_Kind) -> (video:
 	video.texture = texture
 	video.shader = shader
 	video.fullscreen = fullscreen
+	video.scale = scale
 	video.last_logged_scale = 0
 	return video, true
 }
 
-// video_compute_layout は出力サイズ(ウィンドウ/フルスクリーンのピクセルサイズ)から、
-// GBの160x144を割り切れる最大の整数倍率と、その内容を中央寄せするための描画先矩形を返す。
-// 余白はレターボックス(呼び出し側が黒でRenderClearする前提)。
-// 整数倍率が1未満になる異常系(出力が160x144より小さい)は1に丸める(クラッシュ回避、
-// 表示は多少はみ出るが実運用では起こらない想定)。
-// 純粋関数(SDL初期化非依存)なのでテスト可能(T8-2 DoDの「算出倍率」の検証に使う)。
+// video_compute_layout は出力サイズから 160:144 を維持したフィット矩形を返す。
+// 縦横比を維持し「短手が出力に収まる最大の連続倍率」でフィットする(整数倍に丸めない。
+// フルスクリーンで画面を最大限使うためのユーザー要件2026-07-20。BluePrint L41も更新済)。
+// 余白は黒(レター/ピラーボックス、呼び出し側が黒でRenderClearする前提)。
+// 返す scale は smoothシェーダー判定/ログ用の整数倍率(切り捨て、最小1)。純粋関数(テスト可能)。
+// 注: ウィンドウモードでは窓が常に 160*scale×144*scale なので scale_f は整数になり、
+// 従来どおり余白なしでぴったり埋まる(回帰なし)。フルスクリーンでのみ連続倍率が効く。
 video_compute_layout :: proc(output_w, output_h: int) -> (rect: sdl.Rect, scale: int) {
-	scale_w := output_w / core.SCREEN_WIDTH
-	scale_h := output_h / core.SCREEN_HEIGHT
-	scale = min(scale_w, scale_h)
+	scale_f := min(f64(output_w) / f64(core.SCREEN_WIDTH), f64(output_h) / f64(core.SCREEN_HEIGHT))
+	if scale_f < 1 {
+		scale_f = 1 // 出力がGB解像度未満の異常系は1倍に丸める(クラッシュ回避)
+	}
+	content_w := int(f64(core.SCREEN_WIDTH) * scale_f + 0.5)
+	content_h := int(f64(core.SCREEN_HEIGHT) * scale_f + 0.5)
+	x := (output_w - content_w) / 2
+	y := (output_h - content_h) / 2
+	rect = sdl.Rect{i32(x), i32(y), i32(content_w), i32(content_h)}
+	scale = int(scale_f)
 	if scale < 1 {
 		scale = 1
 	}
-
-	content_w := core.SCREEN_WIDTH * scale
-	content_h := core.SCREEN_HEIGHT * scale
-	x := (output_w - content_w) / 2
-	y := (output_h - content_h) / 2
-
-	rect = sdl.Rect{i32(x), i32(y), i32(content_w), i32(content_h)}
 	return rect, scale
 }
 
@@ -194,13 +199,25 @@ video_set_fullscreen :: proc(video: ^Video, want: bool) -> bool {
 		return false
 	}
 	video.fullscreen = want
+	if !want {
+		// 解除時は現在のスケール設定サイズへ戻し中央へ再配置(要件2026-07-20)。
+		// SetWindowFullscreen だけでは元サイズに戻らない環境があるため明示する。
+		sdl.SetWindowSize(
+			video.window,
+			i32(core.SCREEN_WIDTH * video.scale),
+			i32(core.SCREEN_HEIGHT * video.scale),
+		)
+		sdl.SetWindowPosition(video.window, sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED)
+	}
 	return true
 }
 
 // video_apply_scale はウィンドウサイズを新しい scale に即時反映する(T15-3、`/settings`/`/set
-// scale` の即時反映用)。フルスクリーン中はウィンドウサイズが表示に影響しないため何もしない
-// (フルスクリーン解除後に反映される)。
+// scale` の即時反映用)。フルスクリーン中はウィンドウサイズが表示に影響しないため即座の
+// SetWindowSizeは行わないが、video.scale には記録しておき、フルスクリーン解除時に
+// video_set_fullscreen がこのサイズへ戻す。
 video_apply_scale :: proc(video: ^Video, scale: int) {
+	video.scale = scale // フルスクリーン中でも記録し、解除時にこのサイズへ戻す
 	if video.fullscreen {
 		return
 	}

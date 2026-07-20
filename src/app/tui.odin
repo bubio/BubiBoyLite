@@ -806,27 +806,26 @@ parse_home_command :: proc(input: string) -> Home_Command {
 
 // --- /settings 対話メニュー(T12-4) ---
 // ホーム画面限定(ゲーム実行中は対話メニューを開かない、T12-5 参照: SDL イベントポンプが
-// 止まりウィンドウ幽霊化を再発するため)。scale/fullscreen/shader/volume のみ対象。
+// 止まりウィンドウ幽霊化を再発するため)。scale/shader/volume のみ対象(fullscreen は設定
+// メニュー非対象=ホーム画面で古いフレームが引き伸ばされるため。Cmd+Enter/--fullscreen 専用、
+// 要件2026-07-20)。
 
 // T13-1: tests パッケージから menu_adjust_value(cfg, f, delta) を直接テストするため
 // private を外して公開する(settings_fields 等の補助はファイル内利用のみなので private のまま)。
 Settings_Field :: enum {
 	Scale,
-	Fullscreen,
 	Shader,
 	Volume,
 }
 
 @(private = "file")
-settings_fields := [4]Settings_Field{.Scale, .Fullscreen, .Shader, .Volume}
+settings_fields := [3]Settings_Field{.Scale, .Shader, .Volume}
 
 @(private = "file")
 settings_field_key :: proc(f: Settings_Field) -> string {
 	switch f {
 	case .Scale:
 		return "scale"
-	case .Fullscreen:
-		return "fullscreen"
 	case .Shader:
 		return "shader"
 	case .Volume:
@@ -840,8 +839,6 @@ settings_field_value_string :: proc(cfg: Config, f: Settings_Field) -> string {
 	switch f {
 	case .Scale:
 		return fmt.tprintf("%d", cfg.scale)
-	case .Fullscreen:
-		return cfg.fullscreen ? "true" : "false"
 	case .Shader:
 		return cfg.shader == .Smooth ? "smooth" : "nearest"
 	case .Volume:
@@ -857,7 +854,7 @@ settings_field_value_string :: proc(cfg: Config, f: Settings_Field) -> string {
 // して完全純粋化し、文字列比較で単体テスト可能にする。
 
 Menu_State :: struct {
-	selected: int, // settings_fields のインデックス(0..3)
+	selected: int, // settings_fields のインデックス(0..2)
 	status:   string, // 直前の操作結果メッセージ(所有。呼び出し側が config_apply_set の結果等を反映する)
 }
 
@@ -875,7 +872,7 @@ Menu_Effect :: struct {
 }
 
 // menu_adjust_value は ←→ 操作による値の増減/トグルを計算する(純粋関数、単体テスト対象)。
-// scale は ±1 で 1..MAX_SCALE に clamp、volume は ±5 で 0..100 に clamp、fullscreen/shader は
+// scale は ±1 で 1..MAX_SCALE に clamp、volume は ±5 で 0..100 に clamp、shader は
 // delta の符号に関わらずトグル。既に境界にいて値が変わらない場合は changed=false を返し、
 // 文字列の確保もしない。config_apply_set は範囲外を clamp せずエラーにする仕様のため、
 // ここで clamp してから渡すことで常に適用可能な値だけを返す。
@@ -890,8 +887,6 @@ menu_adjust_value :: proc(cfg: Config, f: Settings_Field, delta: int, allocator 
 			return "", false
 		}
 		return fmt.aprintf("%d", n, allocator = allocator), true
-	case .Fullscreen:
-		return strings.clone(cfg.fullscreen ? "false" : "true", allocator), true
 	case .Shader:
 		return strings.clone(cfg.shader == .Smooth ? "nearest" : "smooth", allocator), true
 	case .Volume:

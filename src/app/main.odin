@@ -244,7 +244,13 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 				running = false
 			case .KEYDOWN:
 				if event.key.keysym.sym == .ESCAPE {
-					running = false
+					// ESC: フルスクリーン中はまず解除(ゲーム継続)。ウィンドウ表示中は従来どおり
+					// ゲームを閉じる(TUIへ戻る/終了)。要件2026-07-20。
+					if video.fullscreen {
+						video_set_fullscreen(&video, false)
+					} else {
+						running = false
+					}
 				}
 				if input_is_fullscreen_toggle(event.key) {
 					video_toggle_fullscreen(&video)
@@ -308,7 +314,7 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 					case .Adjust:
 						set_ok, msg := config_apply_set(&live_cfg, config_dir, eff.key, eff.value)
 						// T15-4: config_apply_set 成功後、その場で SDL 側にも反映する
-						// (volume だけでなく shader/fullscreen/scale も次回起動を待たず即時反映)。
+						// (volume だけでなく shader/scale も次回起動を待たず即時反映)。
 						if set_ok {
 							apply_live_setting(&video, &audio, eff.key, live_cfg)
 						}
@@ -393,7 +399,7 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 							msg = fmt.tprintf("不明なコマンドです: %s", cmd.raw)
 						case .Set:
 							set_ok, apply_msg := config_apply_set(&live_cfg, config_dir, cmd.set_key, cmd.set_value)
-							// T15-4: apply_live_setting に一本化(volume/shader/fullscreen/scale
+							// T15-4: apply_live_setting に一本化(volume/shader/scale
 							// いずれも即時反映、config_apply_set 成功時の重複ロジックを解消)。
 							if set_ok {
 								apply_live_setting(&video, &audio, cmd.set_key, live_cfg)
@@ -569,7 +575,6 @@ Live_Setting_Kind :: enum {
 	None,
 	Volume,
 	Shader,
-	Fullscreen,
 	Scale,
 }
 
@@ -579,8 +584,6 @@ live_setting_kind :: proc(key: string) -> Live_Setting_Kind {
 		return .Volume
 	case "shader":
 		return .Shader
-	case "fullscreen":
-		return .Fullscreen
 	case "scale":
 		return .Scale
 	}
@@ -589,8 +592,9 @@ live_setting_kind :: proc(key: string) -> Live_Setting_Kind {
 
 // apply_live_setting は config_apply_set が成功した直後に呼び、その場で SDL 側の実行状態へ
 // 反映する(T15-4)。従来 volume だけ audio_set_volume で即時反映されていたが、
-// shader/fullscreen/scale は live_cfg/bbl.ini は更新されても次回 ROM 起動まで見た目に
+// shader/scale は live_cfg/bbl.ini は更新されても次回 ROM 起動まで見た目に
 // 反映されなかった(ユーザー要望「/settings の値変更を即座に反映してほしい」)。
+// fullscreen は設定対象外(Cmd+Enter/--fullscreen 専用、要件2026-07-20)。
 // config_apply_set は既に cfg^(=live_cfg)を更新済みなので、ここでは cfg の該当フィールドを
 // 読むだけでよく、文字列の再パースは不要。shader は video.shader を直接書き換えるだけで
 // 次フレームの video_present から反映される(専用のSDL APIは無い)。
@@ -600,8 +604,6 @@ apply_live_setting :: proc(video: ^Video, audio: ^Audio, key: string, cfg: Confi
 		audio_set_volume(audio, cfg.volume)
 	case .Shader:
 		video.shader = cfg.shader
-	case .Fullscreen:
-		video_set_fullscreen(video, cfg.fullscreen)
 	case .Scale:
 		video_apply_scale(video, cfg.scale)
 	case .None:
