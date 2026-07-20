@@ -158,9 +158,11 @@ SWEEP_SIZE :: 4 /*period*/ + 1 /*negate*/ + 4 /*shift*/ + 4 /*timer*/ + 4 /*shad
 
 PULSE_CHANNEL_SIZE :: 1 /*enabled*/ + 1 /*dac_enabled*/ + 4 /*duty*/ + 4 /*duty_step*/ + 4 /*length_counter*/ + 1 /*length_enabled*/ + 4 /*frequency*/ + 4 /*timer*/ + ENVELOPE_SIZE + SWEEP_SIZE
 
-WAVE_CHANNEL_SIZE :: 1 /*enabled*/ + 1 /*dac_enabled*/ + 4 /*length_counter*/ + 1 /*length_enabled*/ + 4 /*frequency*/ + 4 /*timer*/ + 4 /*position*/ + 4 /*output_level*/
+// T20-4: sample_area(i64=8B)/sample_cycles(int=4Bとしてput_int/get_intで保存)を追加
+// (区間平均アキュムレータ、apu.odin参照)。
+WAVE_CHANNEL_SIZE :: 1 /*enabled*/ + 1 /*dac_enabled*/ + 4 /*length_counter*/ + 1 /*length_enabled*/ + 4 /*frequency*/ + 4 /*timer*/ + 4 /*position*/ + 4 /*output_level*/ + 8 /*sample_area*/ + 4 /*sample_cycles*/
 
-NOISE_CHANNEL_SIZE :: 1 /*enabled*/ + 1 /*dac_enabled*/ + 4 /*length_counter*/ + 1 /*length_enabled*/ + 4 /*timer*/ + 2 /*lfsr*/ + ENVELOPE_SIZE
+NOISE_CHANNEL_SIZE :: 1 /*enabled*/ + 1 /*dac_enabled*/ + 4 /*length_counter*/ + 1 /*length_enabled*/ + 4 /*timer*/ + 2 /*lfsr*/ + ENVELOPE_SIZE + 8 /*sample_area*/ + 4 /*sample_cycles*/
 
 APU_NR_REGS_SIZE :: 20 // nr10-nr14,nr21-nr24,nr30-nr34,nr41-nr44,nr50,nr51
 
@@ -529,6 +531,8 @@ write_wave_channel :: proc(c: ^Cursor, ch: ^Wave_Channel) {
 	put_int(c, ch.timer)
 	put_int(c, ch.position)
 	put_int(c, ch.output_level)
+	put_i64(c, ch.sample_area) // T20-2区間平均アキュムレータ(T20-4で保存対象に追加)
+	put_int(c, ch.sample_cycles)
 }
 
 @(private = "file")
@@ -541,6 +545,8 @@ read_wave_channel :: proc(c: ^Cursor, ch: ^Wave_Channel) {
 	ch.timer = get_int(c)
 	ch.position = get_int(c)
 	ch.output_level = get_int(c)
+	ch.sample_area = get_i64(c)
+	ch.sample_cycles = get_int(c)
 }
 
 @(private = "file")
@@ -552,6 +558,8 @@ write_noise_channel :: proc(c: ^Cursor, ch: ^Noise_Channel) {
 	put_int(c, ch.timer)
 	put_u16(c, ch.lfsr)
 	write_envelope(c, &ch.envelope)
+	put_i64(c, ch.sample_area) // T20-2区間平均アキュムレータ(T20-4で保存対象に追加)
+	put_int(c, ch.sample_cycles)
 }
 
 @(private = "file")
@@ -563,11 +571,16 @@ read_noise_channel :: proc(c: ^Cursor, ch: ^Noise_Channel) {
 	ch.timer = get_int(c)
 	ch.lfsr = get_u16(c)
 	read_envelope(c, &ch.envelope)
+	ch.sample_area = get_i64(c)
+	ch.sample_cycles = get_int(c)
 }
 
 // write_apu_state/read_apu_state: オーディオリングバッファ(ring/ring_read/ring_write/
 // ring_count)は保存しない(落とし穴: 単なる出力先バッファでゲーム状態ではない。復元直後は
-// 空として再開して問題ない)。
+// 空として再開して問題ない)。T20-6: read_apu_state は「復元直後は空」という上記コメントの
+// 前提を実際に成立させるため、インデックス(ring_read/ring_write/ring_count)を明示的に
+// クリアする(以前は未実装で、ロード直前の古いサンプルがロード後も再生され続ける
+// ギャップがあった、docs/dev/phases/phase-20-apu-antialiasing.md T20-6参照)。
 @(private = "file")
 write_apu_state :: proc(c: ^Cursor, apu: ^Apu) {
 	put_bool(c, apu.powered_on)
@@ -636,6 +649,10 @@ read_apu_state :: proc(c: ^Cursor, apu: ^Apu) {
 
 	get_bytes(c, apu.wave_ram[:])
 	apu.sample_counter = get_int(c)
+
+	apu.ring_read = 0 // T20-6: ロード直後はリングバッファを空にして再開する
+	apu.ring_write = 0
+	apu.ring_count = 0
 }
 
 // --- MBC(union のタグ + 中身、T7-1) ---
