@@ -294,6 +294,12 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 					if !shell_active {
 						fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(レガシー1行表示のみ)
 					}
+				case .Complete:
+					// T23-*: Tab補完は「先頭ヒットのコマンド」で入力欄を書き換えるだけ(実行はしない)。
+					if top, ok := command_top_match(line_editor_text(command_editor), true); ok {
+						line_editor_set(&command_editor, fmt.tprintf("/%s", top.name))
+						command_dirty = true
+					}
 				case .Menu:
 					eff := menu_step(&menu_state, ev, live_cfg)
 					switch eff.op {
@@ -316,7 +322,11 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 				case .Submit:
 					submitted, text := line_editor_feed(&command_editor, Key_Event{key = .Enter})
 					if submitted {
-						cmd := parse_game_command(text)
+						// T23-*: Enter確定は「先頭ヒットのコマンド」に解決してからパースする
+						// (例: "sav 2" → "/save 2")。ヒットが無ければ resolved は text の clone。
+						resolved := command_resolve_input(text, true)
+						delete(text)
+						cmd := parse_game_command(resolved)
 						msg := ""
 						switch cmd.kind {
 						case .Empty:
@@ -362,6 +372,21 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 							// T15-2: 旧 `-` ホットキーと全く同じロジック(相対増減、非永続)。
 							v := audio_adjust_volume(&audio, -AUDIO_VOLUME_STEP)
 							msg = fmt.tprintf("Volume %d%%", v)
+						case .Reset:
+							// T22-*: core.emulator_reset は bus.apu を含む Emulator 全体を書き換えるため、
+							// save/loadと同じくオーディオコールバックスレッドと直列化する(T5-6落とし穴の踏襲)。
+							sdl.LockAudioDevice(audio.device)
+							core.emulator_reset(emu)
+							sdl.UnlockAudioDevice(audio.device)
+							stop_reported = false // cpu.stopped が解除されるので、以後の halt を再通知できるようにする
+							msg = "Reset"
+						case .Help:
+							// T22-*: ホーム画面と違い、ゲーム中はEnterでバッファが確定・消去されるため
+							// 一覧を留めておく場所が無い。メッセージログへ追記することで確定後も残す。
+							message_log_append(&msg_log, "コマンド一覧:")
+							for c in commands_matching("", true, context.temp_allocator) {
+								message_log_append(&msg_log, fmt.tprintf("/%s — %s", c.name, c.desc))
+							}
 						case .Quit:
 							running = false
 						case .Unknown:
@@ -375,7 +400,7 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 							}
 							msg = apply_msg
 						}
-						delete(text)
+						delete(resolved)
 						if !shell_active {
 							fmt.eprintf("\r\x1b[K") // 入力エコー行をクリア(レガシー1行表示のみ)
 						}

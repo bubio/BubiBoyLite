@@ -70,6 +70,12 @@ test_parse_key_char :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_parse_key_tab :: proc(t: ^testing.T) {
+	ev, n := app.tui_parse_key([]u8{0x09})
+	testing.expect(t, ev.key == .Tab && n == 1)
+}
+
+@(test)
 test_parse_key_empty_buffer :: proc(t: ^testing.T) {
 	ev, n := app.tui_parse_key([]u8{})
 	testing.expect(t, ev.key == .None && n == 0)
@@ -314,6 +320,21 @@ test_line_editor_reset_clears_buffer :: proc(t: ^testing.T) {
 	testing.expect(t, app.line_editor_text(editor) == "")
 }
 
+@(test)
+test_line_editor_set_replaces_buffer :: proc(t: ^testing.T) {
+	editor: app.Line_Editor
+	defer app.line_editor_destroy(&editor)
+
+	app.line_editor_feed(&editor, app.Key_Event{key = .Char, ch = 'x'})
+	app.line_editor_feed(&editor, app.Key_Event{key = .Char, ch = 'y'})
+	app.line_editor_set(&editor, "/browse")
+	testing.expect(t, app.line_editor_text(editor) == "/browse")
+
+	// 再度呼ぶと前回分は完全に置き換わる(残らない)。
+	app.line_editor_set(&editor, "/help")
+	testing.expect(t, app.line_editor_text(editor) == "/help")
+}
+
 // --- ホーム画面(T12-3)の単体テスト ---
 
 @(test)
@@ -359,7 +380,8 @@ test_parse_home_command_trims_whitespace :: proc(t: ^testing.T) {
 test_shell_content_home_shows_logo_and_commands :: proc(t: ^testing.T) {
 	// T14-2: ホーム画面のコンテンツ(旧 tui_render_home_screen のテストを移行)。
 	// 入力行・ステータス行はシェル側(Shell_Frame)の担当になったためここには含まれない。
-	content := app.shell_content_home(80)
+	// T22-*: 空入力ならロゴ+コマンド一覧(コマンドレジストリ由来)を表示する。
+	content := app.shell_content_home(80, "")
 	defer app.shell_lines_destroy(content)
 
 	joined := strings.join(content, "\n", context.temp_allocator)
@@ -367,17 +389,32 @@ test_shell_content_home_shows_logo_and_commands :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(joined, "/browse"))
 	testing.expect(t, strings.contains(joined, "/settings"))
 	testing.expect(t, strings.contains(joined, "/quit"))
+	testing.expect(t, strings.contains(joined, "/help"))
+	// ゲーム専用コマンドはホームには出ない。
+	testing.expect(t, !strings.contains(joined, "/pause"))
 }
 
 @(test)
 test_shell_content_home_falls_back_to_title_when_narrow :: proc(t: ^testing.T) {
 	// 幅が極端に狭い端末ではロゴの代わりに1行タイトルへフォールバックする。
-	content := app.shell_content_home(20)
+	content := app.shell_content_home(20, "")
 	defer app.shell_lines_destroy(content)
 
 	joined := strings.join(content, "\n", context.temp_allocator)
 	testing.expect(t, strings.contains(joined, "BubiBoyLite v"))
 	testing.expect(t, !strings.contains(joined, "____"))
+}
+
+@(test)
+test_shell_content_home_nonempty_input_narrows_and_omits_logo :: proc(t: ^testing.T) {
+	// T22-*: 入力があるとロゴを省いて絞り込みリストのみを表示する(縦幅確保のため)。
+	content := app.shell_content_home(80, "/se")
+	defer app.shell_lines_destroy(content)
+
+	joined := strings.join(content, "\n", context.temp_allocator)
+	testing.expect(t, !strings.contains(joined, "____"))
+	testing.expect(t, strings.contains(joined, "/settings"))
+	testing.expect(t, !strings.contains(joined, "/browse"))
 }
 
 // --- ホーム画面での /settings, /set コマンド解釈(T12-4)の単体テスト ---
@@ -406,6 +443,11 @@ test_parse_home_command_set_missing_value_is_unknown :: proc(t: ^testing.T) {
 test_parse_home_command_set_missing_key_and_value_is_unknown :: proc(t: ^testing.T) {
 	cmd := app.parse_home_command("/set")
 	testing.expect(t, cmd.kind == .Unknown)
+}
+
+@(test)
+test_parse_home_command_help :: proc(t: ^testing.T) {
+	testing.expect(t, app.parse_home_command("/help").kind == .Help)
 }
 
 // --- ゲーム実行中コマンドモード(T12-5)の単体テスト ---
@@ -802,6 +844,20 @@ test_parse_game_command_quit_aliases :: proc(t: ^testing.T) {
 	testing.expect(t, app.parse_game_command("quit now").kind == .Unknown)
 }
 
+@(test)
+test_parse_game_command_reset :: proc(t: ^testing.T) {
+	testing.expect(t, app.parse_game_command("reset").kind == .Reset)
+	testing.expect(t, app.parse_game_command("/reset").kind == .Reset)
+	testing.expect(t, app.parse_game_command("reset now").kind == .Unknown)
+}
+
+@(test)
+test_parse_game_command_help :: proc(t: ^testing.T) {
+	testing.expect(t, app.parse_game_command("help").kind == .Help)
+	testing.expect(t, app.parse_game_command("/help").kind == .Help)
+	testing.expect(t, app.parse_game_command("help me").kind == .Unknown)
+}
+
 // --- 固定レイアウトシェル(T14-1) ---
 
 @(test)
@@ -1048,6 +1104,19 @@ test_game_input_route_settings_view :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_game_input_route_tab :: proc(t: ^testing.T) {
+	tab := app.Key_Event {
+		key = .Tab,
+	}
+	// Now Playing: Tab補完(先頭ヒットで入力欄を書き換え)。
+	testing.expect(t, app.game_input_route(tab, true, .Now_Playing) == .Complete)
+	testing.expect(t, app.game_input_route(tab, false, .Now_Playing) == .Complete)
+	// Settings ビューでは補完リスト自体を表示しないため Tab は無視する。
+	testing.expect(t, app.game_input_route(tab, true, .Settings) == .None)
+	testing.expect(t, app.game_input_route(tab, false, .Settings) == .None)
+}
+
+@(test)
 test_parse_game_command_accepts_leading_slash :: proc(t: ^testing.T) {
 	// T14-5: 入力行常時アクティブ化に伴い `/` 付きも許容(両対応)。
 	testing.expect(t, app.parse_game_command("/pause").kind == .Pause)
@@ -1117,4 +1186,194 @@ test_alt_screen_enter_includes_scroll_region_reset :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(app.ALT_SCREEN_ENTER, "\x1b[r;")) // パラメータ付きではない
 	// EXIT側は変更していない(元の代替スクリーン退出シーケンスのみ)。
 	testing.expect_value(t, app.ALT_SCREEN_EXIT, "\x1b[?1049l")
+}
+
+// --- コマンドレジストリ / 補完(T22-*) ---
+
+@(test)
+test_commands_matching_empty_input_returns_context_availability :: proc(t: ^testing.T) {
+	home := app.commands_matching("", false)
+	defer delete(home)
+	home_names := make(map[string]bool, allocator = context.temp_allocator)
+	for c in home {
+		home_names[c.name] = true
+	}
+	testing.expect(t, home_names["browse"])
+	testing.expect(t, home_names["settings"])
+	testing.expect(t, home_names["help"])
+	testing.expect(t, home_names["quit"])
+	testing.expect(t, !home_names["pause"], "ゲーム専用コマンドはホームに出ない")
+	testing.expect(t, !home_names["reset"], "ゲーム専用コマンドはホームに出ない")
+
+	game := app.commands_matching("", true)
+	defer delete(game)
+	game_names := make(map[string]bool, allocator = context.temp_allocator)
+	for c in game {
+		game_names[c.name] = true
+	}
+	testing.expect(t, game_names["pause"])
+	testing.expect(t, game_names["reset"])
+	testing.expect(t, game_names["help"])
+	testing.expect(t, !game_names["browse"], "ホーム専用コマンドはゲーム中に出ない")
+	testing.expect(t, !game_names["recent"], "ホーム専用コマンドはゲーム中に出ない")
+}
+
+@(test)
+test_commands_matching_prefix_filters :: proc(t: ^testing.T) {
+	// "se" は settings/set の両方に前方一致する。
+	matches := app.commands_matching("se", true)
+	defer delete(matches)
+	names := make(map[string]bool, allocator = context.temp_allocator)
+	for c in matches {
+		names[c.name] = true
+	}
+	testing.expect(t, names["settings"])
+	testing.expect(t, names["set"])
+	testing.expect(t, !names["save"])
+	testing.expect(t, !names["slot"])
+}
+
+@(test)
+test_commands_matching_strips_leading_slash_and_ignores_rest_of_line :: proc(t: ^testing.T) {
+	// 先頭の "/" は剥がして解釈し、スペース以降(引数)は無視して先頭トークンだけ見る。
+	// "rese" は reset のみに前方一致する(resume は4文字目が 'u' で外れる)。
+	matches := app.commands_matching("/rese", true)
+	defer delete(matches)
+	testing.expect(t, len(matches) == 1)
+	testing.expect(t, matches[0].name == "reset")
+
+	matches_with_args := app.commands_matching("/save 2", true)
+	defer delete(matches_with_args)
+	testing.expect(t, len(matches_with_args) == 1)
+	testing.expect(t, matches_with_args[0].name == "save")
+}
+
+@(test)
+test_commands_matching_no_match_returns_empty :: proc(t: ^testing.T) {
+	matches := app.commands_matching("/zzz", true)
+	defer delete(matches)
+	testing.expect(t, len(matches) == 0)
+}
+
+@(test)
+test_shell_content_commands_formats_heading_and_rows :: proc(t: ^testing.T) {
+	items := []app.Command_Info{
+		{name = "help", desc = "コマンド一覧を表示", home = true, game = true},
+		{name = "settings", desc = "設定メニューを開く", home = true, game = true},
+	}
+	content := app.shell_content_commands("コマンド一覧", items, 80)
+	defer app.shell_lines_destroy(content)
+
+	testing.expect_value(t, len(content), 4) // heading + 空行 + 項目2
+	testing.expect_value(t, content[0], "コマンド一覧")
+	testing.expect_value(t, content[1], "")
+	testing.expect(t, strings.contains(content[2], "/help"))
+	testing.expect(t, strings.contains(content[2], "コマンド一覧を表示"))
+	testing.expect(t, strings.contains(content[3], "/settings"))
+	testing.expect(t, strings.contains(content[3], "設定メニューを開く"))
+	// 2カラム整形: 短い方の名前(/help)が長い方(/settings)に揃うようパディングされている。
+	help_name_end := strings.index(content[2], "コマンド一覧を表示")
+	settings_name_end := strings.index(content[3], "設定メニューを開く")
+	testing.expect_value(t, help_name_end, settings_name_end)
+}
+
+@(test)
+test_shell_content_commands_empty_items_still_has_heading :: proc(t: ^testing.T) {
+	content := app.shell_content_commands("コマンド一覧", []app.Command_Info{}, 80)
+	defer app.shell_lines_destroy(content)
+	testing.expect_value(t, len(content), 2)
+}
+
+@(test)
+test_shell_content_commands_top_name_marker :: proc(t: ^testing.T) {
+	items := []app.Command_Info{
+		{name = "help", desc = "コマンド一覧を表示", home = true, game = true},
+		{name = "settings", desc = "設定メニューを開く", home = true, game = true},
+	}
+	content := app.shell_content_commands("コマンド一覧", items, 80, "settings")
+	defer app.shell_lines_destroy(content)
+
+	testing.expect(t, strings.has_prefix(content[2], "  "), "help はマーカー対象でないので空白始まり")
+	testing.expect(t, !strings.has_prefix(content[2], "▸"))
+	testing.expect(t, strings.has_prefix(content[3], "▸ "), "settings がtop_nameなので▸始まり")
+}
+
+// --- Enter確定/Tab補完の先頭ヒット解決(T23-*) ---
+
+@(test)
+test_command_top_match_exact_wins_over_prefix :: proc(t: ^testing.T) {
+	// head="set" はレジストリ順では "settings" が先に前方一致するが、完全一致の "set" が
+	// 優先されなければならない("/set volume 30" が "/settings volume 30" に化けるのを防ぐ)。
+	top, ok := app.command_top_match("set", false)
+	testing.expect(t, ok)
+	testing.expect_value(t, top.name, "set")
+
+	top_with_args, ok_args := app.command_top_match("set volume 30", false)
+	testing.expect(t, ok_args)
+	testing.expect_value(t, top_with_args.name, "set")
+}
+
+@(test)
+test_command_top_match_prefix_picks_registry_first :: proc(t: ^testing.T) {
+	top, ok := app.command_top_match("br", false)
+	testing.expect(t, ok)
+	testing.expect_value(t, top.name, "browse")
+
+	// ゲーム中の "re" は resume/reset の両方に前方一致するが、レジストリ順で resume が先。
+	top_game, ok_game := app.command_top_match("re", true)
+	testing.expect(t, ok_game)
+	testing.expect_value(t, top_game.name, "resume")
+}
+
+@(test)
+test_command_top_match_respects_context :: proc(t: ^testing.T) {
+	// "save" はゲーム専用コマンドなのでホーム画面では見えない。
+	_, ok_home := app.command_top_match("save", false)
+	testing.expect(t, !ok_home)
+
+	_, ok_game := app.command_top_match("save", true)
+	testing.expect(t, ok_game)
+}
+
+@(test)
+test_command_top_match_empty_head_or_alias_fails :: proc(t: ^testing.T) {
+	_, ok_empty := app.command_top_match("", false)
+	testing.expect(t, !ok_empty)
+
+	_, ok_slash_only := app.command_top_match("/", false)
+	testing.expect(t, !ok_slash_only)
+
+	// "ls" は registry に無いエイリアス(parse_home_command 側で個別に受理する)なので
+	// command_top_match は関知しない。
+	_, ok_alias := app.command_top_match("ls", false)
+	testing.expect(t, !ok_alias)
+}
+
+@(test)
+test_command_resolve_input_home_prefix_and_exact :: proc(t: ^testing.T) {
+	resolved := app.command_resolve_input("/br", false)
+	defer delete(resolved)
+	testing.expect_value(t, resolved, "/browse")
+
+	resolved_exact := app.command_resolve_input("/set volume 30", false)
+	defer delete(resolved_exact)
+	testing.expect_value(t, resolved_exact, "/set volume 30")
+}
+
+@(test)
+test_command_resolve_input_game_prefix :: proc(t: ^testing.T) {
+	resolved := app.command_resolve_input("sav 2", true)
+	defer delete(resolved)
+	testing.expect_value(t, resolved, "/save 2")
+}
+
+@(test)
+test_command_resolve_input_unknown_and_empty_pass_through :: proc(t: ^testing.T) {
+	resolved := app.command_resolve_input("/nope", false)
+	defer delete(resolved)
+	testing.expect_value(t, resolved, "/nope")
+
+	resolved_empty := app.command_resolve_input("", false)
+	defer delete(resolved_empty)
+	testing.expect_value(t, resolved_empty, "")
 }

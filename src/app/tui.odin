@@ -121,6 +121,7 @@ Key :: enum {
 	Escape,
 	Backspace,
 	Char,
+	Tab,
 }
 
 Key_Event :: struct {
@@ -170,6 +171,9 @@ tui_parse_key :: proc(buf: []u8) -> (event: Key_Event, consumed: int) {
 	}
 	if b0 == 0x7f || b0 == 0x08 {
 		return Key_Event{key = .Backspace}, 1
+	}
+	if b0 == '\t' { // 0x09: Tab補完(T23-*、先頭ヒットで入力欄を補完)
+		return Key_Event{key = .Tab}, 1
 	}
 
 	// ASCII 範囲のみ1バイト文字として扱う(メニュー操作のショートカットキーは全て ASCII)。
@@ -337,30 +341,201 @@ shell_content_list :: proc(heading: string, items: []List_Item, selected: int, a
 	return lines[:]
 }
 
-// shell_content_home はホーム画面のコンテンツ領域(ロゴ中央寄せ+コマンド一覧)を組み立てる
-// (T14-2、純粋関数)。幅が不足する場合は1行タイトルへフォールバック(T12-3 と同じ挙動)。
-shell_content_home :: proc(cols: int, allocator := context.allocator) -> []string {
+// shell_content_home はホーム画面のコンテンツ領域(ロゴ中央寄せ+コマンド一覧/絞り込み一覧)を
+// 組み立てる(T14-2、T22-*でコマンド補完対応、純粋関数)。幅が不足する場合は1行タイトルへ
+// フォールバック(T12-3 と同じ挙動)。input が空ならロゴ+全コマンド一覧、非空ならロゴを省いて
+// 絞り込みリストを表示する(縦幅を確保するため)。
+shell_content_home :: proc(cols: int, input: string, allocator := context.allocator) -> []string {
 	lines := make([dynamic]string, 0, 12, allocator)
-	append(&lines, strings.clone("", allocator))
 
-	logo_width := tui_logo_max_width()
-	if cols >= logo_width + 4 {
-		// ロゴ全体を1ブロックとして中央寄せ(行ごとの個別センタリングはジグザグに崩れる、
-		// T12-3 検証ログ参照)。
-		pad := (cols - logo_width) / 2
-		pad_str := strings.repeat(" ", pad, context.temp_allocator)
-		for line in strings.split_lines(TUI_LOGO, context.temp_allocator) {
-			append(&lines, fmt.aprintf("%s%s", pad_str, line, allocator = allocator))
+	if input == "" {
+		append(&lines, strings.clone("", allocator))
+
+		logo_width := tui_logo_max_width()
+		if cols >= logo_width + 4 {
+			// ロゴ全体を1ブロックとして中央寄せ(行ごとの個別センタリングはジグザグに崩れる、
+			// T12-3 検証ログ参照)。
+			pad := (cols - logo_width) / 2
+			pad_str := strings.repeat(" ", pad, context.temp_allocator)
+			for line in strings.split_lines(TUI_LOGO, context.temp_allocator) {
+				append(&lines, fmt.aprintf("%s%s", pad_str, line, allocator = allocator))
+			}
+		} else {
+			title := fmt.tprintf("BubiBoyLite v%s", VERSION)
+			w := display_width(title)
+			pad := max((cols - w) / 2, 0)
+			append(&lines, fmt.aprintf("%s%s", strings.repeat(" ", pad, context.temp_allocator), title, allocator = allocator))
 		}
-	} else {
-		title := fmt.tprintf("BubiBoyLite v%s", VERSION)
-		w := display_width(title)
-		pad := max((cols - w) / 2, 0)
-		append(&lines, fmt.aprintf("%s%s", strings.repeat(" ", pad, context.temp_allocator), title, allocator = allocator))
+		append(&lines, strings.clone("", allocator))
 	}
 
+	matches := commands_matching(input, false, context.temp_allocator)
+	top_name := ""
+	if input != "" {
+		if top, ok := command_top_match(input, false); ok {
+			top_name = top.name
+		}
+	}
+	cmd_lines := shell_content_commands("コマンド一覧", matches, cols, top_name, allocator = allocator)
+	defer delete(cmd_lines) // 中身は append で lines へ所有権ごと移すので、外側のスライスだけ解放する
+	for l in cmd_lines {
+		append(&lines, l)
+	}
+	return lines[:]
+}
+
+// --- コマンドレジストリ(T22-*): 表示専用の source of truth。dispatch は既存 switch のまま ---
+// ホーム(parse_home_command)とゲーム中(parse_game_command)の2系統のコマンド名→説明を1つの
+// テーブルに束ねる。alias(/ls, /exit)は表示に載せない(パーサ側で従来どおり通す)。
+
+Command_Info :: struct {
+	name: string, // 先頭スラッシュ無し
+	desc: string,
+	home: bool, // ホーム画面で使えるか
+	game: bool, // ゲーム中で使えるか
+}
+
+@(private = "file")
+command_registry := [?]Command_Info{
+	{name = "browse", desc = "ROMブラウザを開く", home = true},
+	{name = "recent", desc = "最近開いたROMから選ぶ", home = true},
+	{name = "settings", desc = "設定メニューを開く", home = true, game = true},
+	{name = "set", desc = "設定を変更 (set <key> <value>)", home = true, game = true},
+	{name = "pause", desc = "一時停止", game = true},
+	{name = "resume", desc = "再開", game = true},
+	{name = "save", desc = "ステートをセーブ (save [1-4])", game = true},
+	{name = "load", desc = "ステートをロード (load [1-4])", game = true},
+	{name = "slot", desc = "スロット選択 (slot <1-4>)", game = true},
+	{name = "volume", desc = "音量を増減 (volume up|down)", game = true},
+	{name = "reset", desc = "ゲームを再起動", game = true},
+	{name = "help", desc = "コマンド一覧を表示", home = true, game = true},
+	{name = "quit", desc = "終了", home = true, game = true},
+}
+
+// commands_matching は input(先頭の "/" は剥がして解釈)の先頭トークンに前方一致し、かつ
+// in_game(true=ゲーム中, false=ホーム)の文脈で使えるコマンドを返す純粋関数(単体テスト対象)。
+// 空入力(先頭 "/" だけの場合を含む)なら文脈で使える全コマンドを返す。
+// 戻り値は allocator で確保したスライス(中身の Command_Info 自体は静的テーブルの値コピーなので
+// 個別解放は不要、スライス自体だけ delete すればよい)。
+commands_matching :: proc(input: string, in_game: bool, allocator := context.allocator) -> []Command_Info {
+	trimmed := strings.trim_space(input)
+	if strings.has_prefix(trimmed, "/") {
+		trimmed = trimmed[1:]
+	}
+	head := trimmed
+	if sp := strings.index_byte(trimmed, ' '); sp >= 0 {
+		head = trimmed[:sp]
+	}
+
+	result := make([dynamic]Command_Info, 0, len(command_registry), allocator)
+	for c in command_registry {
+		available := in_game ? c.game : c.home
+		if !available {
+			continue
+		}
+		if head != "" && !strings.has_prefix(c.name, head) {
+			continue
+		}
+		append(&result, c)
+	}
+	return result[:]
+}
+
+// command_top_match は input(先頭の "/" は剥がして解釈)の先頭トークンに対する「先頭ヒット」
+// コマンドを返す純粋関数(単体テスト対象、T23-*: Enter確定/Tab補完の共通ロジック)。
+// まず完全一致(in_game の文脈で使えるコマンドの中で c.name == head)を優先し、無ければ
+// レジストリ順で最初に前方一致するものを返す。完全一致を優先するのは、たとえば
+// head="set" のとき前方一致だけで探すとレジストリ順で先に登場する "settings" に負けてしまい
+// "/set volume 30" が意図せず "/settings volume 30" に化けてしまうため。
+command_top_match :: proc(input: string, in_game: bool) -> (info: Command_Info, ok: bool) {
+	trimmed := strings.trim_space(input)
+	if strings.has_prefix(trimmed, "/") {
+		trimmed = trimmed[1:]
+	}
+	head := trimmed
+	if sp := strings.index_byte(trimmed, ' '); sp >= 0 {
+		head = trimmed[:sp]
+	}
+	if head == "" {
+		return Command_Info{}, false
+	}
+
+	for c in command_registry {
+		available := in_game ? c.game : c.home
+		if available && c.name == head {
+			return c, true
+		}
+	}
+	for c in command_registry {
+		available := in_game ? c.game : c.home
+		if available && strings.has_prefix(c.name, head) {
+			return c, true
+		}
+	}
+	return Command_Info{}, false
+}
+
+// command_resolve_input は Enter確定/Tab補完のために input を先頭ヒットコマンドへ解決する
+// 純粋関数(単体テスト対象、T23-*)。戻り値は allocator で確保した所有文字列
+// (呼び出し側が delete すること)。ヒットが無ければ input をそのまま clone して返す
+// (未知コマンド・/ls /exit のようなエイリアスは registry に無いため ok=false になり、
+// 従来どおり各パーサへそのまま渡って正しく解釈される)。
+command_resolve_input :: proc(input: string, in_game: bool, allocator := context.allocator) -> string {
+	top, ok := command_top_match(input, in_game)
+	if !ok {
+		return strings.clone(input, allocator)
+	}
+
+	trimmed := strings.trim_space(input)
+	if strings.has_prefix(trimmed, "/") {
+		trimmed = trimmed[1:]
+	}
+	rest := ""
+	if sp := strings.index_byte(trimmed, ' '); sp >= 0 {
+		rest = strings.trim_space(trimmed[sp + 1:])
+	}
+
+	if rest == "" {
+		return fmt.aprintf("/%s", top.name, allocator = allocator)
+	}
+	return fmt.aprintf("/%s %s", top.name, rest, allocator = allocator)
+}
+
+// shell_content_commands は heading + 空行 + コマンド一覧(`  /name<パディング>desc` の
+// 2カラム左寄せ)を組み立てる純粋関数(単体テスト対象)。shell_content_list の右寄せ info とは
+// 違い、説明文が長いため専用に整形する。戻り値は所有 []string(shell_lines_destroy で解放)。
+// name 列の幅は「最も長いコマンド名(+ "/" 分の1)+ 区切りの2スペース」で揃える。
+// cols は将来的な幅調整用に受け取るが(shell_content_list との対称性、実際の切り詰めは
+// tui_render_shell の write_padded が行毎に負う)、現状の整形自体はこれ以上狭める必要が
+// 無いため未使用(unused parameter は Odin ではエラーにならない)。
+// top_name(T23-*): 非空なら c.name == top_name の行の先頭マーカーを "  " から "▸ " に変える
+// (Enter確定/Tab補完の対象がどれか視覚的に分かるようにする、shell_content_list の選択
+// マーカーと同じ2セル幅のスタイル)。空文字ならマーカー無し(従来どおり全行 "  ")。
+shell_content_commands :: proc(heading: string, items: []Command_Info, cols: int, top_name: string = "", allocator := context.allocator) -> []string {
+	lines := make([dynamic]string, 0, len(items) + 2, allocator)
+	append(&lines, strings.clone(heading, allocator))
 	append(&lines, strings.clone("", allocator))
-	append(&lines, strings.clone(" /browse  /recent  /settings  /quit", allocator))
+
+	NAME_GAP :: 2
+	name_col := 0
+	for c in items {
+		w := display_width(c.name) + 1 // "/" 分
+		if w > name_col {
+			name_col = w
+		}
+	}
+	name_col += NAME_GAP
+
+	for c in items {
+		b: strings.Builder
+		strings.builder_init(&b, allocator)
+		marker := (top_name != "" && c.name == top_name) ? "▸ " : "  "
+		strings.write_string(&b, marker)
+		name_with_slash := fmt.tprintf("/%s", c.name)
+		write_padded(&b, name_with_slash, name_col)
+		strings.write_string(&b, c.desc)
+		append(&lines, strings.to_string(b))
+	}
 	return lines[:]
 }
 
@@ -578,6 +753,7 @@ Home_Command_Kind :: enum {
 	Recent,
 	Settings, // /settings(引数無し): ホーム画面内で対話メニューを開き、ループを継続する
 	Set, // /set <key> <value>: ホーム画面内で即時適用し、ループを継続する
+	Help, // /help: コマンド一覧を表示する(空入力時のホーム画面に常時出ているため、実体は再表示のみ)
 	Unknown,
 }
 
@@ -605,6 +781,8 @@ parse_home_command :: proc(input: string) -> Home_Command {
 		return Home_Command{kind = .Quit}
 	case "/settings":
 		return Home_Command{kind = .Settings}
+	case "/help":
+		return Home_Command{kind = .Help}
 	}
 	SET_PREFIX :: "/set "
 	if strings.has_prefix(trimmed, SET_PREFIX) {
@@ -882,7 +1060,18 @@ game_shell_draw :: proc(
 			status = m.status
 		}
 	case .Now_Playing:
-		content = shell_content_now_playing(s, info, avail)
+		// T22-*: 入力中(スラッシュコマンドを打っている間)はコンテンツ領域をコマンド補完の
+		// 絞り込みリストに切り替える。空に戻ればメッセージログ表示に戻る。
+		if input != "" {
+			matches := commands_matching(input, true, context.temp_allocator)
+			top_name := ""
+			if top, ok := command_top_match(input, true); ok {
+				top_name = top.name
+			}
+			content = shell_content_commands("コマンド一覧", matches, cols, top_name)
+		} else {
+			content = shell_content_now_playing(s, info, avail)
+		}
 		// T16-1: フェーズ15(T15-1)で全ての生ホットキー(+,-,1-4,s,l,p)を廃止した際、
 		// この案内文言を消し忘れていた(存在しない操作を案内するバグ)。入力行は常時
 		// アクティブでスラッシュコマンドのみなので、特筆すべき固定ヒントは無い(空文字なら
@@ -993,8 +1182,9 @@ tui_run_command_home :: proc(cfg: ^Config, config_dir: string) -> Home_Command {
 
 		if dirty {
 			// T14-2: 固定レイアウトシェルで描画(コンテンツ=ロゴ+コマンド一覧、入力行=編集中の
-			// コマンド)。shell_content_home は所有 []string を返すので必ず解放する。
-			content := shell_content_home(cols)
+			// コマンド)。shell_content_home は所有 []string を返すので必ず解放する。T22-*:
+			// 編集中の入力を渡すことでコマンド補完(インクリメンタル絞り込み)を得る。
+			content := shell_content_home(cols, line_editor_text(editor))
 			tui_write_shell(Shell_Frame{cols = cols, rows = rows, content = content, status = status, input = line_editor_text(editor)})
 			shell_lines_destroy(content)
 			dirty = false
@@ -1014,30 +1204,48 @@ tui_run_command_home :: proc(cfg: ^Config, config_dir: string) -> Home_Command {
 			line_editor_feed(&editor, ev)
 			status = ""
 			dirty = true
+		case .Tab:
+			// T23-*: Tab補完は「先頭ヒットのコマンド」で入力欄を書き換えるだけ(実行はしない)。
+			// ヒットが無ければ何もしない。
+			if top, ok := command_top_match(line_editor_text(editor), false); ok {
+				line_editor_set(&editor, fmt.tprintf("/%s", top.name))
+				dirty = true
+			}
 		case .Enter:
 			submitted, text := line_editor_feed(&editor, ev)
 			if !submitted {
 				break
 			}
-			cmd := parse_home_command(text)
+			// T23-*: Enter確定は「先頭ヒットのコマンド」に解決してからパースする
+			// (例: "/br" → "/browse")。ヒットが無ければ resolved は text の clone
+			// (未知コマンド・/ls /exit のようなエイリアスは従来どおり Unknown/該当分岐へ)。
+			resolved := command_resolve_input(text, false)
+			delete(text)
+			cmd := parse_home_command(resolved)
 			switch cmd.kind {
 			case .Unknown:
 				status = fmt.tprintf("不明なコマンドです: %s", cmd.raw)
-				delete(text)
+				delete(resolved)
 				dirty = true
 			case .Settings:
-				delete(text)
+				delete(resolved)
 				tui_run_settings_menu(cfg, config_dir)
 				status = ""
 				last_cols, last_rows = -1, -1 // 設定メニューで書き換えた画面を強制再描画させる
 				dirty = true
 			case .Set:
 				_, msg := config_apply_set(cfg, config_dir, cmd.set_key, cmd.set_value)
-				delete(text)
+				delete(resolved)
 				status = msg
 				dirty = true
+			case .Help:
+				// T22-*: 空バッファでは常にフルのコマンド一覧が見えているので、確定によって
+				// 入力バッファが空に戻る(=一覧が再表示される)だけで十分。
+				delete(resolved)
+				status = "コマンド一覧を表示中"
+				dirty = true
 			case .Quit, .Browse, .Recent:
-				delete(text)
+				delete(resolved)
 				return cmd
 			}
 		}
@@ -1764,6 +1972,7 @@ Game_Input_Route :: enum {
 	Editor, // 入力行へ(Char/Backspace)
 	Submit, // コマンド確定(parse_game_command)
 	Clear, // 入力バッファをクリア
+	Complete, // Tab補完(先頭ヒットで入力欄を書き換え、実行はしない。T23-*)
 }
 
 game_input_route :: proc(ev: Key_Event, buffer_empty: bool, view: Game_View) -> Game_Input_Route {
@@ -1779,6 +1988,8 @@ game_input_route :: proc(ev: Key_Event, buffer_empty: bool, view: Game_View) -> 
 		case .Char, .Backspace:
 			return .Editor
 		}
+		// T23-*: 設定ビュー表示中はコマンド補完リスト自体を表示しない(Now Playing 限定)ため、
+		// Tab は無視する。
 		return .None
 	}
 
@@ -1789,6 +2000,8 @@ game_input_route :: proc(ev: Key_Event, buffer_empty: bool, view: Game_View) -> 
 		return .Clear
 	case .Enter:
 		return buffer_empty ? .None : .Submit
+	case .Tab:
+		return .Complete
 	}
 	return .None
 }
@@ -1810,6 +2023,8 @@ Game_Command_Kind :: enum {
 	Select_Slot, // slot 引数必須(1-4)
 	Volume_Up, // T15-2: 旧 `+` ホットキーの相対増減(AUDIO_VOLUME_STEP、非永続)を移植
 	Volume_Down, // T15-2: 旧 `-` ホットキーの相対増減(AUDIO_VOLUME_STEP、非永続)を移植
+	Reset, // T22-*: 実行中ゲームの再起動(core.emulator_reset、cart RAMはメモリ上のまま保持)
+	Help, // T22-*: コマンド一覧をメッセージログへ追記する
 	Quit,
 	Unknown,
 	Empty, // 空Enter(何もしない、コマンドモードを抜けるだけ)
@@ -1875,6 +2090,14 @@ parse_game_command :: proc(input: string) -> Game_Command {
 		if rest == "" {
 			return Game_Command{kind = .Quit}
 		}
+	case "reset":
+		if rest == "" {
+			return Game_Command{kind = .Reset}
+		}
+	case "help":
+		if rest == "" {
+			return Game_Command{kind = .Help}
+		}
 	case "save", "load":
 		kind := head == "save" ? Game_Command_Kind.Save_State : Game_Command_Kind.Load_State
 		if rest == "" {
@@ -1931,6 +2154,16 @@ line_editor_text :: proc(e: Line_Editor) -> string {
 // line_editor_reset はバッファを空にする(確定後の再利用、またはキャンセル時に呼ぶ)。
 line_editor_reset :: proc(e: ^Line_Editor) {
 	clear(&e.buf)
+}
+
+// line_editor_set はバッファの内容を s で置き換える(T23-*: Tab補完で入力欄を書き換える用途)。
+// s はバイト単位で clear 後の buf へ append するため、呼び出し側は s を e より長生きさせる
+// 必要は無い(このスコープ内で全バイトをコピーする)。
+line_editor_set :: proc(e: ^Line_Editor, s: string) {
+	clear(&e.buf)
+	for i in 0 ..< len(s) {
+		append(&e.buf, s[i])
+	}
 }
 
 // line_editor_feed は1キーイベントを処理する純粋関数(単体テスト対象)。

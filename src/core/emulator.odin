@@ -27,6 +27,22 @@ emulator_load_rom :: proc(emu: ^Emulator, rom_data: []u8) -> bool {
 	return true
 }
 
+// emulator_reset はハードウェアリセット相当の処理を行う(TUIの /reset コマンド用)。
+// cart(ROM借用+所有SRAM+MBC状態)はそのまま保持し、それ以外のBus/CPUを初期化する。
+// ディスクからの .sav 再読み込みはしない(メモリ上のSRAMをそのまま残す=未フラッシュの
+// 書き込みを失わない)。単純に emulator_load_rom を再呼び出しすると WRAM/VRAM 等が
+// 残留し、旧cartの外部RAMもリークするため専用関数にした。
+emulator_reset :: proc(emu: ^Emulator) {
+	cart := emu.bus.cart // ROM借用 + 所有SRAM + MBC状態を保持
+	delete(emu.bus.serial_log) // Bus唯一のもう1つのヒープ所有物。ゼロ化前に解放してリーク防止
+	emu.bus = {}
+	emu.bus.cart = cart
+	emu.bus.mode = gb_mode_from_cgb_flag(cart.info.cgb_flag)
+	emu.cpu = {} // 初回ロードは new(Emulator) のゼロCPU前提のため揃える
+	bus_power_on(&emu.bus)
+	cpu_reset(&emu.cpu, emu.bus.mode)
+}
+
 // emulator_set_wall_clock は MBC3 RTC(T4-4)へ現在時刻(UNIX秒)を供給する。
 // core は時計を直接読まない方針(architecture.md「エラー処理」と同じ「core は外界に依存しない」
 // 原則、テスト容易性のため)なので、壁時計の取得は app 側の責務になる。RTC を持たない
