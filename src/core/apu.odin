@@ -338,7 +338,10 @@ apu_sweep_calculate :: proc(sweep: ^Sweep) -> (new_freq: int, overflow: bool) {
 	return
 }
 
-// apu_sweep_clock は ch1 のスイープを1ステップ進める(step 2,6)。
+// apu_sweep_clock は ch1 のスイープを1ステップ進める(step 2,6)。period==0/shift==0の
+// いずれであっても、タイマー満了のたびオーバーフロー判定は必ず行う(SameBoy Core/apu.c
+// 準拠、前身BubiBoyのコミット8910dd5でも同様に修正済み。周波数の実適用のみshift!=0に限定する。
+// T21-1でperiod==0/shift==0のときに判定自体を丸ごとスキップしていたバグを修正)。
 @(private)
 apu_sweep_clock :: proc(pulse1: ^Pulse_Channel) {
 	sweep := &pulse1.sweep
@@ -351,28 +354,24 @@ apu_sweep_clock :: proc(pulse1: ^Pulse_Channel) {
 	}
 	sweep.timer = sweep.period == 0 ? 8 : sweep.period
 
-	if sweep.period == 0 {
-		return // 周期0はイテレーション無し(タイマーのリロードのみ行う)
-	}
-	if sweep.shift == 0 {
-		return // shift=0では計算そのものを行わない(shift>>0=shadow自体になり誤って
-		// 倍加/オーバーフロー判定してしまうのを防ぐ。NR10=0x00でスイープ無効の
-		// 一般的なケースがこれで壊れないようにする)
-	}
-
+	// period==0/shift==0でもオーバーフロー判定自体は必ず行う(shift==0はdelta=shadow自体に
+	// なるため、2倍加算でオーバーフローしうる。Pan Docsの記述どおり)。
 	new_freq, overflow := apu_sweep_calculate(sweep)
 	if overflow {
 		pulse1.enabled = false
 		return
 	}
-	sweep.shadow_frequency = new_freq
-	pulse1.frequency = new_freq
-	pulse1.timer = apu_pulse_period(new_freq)
-	// 2回目のオーバーフロー判定(次回の反映に備えた事前チェック、実機仕様)。
-	_, overflow2 := apu_sweep_calculate(sweep)
-	if overflow2 {
-		pulse1.enabled = false
+	if sweep.shift != 0 {
+		sweep.shadow_frequency = new_freq
+		pulse1.frequency = new_freq
+		pulse1.timer = apu_pulse_period(new_freq)
+		// 2回目のオーバーフロー判定(次回の反映に備えた事前チェック、実機仕様)。
+		_, overflow2 := apu_sweep_calculate(sweep)
+		if overflow2 {
+			pulse1.enabled = false
+		}
 	}
+	// shift==0のときは周波数もshadow_frequencyも変更しない(オーバーフロー判定だけ行った)。
 }
 
 // apu_trigger_pulse はNRx4トリガー(bit7=1)時の共通初期化。has_sweep=trueはch1用で
