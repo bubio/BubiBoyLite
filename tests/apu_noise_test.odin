@@ -105,3 +105,71 @@ test_apu_noise_dac_off_disables_playing_channel :: proc(t: ^testing.T) {
 	core.bus_write(&bus, core.NR42_ADDR, 0x00)
 	testing.expect(t, !bus.apu.noise.enabled)
 }
+
+// T20-2/T20-3: 区間平均(ボックスフィルタ)の回帰テスト(ノイズch版)。divisor=8/shift=0
+// (周期8 T-cycle)にすると、48kHzサンプル1個分の区間(約87 T-cycle)の間にLFSRが
+// 10回前後遷移する。点サンプリング(修正前)なら出力は常にenvelope音量の振幅上限
+// (左chソロで0.25*32767≈8191)ぴったりになるはずだが、区間平均ならLFSRの正負反転が
+// 平均され減衰する(Pythonで同アルゴリズムを独立再現し平均振幅約1984(振幅上限の
+// 約24%)、最大振幅ちょうどに達するのは0.1%未満であることを確認済み、検証ログ参照)。
+@(test)
+test_apu_noise_box_filter_attenuates_high_frequency_toggle :: proc(t: ^testing.T) {
+	bus: core.Bus
+	core.bus_write(&bus, core.NR52_ADDR, 0x80)
+	core.bus_write(&bus, core.NR50_ADDR, 0x77) // 左右とも最大音量
+	core.bus_write(&bus, core.NR51_ADDR, 0x88) // ch4のみ左右両方へ
+	core.bus_write(&bus, core.NR42_ADDR, 0xF0) // 音量15、DAC on
+	core.bus_write(&bus, core.NR43_ADDR, 0x00) // divisor code0(=8)<<shift0=周期8、15bitモード
+	core.bus_write(&bus, core.NR44_ADDR, 0x80) // トリガー
+
+	samples: [dynamic]i16
+	defer delete(samples)
+	buf: [4096]i16
+	remaining := 2_000_000
+	for remaining > 0 {
+		chunk := min(remaining, 50000)
+		core.bus_tick(&bus, chunk)
+		remaining -= chunk
+		for {
+			n := core.apu_drain_samples(&bus.apu, buf[:])
+			if n == 0 {
+				break
+			}
+			append(&samples, ..buf[:n])
+		}
+	}
+
+	testing.expect(t, len(samples) > 1000, "十分なサンプル数が採取できていること")
+
+	max_amp := 0
+	at_max_count := 0
+	sum_abs: i64 = 0
+	count := 0
+	for i := 0; i < len(samples); i += 2 { // 左chのみ(ch4ソロ)
+		v := int(samples[i])
+		a := v < 0 ? -v : v
+		if a > max_amp {
+			max_amp = a
+		}
+		if a >= 8100 {
+			at_max_count += 1
+		}
+		sum_abs += i64(a)
+		count += 1
+	}
+	mean_abs := f64(sum_abs) / f64(count)
+	max_fraction := f64(at_max_count) / f64(count)
+
+	testing.expectf(
+		t,
+		mean_abs < 4000,
+		"区間平均により減衰するはずだが平均振幅%fだった(点サンプリングなら8191近辺のはず)",
+		mean_abs,
+	)
+	testing.expectf(
+		t,
+		max_fraction < 0.1,
+		"点サンプリングなら常に振幅上限になるはずだが、区間平均では振幅上限付近の割合が低いはず(実測%f)",
+		max_fraction,
+	)
+}

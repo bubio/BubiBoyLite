@@ -86,6 +86,13 @@ Wave_Channel :: struct {
 	timer:          int,
 	position:       int, // 0-31(32サンプル、上位ニブル先)
 	output_level:   int, // NR32 bit6-5 を 0/1/2/3 にデコードした値(シフト量ではない)
+
+	// 区間平均(ボックスフィルタ)用アキュムレータ(T20-2、前身BubiBoy Apu.fs の
+	// WaveSampleArea/WaveSampleCycles相当)。apu_tick が1 T-cycle進めるたびに
+	// その時点の出力値(apu_wave_output_units)を加算し、48kHzサンプル1個を
+	// 出力するたびに area/cycles の平均を取ってからゼロリセットする。
+	sample_area:   i64,
+	sample_cycles: int,
 }
 
 Noise_Channel :: struct {
@@ -96,6 +103,11 @@ Noise_Channel :: struct {
 	timer:          int,
 	lfsr:           u16, // 15bit LFSR(電源投入時 0x7FFF)
 	envelope:       Envelope,
+
+	// 区間平均用アキュムレータ(T20-2、前身BubiBoy NoiseSampleArea/NoiseSampleCycles相当)。
+	// Wave_Channel.sample_area/sample_cycles と同じ役割。
+	sample_area:   i64,
+	sample_cycles: int,
 }
 
 Apu :: struct {
@@ -588,6 +600,13 @@ apu_notify_div_write :: proc(apu: ^Apu, old_div_counter: u16) {
 // apu_tick は t_cycles(通常4、M-cycle単位)ぶんAPUを進める。bus_tick から呼ばれる
 // (architecture.md のタイミングモデル)。T5-1時点ではフレームシーケンサの巡回のみ
 // (ch進行・サンプル生成はT5-2〜T5-5で追加)。
+//
+// T20-2: wave/noiseチャンネルは、1 T-cycle進めるたびにその瞬間の出力値を
+// sample_area/sample_cycles へ蓄積し(区間平均=ボックスフィルタ)、48kHzサンプル1個を
+// 出力する瞬間に area/cycles の平均値を使う(点サンプリングによるエイリアシングノイズ対策、
+// ~/dev/_Emu/BubiBoy/src/BubiBoy.Core/Apu.fs の tickWave/tickNoise 相当)。
+// Pulseチャンネルは前身BubiBoy(tickPulse)も瞬時値のままdutyステップだけ進めており
+// 区間平均を行っていないため、本実装も揃えて瞬時値のまま据え置く(T20-3で判断)。
 apu_tick :: proc(apu: ^Apu, t_cycles: int) {
 	for _ in 0 ..< t_cycles {
 		if apu.powered_on {
@@ -599,7 +618,13 @@ apu_tick :: proc(apu: ^Apu, t_cycles: int) {
 
 			apu_tick_pulse(&apu.pulse1)
 			apu_tick_pulse(&apu.pulse2)
+
+			apu.wave.sample_area += i64(apu_wave_output_units(apu))
+			apu.wave.sample_cycles += 1
 			apu_tick_wave(apu)
+
+			apu.noise.sample_area += i64(apu_noise_output_units(&apu.noise))
+			apu.noise.sample_cycles += 1
 			apu_tick_noise(apu)
 		}
 
@@ -608,7 +633,33 @@ apu_tick :: proc(apu: ^Apu, t_cycles: int) {
 		apu.sample_counter += APU_SAMPLE_RATE
 		if apu.sample_counter >= CPU_HZ {
 			apu.sample_counter -= CPU_HZ
-			left, right := apu_mix_sample(apu)
+
+			// wave: ナイキスト周波数(24kHz)を超えるチャンネル周波数では区間平均が
+			// 信頼できない(区間内で1周期に満たない場合がある)ため、1周期全体の平均に
+			// フォールバックする(BubiBoy waveAboveNyquist/waveCycleAverage 相当)。
+			wave_sample: f32 = 0
+			if apu.wave.sample_cycles > 0 {
+				if apu_wave_above_nyquist(apu.wave.frequency) {
+					wave_sample = apu_wave_cycle_average(apu)
+				} else {
+					wave_sample =
+						f32(apu.wave.sample_area) / f32(apu.wave.sample_cycles) / 15.0
+				}
+			}
+			apu.wave.sample_area = 0
+			apu.wave.sample_cycles = 0
+
+			// noise: BubiBoy側もノイズにはナイキストフォールバックを持たない(乱数的な
+			// 波形のため1周期平均という概念がそもそも馴染まない)、区間平均のみ適用する。
+			noise_sample: f32 = 0
+			if apu.noise.sample_cycles > 0 {
+				noise_sample =
+					f32(apu.noise.sample_area) / f32(apu.noise.sample_cycles) / f32(APU_MAX_VOLUME)
+			}
+			apu.noise.sample_area = 0
+			apu.noise.sample_cycles = 0
+
+			left, right := apu_mix_sample(apu, wave_sample, noise_sample)
 			apu_push_sample(apu, left, right)
 		}
 	}
@@ -843,11 +894,15 @@ apu_write_register :: proc(apu: ^Apu, addr: u16, value: u8) {
 	}
 }
 
-// --- ミキサーと48kHzサンプル生成(T5-5) ---
+// --- ミキサーと48kHzサンプル生成(T5-5、T20-2でwave/noiseを区間平均方式に変更) ---
 // ダウンサンプリングは apu_tick 内の固定小数点カウンタ(sample_counter += 48000、
-// >= 4194304 で採取・減算)で行う。各chの出力は「点サンプル」(F#移植のような区間平均は
-// 行わない。dmg_soundはレジスタ/制御ロジックしか検査せずここでは不要な複雑さになるため、
-// architecture.md のシンプルさ優先の方針に合わせた)。
+// >= 4194304 で採取・減算)で行う。wave/noiseチャンネルの出力は「区間平均(ボックス
+// フィルタ)」(前回サンプル採取から今回までの全T-cycleにわたる出力値の平均。
+// apu_tick 側で蓄積・平均化してから apu_mix_sample に渡す)。Pulseチャンネルは
+// 前身BubiBoyも瞬時値のままのため、本実装も瞬時値(apu_pulse_output)のまま。
+// T20-2以前は全chが「点サンプル」で、Prince of Persia のような wave RAM を高頻度に
+// 書き換えるROMで顕著なエイリアシングノイズの原因になっていた(docs/dev/phases/
+// phase-20-apu-antialiasing.md 参照)。
 
 // apu_pulse_duty_table は4種のデューティ比(12.5/25/50/75%)を8ステップの0/1系列で表す。
 // Pan Docs "Sound Channel 1/2" の波形表どおり。
@@ -871,15 +926,24 @@ apu_pulse_output :: proc(ch: ^Pulse_Channel) -> f32 {
 	return bit == 0 ? -vol : vol
 }
 
-// apu_wave_output は ch3 の現在位置のサンプルを output_level(0/100/50/25%)でスケーリングし、
-// -1.0〜+1.0 に正規化して返す。
+// apu_wave_output_units_at は wave RAM の position(0-31)位置における出力を
+// output_level(0/100/50/25%)でスケーリングした「量子化された生の単位」(-15..15、
+// 正規化前)で返す(T20-2、区間平均・1周期平均フォールバックの両方から使う共通ヘルパー、
+// BubiBoy Apu.fs の waveOutputUnits 相当)。ch無効/DAC off/mute なら0。
 @(private)
-apu_wave_output :: proc(apu: ^Apu) -> f32 {
+apu_wave_output_units_at :: proc(apu: ^Apu, position: int) -> int {
 	ch := &apu.wave
 	if !ch.enabled || !ch.dac_enabled || ch.output_level == 0 {
 		return 0
 	}
-	sample := int(apu_wave_current_nibble(apu))
+	byte_val := apu.wave_ram[position / 2]
+	nibble: u8
+	if position % 2 == 0 {
+		nibble = byte_val >> 4
+	} else {
+		nibble = byte_val & 0x0F
+	}
+	sample := int(nibble)
 	shifted: int
 	switch ch.output_level {
 	case 1:
@@ -889,18 +953,56 @@ apu_wave_output :: proc(apu: ^Apu) -> f32 {
 	case:
 		shifted = sample >> 2 // 25%
 	}
-	return f32(2*shifted-15) / 15.0
+	return 2*shifted - 15
 }
 
-// apu_noise_output は ch4 の現在の出力を -1.0〜+1.0 に正規化して返す。落とし穴: 出力は
-// LFSR の bit0 の反転(bit0=0で正、bit0=1で負)。
+// apu_wave_output_units は現在の wave.position における出力の生の単位を返す
+// (apu_tick が1 T-cycleごとに sample_area へ蓄積する際に使う、T20-2)。
 @(private)
-apu_noise_output :: proc(ch: ^Noise_Channel) -> f32 {
+apu_wave_output_units :: proc(apu: ^Apu) -> int {
+	return apu_wave_output_units_at(apu, apu.wave.position)
+}
+
+// apu_wave_period_cycles は ch3 の波形1周期(32サンプル分)を T-cycle 単位で返す。
+@(private)
+apu_wave_period_cycles :: proc(frequency: int) -> int {
+	return apu_wave_period(frequency) * 32
+}
+
+// apu_wave_above_nyquist はチャンネル周波数がナイキスト周波数(APU_SAMPLE_RATE/2=24kHz)を
+// 超えるかどうかを返す(T20-2、BubiBoy Apu.fs の waveAboveNyquist 相当)。区間平均は
+// 「サンプリング区間内に最低1周期分の情報がある」ことを前提にしており、チャンネル周波数が
+// ナイキストを超える(=1サンプル区間より波形の1周期の方が短い)場合は区間平均の代わりに
+// 1周期全体の平均(apu_wave_cycle_average)にフォールバックする。
+@(private)
+apu_wave_above_nyquist :: proc(frequency: int) -> bool {
+	period_cycles := apu_wave_period_cycles(frequency)
+	return 2*CPU_HZ >= APU_SAMPLE_RATE*period_cycles
+}
+
+// apu_wave_cycle_average は wave RAM の32サンプル全体を対象に平均を取り、-1.0〜+1.0に
+// 正規化して返す(T20-2、BubiBoy waveCycleAverage 相当)。position/timer の現在値には
+// 依存せず、output_level・dac_enabled・wave_ram の現在の設定だけを使う(1周期分の
+// 完全な平均であり区間平均のアキュムレータとは無関係)。
+@(private)
+apu_wave_cycle_average :: proc(apu: ^Apu) -> f32 {
+	units := 0
+	for position in 0 ..< 32 {
+		units += apu_wave_output_units_at(apu, position)
+	}
+	return f32(units) / (32.0 * 15.0)
+}
+
+// apu_noise_output_units は ch4 の現在の出力を「量子化された生の単位」(-15..15相当、
+// envelope.volume分の符号付き値、正規化前)で返す(T20-2、apu_tick の区間平均アキュムレータ
+// 用ヘルパー、BubiBoy Apu.fs の tickNoise 内 amplitude 相当)。落とし穴: 出力は LFSR の
+// bit0 の反転(bit0=0で正、bit0=1で負)。
+@(private)
+apu_noise_output_units :: proc(ch: ^Noise_Channel) -> int {
 	if !ch.enabled || !ch.dac_enabled {
 		return 0
 	}
-	vol := f32(ch.envelope.volume) / f32(APU_MAX_VOLUME)
-	return ch.lfsr & 1 == 0 ? vol : -vol
+	return ch.lfsr & 1 == 0 ? ch.envelope.volume : -ch.envelope.volume
 }
 
 // apu_scale_to_i16 は -1.0〜+1.0 の正規化値を i16 の範囲へスケーリングする(クリッピング付き)。
@@ -917,17 +1019,19 @@ apu_scale_to_i16 :: proc(v: f32) -> i16 {
 }
 
 // apu_mix_sample は4chをNR51パンニング・NR50マスター音量で混合し、ステレオi16サンプル1組を
-// 返す。電源off中は無音(0,0)を返す(T5-5)。
+// 返す。電源off中は無音(0,0)を返す(T5-5)。wave_sample/noise_sampleは呼び出し元(apu_tick)が
+// 区間平均(またはナイキスト超えフォールバック)で計算済みの-1.0〜+1.0正規化値を渡す(T20-2、
+// Pulseチャンネルのみ従来どおり瞬時値をここで計算する)。
 @(private)
-apu_mix_sample :: proc(apu: ^Apu) -> (left, right: i16) {
+apu_mix_sample :: proc(apu: ^Apu, wave_sample, noise_sample: f32) -> (left, right: i16) {
 	if !apu.powered_on {
 		return 0, 0
 	}
 
 	ch1 := apu_pulse_output(&apu.pulse1)
 	ch2 := apu_pulse_output(&apu.pulse2)
-	ch3 := apu_wave_output(apu)
-	ch4 := apu_noise_output(&apu.noise)
+	ch3 := wave_sample
+	ch4 := noise_sample
 
 	left_vol := f32(int((apu.nr50>>4) & 0x07) + 1) / 8.0
 	right_vol := f32(int(apu.nr50 & 0x07) + 1) / 8.0
