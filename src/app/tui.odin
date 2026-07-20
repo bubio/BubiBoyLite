@@ -10,6 +10,7 @@ import "core:strings"
 import "core:terminal"
 import "core:time"
 import core "bbl:core"
+import sdl "vendor:sdl2"
 
 // tui.odin: Claude Code 風 TUI の基盤(T9-1)。
 // 設計方針(phase-09-tui.md「TUI の設計方針」): 依存ライブラリなし、ANSI エスケープ +
@@ -853,21 +854,43 @@ settings_field_value_string :: proc(cfg: Config, f: Settings_Field) -> string {
 // 適用(config_apply_set)は状態機械の外: menu_step は「何をすべきか」(Menu_Effect)を返すだけに
 // して完全純粋化し、文字列比較で単体テスト可能にする。
 
+// Menu_Level はサブメニュー方式(T-keybindings)の階層。Top=scale/shader/volume+2つの
+// サブメニュー入口、Keyboard/Controller=GB8ボタンの key_*/pad_* 割当一覧。
+// 大前提(実装計画参照): TUIはtermios空間でキーを読み、割当対象はSDL空間なので「キー押下で
+// キャプチャ」は不可能。Keyboard/Controllerでも既存の scale/shader と同じ ←→ サイクル方式
+// (候補リストを順送り)を使う。
+Menu_Level :: enum {
+	Top,
+	Keyboard,
+	Controller,
+}
+
+// トップレベル項目数: scale/shader/volume(settings_fields、3項目)+ キーボード割当/
+// コントローラー割当のサブメニュー入口2項目 = 5項目(T-keybindings、順序固定)。
+TOP_MENU_ITEM_COUNT :: 5
+TOP_MENU_KEYBOARD_INDEX :: 3
+TOP_MENU_CONTROLLER_INDEX :: 4
+
 Menu_State :: struct {
-	selected: int, // settings_fields のインデックス(0..2)
+	level:    Menu_Level, // 現在の階層(T-keybindings)。ゼロ値は .Top
+	selected: int, // 現在のレベルの項目リスト内インデックス(Top: 0..TOP_MENU_ITEM_COUNT-1、
+	// Keyboard/Controller: 0..len(gb_button_order)-1)
 	status:   string, // 直前の操作結果メッセージ(所有。呼び出し側が config_apply_set の結果等を反映する)
 }
 
 Menu_Op :: enum {
 	None, // 何もしない(未対応キー、または境界で値が変わらなかった)
-	Redraw, // 選択が動いた等、再描画だけ必要
+	Redraw, // 選択が動いた・階層が変わった等、再描画だけ必要
 	Adjust, // key/value で config_apply_set を呼ぶこと(value は呼び出し側が delete する)
-	Close, // メニューを閉じること
+	Close, // メニューを閉じること(Topでのみ発生。Keyboard/ControllerのEsc/q/EnterはTopへ戻るだけ)
 }
 
 Menu_Effect :: struct {
 	op:    Menu_Op,
-	key:   string, // .Adjust 時のみ有効(settings_field_key の静的文字列、delete 不要)
+	// .Adjust 時のみ有効。Top(scale/shader/volume)では settings_field_key の静的文字列
+	// (delete不要)。Keyboard/Controllerでは menu_binding_key_name の tprintf借用
+	// ("key_up"/"pad_start"等、呼び出し側がその場で使い切ることが前提、delete不要)。
+	key:   string,
 	value: string, // .Adjust 時のみ有効(allocator で確保した所有権付き文字列、呼び出し側が delete)
 }
 
@@ -900,9 +923,153 @@ menu_adjust_value :: proc(cfg: Config, f: Settings_Field, delta: int, allocator 
 	return "", false
 }
 
+// --- キー/コントローラー割当のサイクル方式(T-keybindings) ---
+// 大前提(実装計画参照): TUIはtermios空間でキーを読み、割当対象はSDL空間(ゲーム中にSDL
+// ウィンドウがフォーカスを持つときのキーコード/コントローラーボタン)なので「キーを押して
+// 割当をキャプチャする」UXは不可能(コントローラーに至ってはTUI中にSDLがイベントを
+// ポンプしていない)。唯一実現可能なのは既存の scale/shader と同じ ←→ サイクル方式であり、
+// 以下は候補リストの順送りを行う純粋関数群。
+
+// cycle_next は list 内で current と等しい要素の次(delta>0)/前(delta<0)を返す純粋関数
+// (単体テスト対象)。list の先頭/末尾で反対側へラップする。current が list に含まれない
+// 場合は delta>0 なら list[0]、delta<0 なら list[len(list)-1] を返す(現在の割当が候補外の
+// 値であっても、操作すれば候補内へ入れるようにするため)。list が空なら current をそのまま
+// 返す(呼び出し側で len==0 をチェックしていれば通常は起こらない安全側の処理)。
+cycle_next :: proc(list: []$T, current: T, delta: int) -> T {
+	if len(list) == 0 {
+		return current
+	}
+	idx := -1
+	for v, i in list {
+		if v == current {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return delta > 0 ? list[0] : list[len(list) - 1]
+	}
+	n := len(list)
+	next := ((idx + delta) % n + n) % n
+	return list[next]
+}
+
+// keyboard_candidate_keycodes は keyboard_cycle_keycodes の元になる固定候補。実用的な
+// 再割当を賄えるよう厳選(A-Z、0-9、矢印、Return/Space/Tab/Backspace、左右Shift/Ctrl/Alt、
+// 記号少数、テンキー主要キー、F6・F8-F12)。予約ショートカット(F1-F5/F7/Escape)は最初から
+// 含めていない(is_reserved_shortcut_key によるフィルタは以下の keyboard_cycle_keycodes 側でも
+// 二重に行う。将来この配列へ予約キーが混入しても安全に除外されるようにするため)。
+@(private = "file")
+keyboard_candidate_keycodes := [?]sdl.Keycode {
+	.a, .b, .c, .d, .e, .f, .g, .h, .i, .j, .k, .l, .m, .n, .o, .p, .q, .r, .s, .t, .u, .v, .w, .x, .y, .z,
+	.NUM0, .NUM1, .NUM2, .NUM3, .NUM4, .NUM5, .NUM6, .NUM7, .NUM8, .NUM9,
+	.UP, .DOWN, .LEFT, .RIGHT,
+	.RETURN, .SPACE, .TAB, .BACKSPACE,
+	.LSHIFT, .RSHIFT, .LCTRL, .RCTRL, .LALT, .RALT,
+	.MINUS, .EQUALS, .LEFTBRACKET, .RIGHTBRACKET, .SEMICOLON, .QUOTE, .COMMA, .PERIOD, .SLASH, .BACKSLASH, .BACKQUOTE,
+	.KP_0, .KP_1, .KP_2, .KP_3, .KP_4, .KP_5, .KP_6, .KP_7, .KP_8, .KP_9, .KP_ENTER, .KP_PERIOD,
+	.F6, .F8, .F9, .F10, .F11, .F12,
+}
+
+// keyboard_cycle_keycodes はキーボード割当メニューの ←→ サイクル対象を返す(単体テスト対象、
+// 戻り値は呼び出し側が delete する所有スライス)。予約ショートカット(is_reserved_shortcut_key、
+// F1-F5/F7/Escape)と、SDLが名前を持たない(GetKeyName が空文字を返す)キーコードを除外する。
+// 後者を除外する理由: bbl.ini への書き戻し→再読込(config_apply_raw の GetKeyFromName)で
+// 復元できない名前を割り当ててしまうと往復が壊れるため。
+keyboard_cycle_keycodes :: proc(allocator := context.allocator) -> []sdl.Keycode {
+	result := make([dynamic]sdl.Keycode, 0, len(keyboard_candidate_keycodes), allocator)
+	for kc in keyboard_candidate_keycodes {
+		if is_reserved_shortcut_key(kc) {
+			continue
+		}
+		if sdl.GetKeyName(kc) == "" {
+			continue
+		}
+		append(&result, kc)
+	}
+	return result[:]
+}
+
+// controller_candidate_buttons は controller_cycle_buttons の元になる固定候補。一般的な
+// コントローラーが持つボタンに限定し、Xbox Series系専用の追加ボタン(MISC1/PADDLE*/
+// TOUCHPAD)や .INVALID/.MAX は候補から外す。
+@(private = "file")
+controller_candidate_buttons := [?]sdl.GameControllerButton {
+	.A, .B, .X, .Y, .BACK, .GUIDE, .START, .LEFTSTICK, .RIGHTSTICK, .LEFTSHOULDER, .RIGHTSHOULDER,
+	.DPAD_UP, .DPAD_DOWN, .DPAD_LEFT, .DPAD_RIGHT,
+}
+
+// controller_cycle_buttons はコントローラー割当メニューの ←→ サイクル対象を返す(単体テスト
+// 対象、戻り値は呼び出し側が delete する所有スライス)。SDLが文字列表現を持たない
+// (GameControllerGetStringForButton が空文字を返す)ボタンは除外する。
+controller_cycle_buttons :: proc(allocator := context.allocator) -> []sdl.GameControllerButton {
+	result := make([dynamic]sdl.GameControllerButton, 0, len(controller_candidate_buttons), allocator)
+	for b in controller_candidate_buttons {
+		if sdl.GameControllerGetStringForButton(b) == "" {
+			continue
+		}
+		append(&result, b)
+	}
+	return result[:]
+}
+
+// menu_adjust_binding は Keyboard/Controller レベルでの ←→ 操作を計算する(純粋関数、
+// menu_adjust_value のキー/パッド版)。現在の割当(cfg.key_map[btn]/cfg.pad_map[btn])を
+// 基準に cycle_next で次候補を求め、その SDL 名文字列(往復可能、config_apply_set にそのまま
+// 渡せる)を allocator で確保して返す。候補リストが空の場合のみ changed=false になる
+// (通常は起こらない: keyboard_cycle_keycodes/controller_cycle_buttons は実行環境で常に
+// 1件以上返す想定)。
+menu_adjust_binding :: proc(cfg: Config, level: Menu_Level, btn: core.Button, delta: int, allocator := context.allocator) -> (value: string, changed: bool) {
+	switch level {
+	case .Keyboard:
+		keys := keyboard_cycle_keycodes(context.temp_allocator)
+		if len(keys) == 0 {
+			return "", false
+		}
+		next := cycle_next(keys, cfg.key_map[btn], delta)
+		return strings.clone(string(sdl.GetKeyName(next)), allocator), true
+	case .Controller:
+		buttons := controller_cycle_buttons(context.temp_allocator)
+		if len(buttons) == 0 {
+			return "", false
+		}
+		next := cycle_next(buttons, cfg.pad_map[btn], delta)
+		return strings.clone(string(sdl.GameControllerGetStringForButton(next)), allocator), true
+	case .Top:
+		return "", false
+	}
+	return "", false
+}
+
+// menu_binding_key_name は Menu_Effect.key / List_Item.label に使う "key_<name>"/"pad_<name>"
+// を組み立てる(config.odin の button_key_name を利用し、config_apply_set が受け付ける
+// キー名と完全に一致させる)。戻り値は fmt.tprintf の借用(呼び出し側がその場で使い切る前提、
+// menu_item_info 等の既存の借用方針と同じ)。
+@(private = "file")
+menu_binding_key_name :: proc(level: Menu_Level, b: core.Button) -> string {
+	prefix := level == .Keyboard ? "key" : "pad"
+	return fmt.tprintf("%s_%s", prefix, button_key_name(b))
+}
+
 // menu_step は1キーイベントを状態機械へ与え、呼び出し側が実行すべき効果を返す(純粋関数、
-// 単体テスト対象)。↑↓=選択移動(clamp)、←→=値サイクル/増減、Esc/q/Enter=Close。
+// 単体テスト対象)。T-keybindingsでサブメニュー方式(Top/Keyboard/Controller)に拡張し、
+// 実際の遷移ロジックはレベルごとに menu_step_top/menu_step_binding へ分けた。
 menu_step :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator := context.allocator) -> Menu_Effect {
+	switch m.level {
+	case .Top:
+		return menu_step_top(m, ev, cfg, allocator)
+	case .Keyboard, .Controller:
+		return menu_step_binding(m, ev, cfg, allocator)
+	}
+	return Menu_Effect{op = .None}
+}
+
+// menu_step_top はトップレベル(scale/shader/volume + サブメニュー入口2つ)の遷移。
+// ↑↓=選択移動(clamp)。←→=settings_fields の3項目上でのみ値サイクル/増減(サブメニュー
+// 入口の上では無効=None)。Enter=サブメニュー入口上ならそのレベルへ降下(selected=0へ
+// リセット、Redraw)、value項目上ではNone(降下専用に変更、Enterでは閉じない)。Esc/q=Close。
+@(private = "file")
+menu_step_top :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator := context.allocator) -> Menu_Effect {
 	#partial switch ev.key {
 	case .Up:
 		if m.selected > 0 {
@@ -911,12 +1078,15 @@ menu_step :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator := conte
 		}
 		return Menu_Effect{op = .None}
 	case .Down:
-		if m.selected < len(settings_fields) - 1 {
+		if m.selected < TOP_MENU_ITEM_COUNT - 1 {
 			m.selected += 1
 			return Menu_Effect{op = .Redraw}
 		}
 		return Menu_Effect{op = .None}
 	case .Left, .Right:
+		if m.selected >= len(settings_fields) {
+			return Menu_Effect{op = .None} // サブメニュー入口の上では←→は無効
+		}
 		delta := ev.key == .Right ? 1 : -1
 		f := settings_fields[m.selected]
 		value, changed := menu_adjust_value(cfg, f, delta, allocator)
@@ -924,11 +1094,66 @@ menu_step :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator := conte
 			return Menu_Effect{op = .None}
 		}
 		return Menu_Effect{op = .Adjust, key = settings_field_key(f), value = value}
-	case .Escape, .Enter:
+	case .Enter:
+		switch m.selected {
+		case TOP_MENU_KEYBOARD_INDEX:
+			m.level = .Keyboard
+			m.selected = 0
+			return Menu_Effect{op = .Redraw}
+		case TOP_MENU_CONTROLLER_INDEX:
+			m.level = .Controller
+			m.selected = 0
+			return Menu_Effect{op = .Redraw}
+		}
+		return Menu_Effect{op = .None} // value項目上ではEnterでは閉じない(降下専用)
+	case .Escape:
 		return Menu_Effect{op = .Close}
 	case .Char:
 		if ev.ch == 'q' {
 			return Menu_Effect{op = .Close}
+		}
+	}
+	return Menu_Effect{op = .None}
+}
+
+// menu_step_binding はKeyboard/Controllerレベル(GB8ボタンの key_*/pad_* 割当一覧)の遷移。
+// ↑↓=選択移動(clamp)。←→=選択中のGBボタンのSDL割当を候補リストでサイクル(Adjust、
+// menu_adjust_binding参照)。Esc/q/Enterは(TopのようにCloseではなく)Topへ戻るだけ:
+// selectedは元のサブメニュー入口のindex(TOP_MENU_KEYBOARD_INDEX/TOP_MENU_CONTROLLER_INDEX)
+// へ復元する(サブから一気に閉じない、実装計画の設計どおり)。
+@(private = "file")
+menu_step_binding :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator := context.allocator) -> Menu_Effect {
+	back_index := m.level == .Keyboard ? TOP_MENU_KEYBOARD_INDEX : TOP_MENU_CONTROLLER_INDEX
+	#partial switch ev.key {
+	case .Up:
+		if m.selected > 0 {
+			m.selected -= 1
+			return Menu_Effect{op = .Redraw}
+		}
+		return Menu_Effect{op = .None}
+	case .Down:
+		if m.selected < len(gb_button_order) - 1 {
+			m.selected += 1
+			return Menu_Effect{op = .Redraw}
+		}
+		return Menu_Effect{op = .None}
+	case .Left, .Right:
+		delta := ev.key == .Right ? 1 : -1
+		btn := gb_button_order[m.selected]
+		value, changed := menu_adjust_binding(cfg, m.level, btn, delta, allocator)
+		if !changed {
+			return Menu_Effect{op = .None}
+		}
+		return Menu_Effect{op = .Adjust, key = menu_binding_key_name(m.level, btn), value = value}
+	case .Escape, .Enter:
+		m.level = .Top
+		m.selected = back_index
+		return Menu_Effect{op = .Redraw}
+	case .Char:
+		if ev.ch == 'q' {
+			m.level = .Top
+			m.selected = back_index
+			return Menu_Effect{op = .Redraw}
 		}
 	}
 	return Menu_Effect{op = .None}
@@ -947,9 +1172,12 @@ menu_set_status :: proc(m: ^Menu_State, msg: string) {
 }
 
 // menu_state_destroy は所有フィールドを解放する(メニューを閉じるときに呼ぶ)。
+// T-keybindings: level も .Top へ戻す(前回サブメニューに降りたまま閉じた場合、次に開いた
+// ときトップから始まるようにするため)。
 menu_state_destroy :: proc(m: ^Menu_State) {
 	delete(m.status)
 	m.status = ""
+	m.level = .Top
 }
 
 // --- ゲーム中シェル描画(T14-4、T16-1 で Now Playing パネルを簡素化) ---
@@ -1038,19 +1266,13 @@ game_shell_draw :: proc(
 	meta := fmt.tprintf("%s  %s", s.rom_name, s.cart_label)
 	switch view {
 	case .Settings:
-		items := make([]List_Item, len(settings_fields))
+		// T-keybindings: level(Top/Keyboard/Controller)に応じた項目リスト/見出し/ヒントを
+		// 共通ヘルパー(settings_menu_items/heading/hint)経由で組み立てる。tui_run_settings_menu
+		// (ホーム)と全く同じヘルパーを使うことで、両画面の見た目・挙動を一致させる。
+		items := settings_menu_items(cfg, m.level)
 		defer delete(items)
-		for f, i in settings_fields {
-			items[i] = List_Item{label = settings_field_key(f), info = menu_item_info(cfg, f)}
-		}
-		content = shell_content_list(
-			fmt.tprintf("BubiBoyLite v%s 設定 — 設定項目を選択(←→ で値を変更)", VERSION),
-			items,
-			m.selected,
-			avail,
-			cols,
-		)
-		hint = "↑↓ 選択  ←→ 値を変更  Esc 戻る"
+		content = shell_content_list(settings_menu_heading(m.level), items, m.selected, avail, cols)
+		hint = settings_menu_hint(m.level)
 		if m.status != "" {
 			status = m.status
 		}
@@ -1086,10 +1308,64 @@ menu_item_info :: proc(cfg: Config, f: Settings_Field) -> string {
 	return fmt.tprintf("◂ %s ▸", settings_field_value_string(cfg, f))
 }
 
+// --- 設定メニューの項目リスト生成(T-keybindings) ---
+// ホーム(tui_run_settings_menu)とゲーム中オーバーレイ(game_shell_draw の case .Settings)の
+// 両方が同じ項目リスト/見出し/ヒントを使うための共通ヘルパー。両者は menu_step 状態機械を
+// 共有しているのと同じ理由(描画だけを分岐させたくない)でここも1本化する。
+
+// settings_menu_items は level に応じた List_Item 配列を返す(所有、delete が必要。ただし
+// label/info の中身自体は tprintf の借用/静的文字列(settings_field_key)なので、呼び出し側は
+// 配列そのものだけ delete すればよい。既存の menu_item_info の借用方針と同じ)。
+settings_menu_items :: proc(cfg: Config, level: Menu_Level, allocator := context.allocator) -> []List_Item {
+	switch level {
+	case .Top:
+		items := make([]List_Item, TOP_MENU_ITEM_COUNT, allocator)
+		for f, i in settings_fields {
+			items[i] = List_Item{label = settings_field_key(f), info = menu_item_info(cfg, f)}
+		}
+		items[TOP_MENU_KEYBOARD_INDEX] = List_Item{label = "キーボード割当", info = "▸"}
+		items[TOP_MENU_CONTROLLER_INDEX] = List_Item{label = "コントローラー割当", info = "▸"}
+		return items
+	case .Keyboard, .Controller:
+		items := make([]List_Item, len(gb_button_order), allocator)
+		for b, i in gb_button_order {
+			name_str := level == .Keyboard ? string(sdl.GetKeyName(cfg.key_map[b])) : string(sdl.GameControllerGetStringForButton(cfg.pad_map[b]))
+			items[i] = List_Item{label = menu_binding_key_name(level, b), info = fmt.tprintf("◂ %s ▸", name_str)}
+		}
+		return items
+	}
+	return nil
+}
+
+// settings_menu_heading / settings_menu_hint は level に応じた見出し・入力行右端ヒントを返す
+// (戻り値は fmt.tprintf の借用または静的文字列、呼び出し側がその場で描画に使い切る前提)。
+settings_menu_heading :: proc(level: Menu_Level) -> string {
+	switch level {
+	case .Top:
+		return fmt.tprintf("BubiBoyLite v%s 設定 — 項目を選択(←→ で値を変更 / Enter で開く)", VERSION)
+	case .Keyboard:
+		return fmt.tprintf("BubiBoyLite v%s キーボード割当 — ←→ で変更", VERSION)
+	case .Controller:
+		return fmt.tprintf("BubiBoyLite v%s コントローラー割当 — ←→ で変更", VERSION)
+	}
+	return ""
+}
+
+settings_menu_hint :: proc(level: Menu_Level) -> string {
+	switch level {
+	case .Top:
+		return "↑↓ 選択  ←→ 値を変更  Enter 開く  Esc 閉じる"
+	case .Keyboard, .Controller:
+		return "↑↓ 選択  ←→ 変更  Esc 戻る"
+	}
+	return ""
+}
+
 // tui_run_settings_menu は /settings(引数無し)の対話メニュー。T13-2 で menu_step 駆動に
 // 書き換え: ↑↓で項目選択、←→で値サイクル/増減(即時に config_apply_set で検証・適用・書き戻し)、
-// Esc/q/Enter で戻る。従来の「Enter で編集モード → タイプ入力」は廃止(遷移ロジックと値計算を
-// ゲーム中オーバーレイ(T13-5)と共有するため。描画だけがこちらはフル枠 tui_write_frame)。
+// Esc/q で戻る(トップのみ。T-keybindingsでサブメニュー方式に拡張してからは Enter は
+// サブメニュー入口の降下専用になり、value項目上のEnterでは閉じない。詳細は menu_step 参照)。
+// 描画は settings_menu_items/heading/hint(共通ヘルパー、上記)経由。
 // optimization_mode="none": tui_run_command_home 側のコメント参照(T12-6)。この関数も
 // config_apply_set() 呼び出し後にループへ戻り tui_term_size() を呼ぶ同型のパターンを持つ
 // (実機検証では発火しなかったが、予防的に揃える。30ms ポーリングループなのでコストは無視できる)。
@@ -1104,20 +1380,17 @@ tui_run_settings_menu :: proc(cfg: ^Config, config_dir: string) {
 		cols, rows := tui_term_size()
 
 		if dirty {
-			items := make([]List_Item, len(settings_fields))
+			items := settings_menu_items(cfg^, m.level)
 			defer delete(items)
-			for f, i in settings_fields {
-				items[i] = List_Item{label = settings_field_key(f), info = menu_item_info(cfg^, f)}
-			}
 			// T14-2: 固定レイアウトシェルで描画(キー処理・状態遷移は無変更)。
 			content := shell_content_list(
-				fmt.tprintf("BubiBoyLite v%s 設定 — 設定項目を選択(←→ で値を変更)", VERSION),
+				settings_menu_heading(m.level),
 				items,
 				m.selected,
 				rows - SHELL_RESERVED_ROWS,
 				cols,
 			)
-			tui_write_shell(Shell_Frame{cols = cols, rows = rows, content = content, status = status, hint = "↑↓ 選択  ←→ 値を変更  Esc 戻る"})
+			tui_write_shell(Shell_Frame{cols = cols, rows = rows, content = content, status = status, hint = settings_menu_hint(m.level)})
 			shell_lines_destroy(content)
 			dirty = false
 		}

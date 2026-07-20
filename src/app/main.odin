@@ -255,7 +255,11 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 				if input_is_fullscreen_toggle(event.key) {
 					video_toggle_fullscreen(&video)
 				}
-				input_handle_key_event(emu, cfg.key_map, event.key, true)
+				// T-keybindings: key_map は live_cfg(設定メニューでの変更が反映される可変コピー、
+				// 上記 live_cfg := cfg 参照)から読む。cfg(関数引数の値コピー)のままだと
+				// ゲーム中に key_*/pad_* を再割当てても入力に反映されない(config_apply_set は
+				// &live_cfg を更新するだけなので、cfg 自身は起動時の値のまま変化しない)。
+				input_handle_key_event(emu, live_cfg.key_map, event.key, true)
 				// 落とし穴(T7-4): 保存/復元はメインループのフレーム境界で行う。ここは
 				// このイテレーションでまだ emulator_run_frame を呼んでいない時点なので、
 				// 直接処理してよい(次のフレーム実行の「外」であることが保証される)。
@@ -268,15 +272,15 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 					game_dirty = true
 				}
 			case .KEYUP:
-				input_handle_key_event(emu, cfg.key_map, event.key, false)
+				input_handle_key_event(emu, live_cfg.key_map, event.key, false)
 			case .CONTROLLERDEVICEADDED:
 				controller_manager_handle_added(&controllers, event.cdevice.which)
 			case .CONTROLLERDEVICEREMOVED:
 				controller_manager_handle_removed(&controllers, sdl.JoystickID(event.cdevice.which))
 			case .CONTROLLERBUTTONDOWN:
-				input_handle_controller_button_event(emu, cfg.pad_map, event.cbutton, true)
+				input_handle_controller_button_event(emu, live_cfg.pad_map, event.cbutton, true)
 			case .CONTROLLERBUTTONUP:
-				input_handle_controller_button_event(emu, cfg.pad_map, event.cbutton, false)
+				input_handle_controller_button_event(emu, live_cfg.pad_map, event.cbutton, false)
 			case .CONTROLLERAXISMOTION:
 				input_handle_controller_axis_event(emu, event.caxis)
 			}
@@ -344,6 +348,9 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 								if game_view != .Settings {
 									game_view = .Settings
 									menu_state.selected = 0
+									// T-keybindings: 前回サブメニュー(Keyboard/Controller)に降りたまま
+									// 閉じていた場合に備え、開き直す際は必ずトップから始める。
+									menu_state.level = .Top
 									settings_was_paused = game_pause_for_command_mode(&paused)
 								}
 							} else {

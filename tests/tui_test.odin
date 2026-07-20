@@ -6,6 +6,7 @@ import "core:strings"
 import "core:testing"
 import app "bbl:app"
 import core "bbl:core"
+import sdl2 "vendor:sdl2"
 
 // src/app/tui.odin の単体テスト(T9-1/T9-2)。実際のターミナルの見た目を目視で確認することは
 // できないため、描画(tui_render_frame)とキー解析(tui_parse_key)を純粋関数として分離し、
@@ -515,14 +516,15 @@ test_menu_step_up_down_clamps_selection :: proc(t: ^testing.T) {
 	eff = app.menu_step(&m, app.Key_Event{key = .Down}, cfg)
 	testing.expect(t, eff.op == .Redraw && m.selected == 1)
 
-	// 末尾(2 = settings_fields は scale/shader/volume の3項目)まで下げてさらに Down → 動かない
-	m.selected = 2
+	// 末尾(4 = トップ5項目: scale/shader/volume + サブメニュー入口2つ、T-keybindings)まで
+	// 下げてさらに Down → 動かない
+	m.selected = app.TOP_MENU_ITEM_COUNT - 1
 	eff = app.menu_step(&m, app.Key_Event{key = .Down}, cfg)
-	testing.expect(t, eff.op == .None && m.selected == 2)
+	testing.expect(t, eff.op == .None && m.selected == app.TOP_MENU_ITEM_COUNT - 1)
 
-	// Up で 1 に戻る
+	// Up で1つ戻る
 	eff = app.menu_step(&m, app.Key_Event{key = .Up}, cfg)
-	testing.expect(t, eff.op == .Redraw && m.selected == 1)
+	testing.expect(t, eff.op == .Redraw && m.selected == app.TOP_MENU_ITEM_COUNT - 2)
 }
 
 @(test)
@@ -623,8 +625,10 @@ test_menu_step_close_keys :: proc(t: ^testing.T) {
 	eff := app.menu_step(&m, app.Key_Event{key = .Escape}, cfg)
 	testing.expect(t, eff.op == .Close)
 
+	// T-keybindings: Enter はサブメニュー入口への降下専用になったため、value項目(selected=0
+	// =scale)の上では .None(閉じない)。
 	eff = app.menu_step(&m, app.Key_Event{key = .Enter}, cfg)
-	testing.expect(t, eff.op == .Close)
+	testing.expect(t, eff.op == .None)
 
 	eff = app.menu_step(&m, app.Key_Event{key = .Char, ch = 'q'}, cfg)
 	testing.expect(t, eff.op == .Close)
@@ -632,6 +636,236 @@ test_menu_step_close_keys :: proc(t: ^testing.T) {
 	// q 以外の文字は .None
 	eff = app.menu_step(&m, app.Key_Event{key = .Char, ch = 'x'}, cfg)
 	testing.expect(t, eff.op == .None)
+}
+
+// --- サブメニュー方式(T-keybindings): Top ⇄ Keyboard/Controller の階層遷移 ---
+
+@(test)
+test_menu_step_top_enter_on_submenu_entry_descends :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	m := app.Menu_State{selected = app.TOP_MENU_KEYBOARD_INDEX}
+
+	eff := app.menu_step(&m, app.Key_Event{key = .Enter}, cfg)
+	testing.expect(t, eff.op == .Redraw)
+	testing.expect(t, m.level == .Keyboard)
+	testing.expect(t, m.selected == 0)
+
+	// Controller 側も同様。
+	m2 := app.Menu_State{selected = app.TOP_MENU_CONTROLLER_INDEX}
+	eff2 := app.menu_step(&m2, app.Key_Event{key = .Enter}, cfg)
+	testing.expect(t, eff2.op == .Redraw)
+	testing.expect(t, m2.level == .Controller)
+	testing.expect(t, m2.selected == 0)
+}
+
+@(test)
+test_menu_step_top_left_right_on_submenu_entry_is_none :: proc(t: ^testing.T) {
+	// サブメニュー入口の上では←→は無効(scale/shader/volumeのみ値サイクル対象)。
+	cfg := app.default_config()
+	m := app.Menu_State{selected = app.TOP_MENU_KEYBOARD_INDEX}
+	eff := app.menu_step(&m, app.Key_Event{key = .Right}, cfg)
+	testing.expect(t, eff.op == .None)
+	testing.expect(t, m.level == .Top, "←→では降下しない")
+}
+
+@(test)
+test_menu_step_keyboard_up_down_clamps_over_8_buttons :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	m := app.Menu_State{level = .Keyboard}
+
+	eff := app.menu_step(&m, app.Key_Event{key = .Up}, cfg)
+	testing.expect(t, eff.op == .None && m.selected == 0)
+
+	m.selected = 7 // gb_button_order は8要素(Up/Down/Left/Right/A/B/Start/Select)
+	eff = app.menu_step(&m, app.Key_Event{key = .Down}, cfg)
+	testing.expect(t, eff.op == .None && m.selected == 7)
+
+	m.selected = 3
+	eff = app.menu_step(&m, app.Key_Event{key = .Down}, cfg)
+	testing.expect(t, eff.op == .Redraw && m.selected == 4)
+}
+
+@(test)
+test_menu_step_keyboard_left_right_adjusts_key_binding :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	m := app.Menu_State{level = .Keyboard, selected = 0} // gb_button_order[0] == .Up
+
+	eff := app.menu_step(&m, app.Key_Event{key = .Right}, cfg)
+	testing.expect(t, eff.op == .Adjust)
+	testing.expect_value(t, eff.key, "key_up")
+	testing.expect(t, eff.value != "")
+	delete(eff.value)
+}
+
+@(test)
+test_menu_step_controller_left_right_adjusts_pad_binding :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	m := app.Menu_State{level = .Controller, selected = 4} // gb_button_order[4] == .A
+
+	eff := app.menu_step(&m, app.Key_Event{key = .Right}, cfg)
+	testing.expect(t, eff.op == .Adjust)
+	testing.expect_value(t, eff.key, "pad_a")
+	testing.expect(t, eff.value != "")
+	delete(eff.value)
+}
+
+@(test)
+test_menu_step_keyboard_escape_returns_to_top_at_keyboard_entry :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	m := app.Menu_State{level = .Keyboard, selected = 5}
+
+	eff := app.menu_step(&m, app.Key_Event{key = .Escape}, cfg)
+	testing.expect(t, eff.op == .Redraw, "サブから戻るときはCloseではなくRedraw")
+	testing.expect(t, m.level == .Top)
+	testing.expect(t, m.selected == app.TOP_MENU_KEYBOARD_INDEX, "元のサブメニュー入口indexへ復元")
+}
+
+@(test)
+test_menu_step_controller_q_and_enter_return_to_top_at_controller_entry :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+
+	m := app.Menu_State{level = .Controller, selected = 2}
+	eff := app.menu_step(&m, app.Key_Event{key = .Char, ch = 'q'}, cfg)
+	testing.expect(t, eff.op == .Redraw)
+	testing.expect(t, m.level == .Top)
+	testing.expect(t, m.selected == app.TOP_MENU_CONTROLLER_INDEX)
+
+	m2 := app.Menu_State{level = .Controller, selected = 1}
+	eff2 := app.menu_step(&m2, app.Key_Event{key = .Enter}, cfg)
+	testing.expect(t, eff2.op == .Redraw)
+	testing.expect(t, m2.level == .Top)
+	testing.expect(t, m2.selected == app.TOP_MENU_CONTROLLER_INDEX)
+}
+
+@(test)
+test_menu_state_destroy_resets_level_to_top :: proc(t: ^testing.T) {
+	m := app.Menu_State{level = .Keyboard, selected = 3}
+	app.menu_state_destroy(&m)
+	testing.expect(t, m.level == .Top)
+}
+
+// --- cycle_next(T-keybindings、純粋関数) ---
+
+@(test)
+test_cycle_next_advances_and_wraps_forward :: proc(t: ^testing.T) {
+	list := []int{10, 20, 30}
+	testing.expect(t, app.cycle_next(list, 10, 1) == 20)
+	testing.expect(t, app.cycle_next(list, 20, 1) == 30)
+	testing.expect(t, app.cycle_next(list, 30, 1) == 10, "末尾から先頭へラップ")
+}
+
+@(test)
+test_cycle_next_retreats_and_wraps_backward :: proc(t: ^testing.T) {
+	list := []int{10, 20, 30}
+	testing.expect(t, app.cycle_next(list, 30, -1) == 20)
+	testing.expect(t, app.cycle_next(list, 20, -1) == 10)
+	testing.expect(t, app.cycle_next(list, 10, -1) == 30, "先頭から末尾へラップ")
+}
+
+@(test)
+test_cycle_next_current_not_in_list_picks_edge_by_direction :: proc(t: ^testing.T) {
+	list := []int{10, 20, 30}
+	testing.expect(t, app.cycle_next(list, 999, 1) == 10, "候補外なら+方向はlist[0]")
+	testing.expect(t, app.cycle_next(list, 999, -1) == 30, "候補外なら-方向はlist[len-1]")
+}
+
+@(test)
+test_cycle_next_empty_list_returns_current :: proc(t: ^testing.T) {
+	list := []int{}
+	testing.expect(t, app.cycle_next(list, 42, 1) == 42)
+}
+
+// --- キーボード/コントローラー サイクル候補リスト(T-keybindings) ---
+
+@(test)
+test_keyboard_cycle_keycodes_excludes_reserved_shortcuts :: proc(t: ^testing.T) {
+	keys := app.keyboard_cycle_keycodes()
+	defer delete(keys)
+	testing.expect(t, len(keys) > 0)
+	for kc in keys {
+		testing.expect(t, !app.is_reserved_shortcut_key(kc), "F1-F5/F7/Escapeは候補に出ないはず")
+	}
+}
+
+@(test)
+test_keyboard_cycle_keycodes_all_have_names :: proc(t: ^testing.T) {
+	// 往復可能性(bbl.ini書き戻し→再読込)のため、全候補が GetKeyName != "" であること。
+	keys := app.keyboard_cycle_keycodes()
+	defer delete(keys)
+	for kc in keys {
+		name := sdl2.GetKeyName(kc)
+		testing.expect(t, name != "", "候補は全てGetKeyNameが空文字でないはず")
+	}
+}
+
+@(test)
+test_controller_cycle_buttons_excludes_invalid_and_max :: proc(t: ^testing.T) {
+	buttons := app.controller_cycle_buttons()
+	defer delete(buttons)
+	testing.expect(t, len(buttons) > 0)
+	for b in buttons {
+		testing.expect(t, b != .INVALID)
+		testing.expect(t, b != .MAX)
+	}
+}
+
+@(test)
+test_controller_cycle_buttons_all_have_names :: proc(t: ^testing.T) {
+	buttons := app.controller_cycle_buttons()
+	defer delete(buttons)
+	for b in buttons {
+		name := sdl2.GameControllerGetStringForButton(b)
+		testing.expect(t, name != "")
+	}
+}
+
+// --- 設定メニューの項目リスト生成(T-keybindings): Top/Keyboard/Controller ---
+
+@(test)
+test_settings_menu_items_top_has_five_entries_with_submenu_arrows :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	items := app.settings_menu_items(cfg, .Top)
+	defer delete(items)
+
+	testing.expect_value(t, len(items), app.TOP_MENU_ITEM_COUNT)
+	testing.expect_value(t, items[0].label, "scale")
+	testing.expect_value(t, items[app.TOP_MENU_KEYBOARD_INDEX].label, "キーボード割当")
+	testing.expect_value(t, items[app.TOP_MENU_KEYBOARD_INDEX].info, "▸")
+	testing.expect_value(t, items[app.TOP_MENU_CONTROLLER_INDEX].label, "コントローラー割当")
+	testing.expect_value(t, items[app.TOP_MENU_CONTROLLER_INDEX].info, "▸")
+}
+
+@(test)
+test_settings_menu_items_keyboard_lists_all_gb_buttons :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	items := app.settings_menu_items(cfg, .Keyboard)
+	defer delete(items)
+
+	testing.expect_value(t, len(items), 8)
+	testing.expect_value(t, items[0].label, "key_up")
+	testing.expect(t, strings.contains(items[0].info, "Up"))
+}
+
+@(test)
+test_settings_menu_items_controller_lists_all_gb_buttons :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	items := app.settings_menu_items(cfg, .Controller)
+	defer delete(items)
+
+	testing.expect_value(t, len(items), 8)
+	testing.expect_value(t, items[0].label, "pad_up")
+	testing.expect(t, strings.contains(items[0].info, "dpup"))
+}
+
+@(test)
+test_settings_menu_heading_and_hint_differ_by_level :: proc(t: ^testing.T) {
+	testing.expect(t, strings.contains(app.settings_menu_heading(.Top), "設定"))
+	testing.expect(t, strings.contains(app.settings_menu_heading(.Keyboard), "キーボード割当"))
+	testing.expect(t, strings.contains(app.settings_menu_heading(.Controller), "コントローラー割当"))
+
+	testing.expect(t, strings.contains(app.settings_menu_hint(.Top), "Enter 開く"))
+	testing.expect(t, strings.contains(app.settings_menu_hint(.Keyboard), "Esc 戻る"))
+	testing.expect(t, strings.contains(app.settings_menu_hint(.Controller), "Esc 戻る"))
 }
 
 // --- /settings メニューの ←→ サイクル表示(T13-2) ---

@@ -81,7 +81,10 @@ default_config :: proc() -> Config {
 // 分かりやすくする(十字キー→A/B→Start/Select の順)ためこの並びを使う。
 gb_button_order := [8]core.Button{.Up, .Down, .Left, .Right, .A, .B, .Start, .Select}
 
-@(private = "file")
+// button_key_name は bbl.ini のキー名サフィックス("key_"/"pad_"の後ろ)を返す。
+// TUIのキー/コントローラー割当サブメニュー(T-keybindings)が List_Item.label や
+// Menu_Effect.key の組み立てに使うため、package外(tui.odin は同package)から見える必要が
+// あり private を外している(config.odin 内でも従来どおり使う)。
 button_key_name :: proc(b: core.Button) -> string {
 	switch b {
 	case .Right:
@@ -102,6 +105,18 @@ button_key_name :: proc(b: core.Button) -> string {
 		return "start"
 	}
 	return ""
+}
+
+// button_from_key_name は button_key_name の逆引き(T-keybindings、config_apply_set の
+// key_*/pad_* サフィックス解決用)。gb_button_order を回して一致するものを探す(8要素の
+// 固定小ループなので実質O(1))。
+button_from_key_name :: proc(name: string) -> (b: core.Button, ok: bool) {
+	for btn in gb_button_order {
+		if button_key_name(btn) == name {
+			return btn, true
+		}
+	}
+	return {}, false
 }
 
 // --- INI パース(依存ライブラリなしの自前パーサ) ---
@@ -211,23 +226,31 @@ config_patch_file :: proc(path: string, changes: map[string]string) -> (ok: bool
 	return true
 }
 
-// config_apply_set は TUI の `/set`/`/settings`(T12-4)で1キーの値を検証・適用する。
-// 対象は scale/shader/volume の基本項目のみ(key_*/pad_* は対象外、プラン方針。fullscreen は
-// 永続化しない方針のため設定対象外=Cmd+Enter/--fullscreen 専用、要件2026-07-20)。
+// config_apply_set は TUI の `/set`/`/settings`(T12-4、T-keybindingsで key_*/pad_* に拡張)で
+// 1キーの値を検証・適用する。対象は scale/shader/volume に加え、key_*/pad_*(GB8ボタンの
+// キーボード/コントローラー割当)。fullscreen は永続化しない方針のため設定対象外
+// (Cmd+Enter/--fullscreen 専用、要件2026-07-20)。
 // 不正な値は cfg を変更せずエラーメッセージだけ返す。成功時は cfg^ を更新した上で、
 // config_dir が解決できていれば bbl.ini へそのキーだけを即時パッチする(config_patch_file、
 // map 再シリアライズではなく行単位パッチなのでコメント・他の設定は保持される)。
 // config_dir が空(config_dir_path() 解決失敗)の場合はファイル書き込みをスキップし、
 // その旨をメッセージに含める(クラッシュしないこと)。
+// key_*/pad_* の重複割当(T-keybindings「allow + warn」方針): 同じ keycode/button を持つ別の
+// GBボタンが既にあっても適用はブロックせず、成功メッセージに警告を付け足す
+// (input_key_to_button/input_handle_controller_button_event は先勝ちで片方しか効かないため、
+// ユーザーに気づかせる目的。config_find_duplicate_key/config_find_duplicate_pad 参照)。
 config_apply_set :: proc(cfg: ^Config, config_dir: string, key: string, value: string) -> (ok: bool, message: string) {
-	switch key {
-	case "scale":
+	UNKNOWN_KEY_HINT :: "scale/shader/volume/key_*/pad_* のみ対応"
+	warning := "" // 重複割当時に成功メッセージへ追記する警告(allow + warn)
+
+	switch {
+	case key == "scale":
 		n, parse_ok := strconv.parse_int(value)
 		if !parse_ok || n < 1 || n > MAX_SCALE {
 			return false, fmt.tprintf("scale の値が不正です(1〜8の整数): %q", value)
 		}
 		cfg.scale = n
-	case "shader":
+	case key == "shader":
 		switch strings.to_lower(value, context.temp_allocator) {
 		case "nearest":
 			cfg.shader = .Nearest
@@ -236,18 +259,46 @@ config_apply_set :: proc(cfg: ^Config, config_dir: string, key: string, value: s
 		case:
 			return false, fmt.tprintf("shader の値が不正です(nearest/smooth): %q", value)
 		}
-	case "volume":
+	case key == "volume":
 		n, parse_ok := strconv.parse_int(value)
 		if !parse_ok || n < 0 || n > 100 {
 			return false, fmt.tprintf("volume の値が不正です(0〜100の整数): %q", value)
 		}
 		cfg.volume = n
+	case strings.has_prefix(key, "key_"):
+		btn, found := button_from_key_name(key[len("key_"):])
+		if !found {
+			return false, fmt.tprintf("不明な設定項目です: %q(%s)", key, UNKNOWN_KEY_HINT)
+		}
+		cstr := strings.clone_to_cstring(value, context.temp_allocator)
+		sym := sdl.GetKeyFromName(cstr)
+		if sym == .UNKNOWN {
+			return false, fmt.tprintf("%s の値が不正です(SDLが認識できないキー名): %q", key, value)
+		}
+		cfg.key_map[btn] = sym
+		if dup, dup_ok := config_find_duplicate_key(cfg.key_map, btn); dup_ok {
+			warning = fmt.tprintf("(key_%s と重複しています)", button_key_name(dup))
+		}
+	case strings.has_prefix(key, "pad_"):
+		btn, found := button_from_key_name(key[len("pad_"):])
+		if !found {
+			return false, fmt.tprintf("不明な設定項目です: %q(%s)", key, UNKNOWN_KEY_HINT)
+		}
+		cstr := strings.clone_to_cstring(value, context.temp_allocator)
+		gbtn := sdl.GameControllerGetButtonFromString(cstr)
+		if gbtn == .INVALID {
+			return false, fmt.tprintf("%s の値が不正です(SDLが認識できないボタン名): %q", key, value)
+		}
+		cfg.pad_map[btn] = gbtn
+		if dup, dup_ok := config_find_duplicate_pad(cfg.pad_map, btn); dup_ok {
+			warning = fmt.tprintf("(pad_%s と重複しています)", button_key_name(dup))
+		}
 	case:
-		return false, fmt.tprintf("不明な設定項目です: %q(scale/shader/volume のみ対応)", key)
+		return false, fmt.tprintf("不明な設定項目です: %q(%s)", key, UNKNOWN_KEY_HINT)
 	}
 
 	if strings.trim_space(config_dir) == "" {
-		return true, fmt.tprintf("%s を更新しました(設定の保存先が見つからないためメモリ上のみ反映)", key)
+		return true, fmt.tprintf("%s を更新しました%s(設定の保存先が見つからないためメモリ上のみ反映)", key, warning)
 	}
 	// config_path は fmt.tprintf(temp_allocator)の戻り値なので明示的な delete はしない
 	// (呼び出し元の main.odin/config_load と同じ扱い)。changes は config_patch_file 内で
@@ -257,9 +308,9 @@ config_apply_set :: proc(cfg: ^Config, config_dir: string, key: string, value: s
 	defer delete(changes)
 	changes[key] = value
 	if !config_patch_file(path, changes) {
-		return true, fmt.tprintf("%s を更新しましたが bbl.ini への書き込みに失敗しました", key)
+		return true, fmt.tprintf("%s を更新しましたが bbl.ini への書き込みに失敗しました%s", key, warning)
 	}
-	return true, fmt.tprintf("%s = %s に更新しました", key, value)
+	return true, fmt.tprintf("%s = %s に更新しました%s", key, value, warning)
 }
 
 @(private = "file")
@@ -379,6 +430,35 @@ config_key_map_conflicts :: proc(key_map: [core.Button]sdl.Keycode) -> bit_set[c
 		}
 	}
 	return conflicts
+}
+
+// config_find_duplicate_key は key_map[btn] と同じ keycode を持つ btn 以外の GB ボタンを
+// 探す(T-keybindings「重複割当は allow + warn」用の純粋関数、単体テスト対象)。見つからなければ
+// ok=false。gb_button_order の順で最初に見つかったものを返す(2つ以上重複していても最初の
+// 1つだけ知らせれば十分、レアケースの表示を簡潔にするため)。
+config_find_duplicate_key :: proc(key_map: [core.Button]sdl.Keycode, btn: core.Button) -> (dup: core.Button, ok: bool) {
+	for b in gb_button_order {
+		if b == btn {
+			continue
+		}
+		if key_map[b] == key_map[btn] {
+			return b, true
+		}
+	}
+	return {}, false
+}
+
+// config_find_duplicate_pad は config_find_duplicate_key のコントローラー割当版。
+config_find_duplicate_pad :: proc(pad_map: [core.Button]sdl.GameControllerButton, btn: core.Button) -> (dup: core.Button, ok: bool) {
+	for b in gb_button_order {
+		if b == btn {
+			continue
+		}
+		if pad_map[b] == pad_map[btn] {
+			return b, true
+		}
+	}
+	return {}, false
 }
 
 @(private = "file")

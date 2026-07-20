@@ -341,9 +341,164 @@ test_config_apply_set_invalid_value_does_not_change_cfg :: proc(t: ^testing.T) {
 @(test)
 test_config_apply_set_unknown_key_rejected :: proc(t: ^testing.T) {
 	cfg := app.default_config()
-	ok, msg := app.config_apply_set(&cfg, "", "key_a", "x")
-	testing.expect(t, !ok, "key_*/pad_* はT12-4の対象外")
+	ok, msg := app.config_apply_set(&cfg, "", "bogus_setting", "x")
+	testing.expect(t, !ok, "scale/shader/volume/key_*/pad_* 以外は対象外")
 	testing.expect(t, strings.contains(msg, "不明"))
+}
+
+// --- config_apply_set の key_*/pad_* 拡張(T-keybindings) ---
+
+@(test)
+test_config_apply_set_key_updates_cfg_and_file :: proc(t: ^testing.T) {
+	tmp_dir, dir_err := os.temp_dir(context.allocator)
+	testing.expect(t, dir_err == nil)
+	defer delete(tmp_dir)
+
+	config_dir := fmt.tprintf("%s/bbl_config_apply_set_key_test", tmp_dir)
+	os.remove_all(config_dir)
+	testing.expect(t, os.make_directory(config_dir) == nil)
+	defer os.remove_all(config_dir)
+
+	path := app.config_path(config_dir)
+	default_content := app.config_render_default_ini()
+	defer delete(default_content)
+	testing.expect(t, os.write_entire_file(path, transmute([]u8)default_content) == nil)
+
+	cfg := app.default_config()
+	ok, msg := app.config_apply_set(&cfg, config_dir, "key_a", "C")
+	testing.expect(t, ok)
+	testing.expect(t, cfg.key_map[core.Button.A] == .c)
+	testing.expect(t, strings.contains(msg, "key_a"))
+
+	data, read_err := os.read_entire_file(path, context.allocator)
+	testing.expect(t, read_err == nil)
+	defer delete(data)
+	testing.expect(t, strings.contains(string(data), "key_a = C"))
+}
+
+@(test)
+test_config_apply_set_key_invalid_name_rejected :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	original := cfg.key_map[core.Button.A]
+	ok, msg := app.config_apply_set(&cfg, "", "key_a", "NotARealKeyName123")
+	testing.expect(t, !ok)
+	testing.expect(t, cfg.key_map[core.Button.A] == original)
+	testing.expect(t, strings.contains(msg, "key_a"))
+}
+
+@(test)
+test_config_apply_set_key_unknown_button_suffix_rejected :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	ok, msg := app.config_apply_set(&cfg, "", "key_zzz", "C")
+	testing.expect(t, !ok)
+	testing.expect(t, strings.contains(msg, "不明"))
+}
+
+@(test)
+test_config_apply_set_pad_updates_cfg :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	ok, msg := app.config_apply_set(&cfg, "", "pad_start", "guide")
+	testing.expect(t, ok)
+	testing.expect(t, cfg.pad_map[core.Button.Start] == .GUIDE)
+	testing.expect(t, strings.contains(msg, "pad_start"))
+}
+
+@(test)
+test_config_apply_set_pad_invalid_name_rejected :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	original := cfg.pad_map[core.Button.Start]
+	ok, msg := app.config_apply_set(&cfg, "", "pad_start", "not_a_real_button")
+	testing.expect(t, !ok)
+	testing.expect(t, cfg.pad_map[core.Button.Start] == original)
+}
+
+@(test)
+test_config_apply_set_key_round_trips_through_apply_raw :: proc(t: ^testing.T) {
+	// config_apply_set が受け付けた SDL 名を config_apply_raw(bbl.ini再読込)が復元できること
+	// (往復可能性、T-keybindings の候補リスト設計の前提)。
+	cfg := app.default_config()
+	ok, _ := app.config_apply_set(&cfg, "", "key_b", "Space")
+	testing.expect(t, ok)
+
+	raw := raw1("key_b", "Space")
+	defer delete(raw)
+	reloaded := app.config_apply_raw(app.default_config(), raw)
+	testing.expect(t, reloaded.key_map[core.Button.B] == cfg.key_map[core.Button.B])
+}
+
+@(test)
+test_config_apply_set_key_duplicate_allows_and_warns :: proc(t: ^testing.T) {
+	// T-keybindings「重複割当は allow + warn」: key_a を key_b と同じキーへ変えても適用は
+	// ブロックされず、成功メッセージに重複の警告が付く。
+	cfg := app.default_config()
+	testing.expect(t, cfg.key_map[core.Button.B] == .z)
+	ok, msg := app.config_apply_set(&cfg, "", "key_a", "Z")
+	testing.expect(t, ok, "重複は allow(ブロックしない)")
+	testing.expect(t, cfg.key_map[core.Button.A] == .z)
+	testing.expect(t, strings.contains(msg, "重複"))
+	testing.expect(t, strings.contains(msg, "key_b"))
+}
+
+@(test)
+test_config_apply_set_key_no_duplicate_has_no_warning :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	_, msg := app.config_apply_set(&cfg, "", "key_a", "C")
+	testing.expect(t, !strings.contains(msg, "重複"))
+}
+
+// --- config_find_duplicate_key / config_find_duplicate_pad(T-keybindings) ---
+
+@(test)
+test_config_find_duplicate_key_detects_overlap :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	cfg.key_map[core.Button.A] = cfg.key_map[core.Button.B] // 意図的に重複させる
+	dup, ok := app.config_find_duplicate_key(cfg.key_map, core.Button.A)
+	testing.expect(t, ok)
+	testing.expect(t, dup == core.Button.B)
+}
+
+@(test)
+test_config_find_duplicate_key_no_overlap :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	_, ok := app.config_find_duplicate_key(cfg.key_map, core.Button.A)
+	testing.expect(t, !ok, "デフォルト割当は全ボタンでキーが異なるはず")
+}
+
+@(test)
+test_config_find_duplicate_pad_detects_overlap :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	cfg.pad_map[core.Button.Start] = cfg.pad_map[core.Button.Select]
+	dup, ok := app.config_find_duplicate_pad(cfg.pad_map, core.Button.Start)
+	testing.expect(t, ok)
+	testing.expect(t, dup == core.Button.Select)
+}
+
+@(test)
+test_config_find_duplicate_pad_no_overlap :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	_, ok := app.config_find_duplicate_pad(cfg.pad_map, core.Button.Start)
+	testing.expect(t, !ok)
+}
+
+// --- button_from_key_name(T-keybindings、button_key_name の逆引き) ---
+
+@(test)
+test_button_from_key_name_all_valid_names :: proc(t: ^testing.T) {
+	names := [8]string{"up", "down", "left", "right", "a", "b", "start", "select"}
+	expected := [8]core.Button{.Up, .Down, .Left, .Right, .A, .B, .Start, .Select}
+	for name, i in names {
+		b, ok := app.button_from_key_name(name)
+		testing.expect(t, ok, fmt.tprintf("%s は有効なはず", name))
+		testing.expect(t, b == expected[i])
+	}
+}
+
+@(test)
+test_button_from_key_name_invalid_name :: proc(t: ^testing.T) {
+	_, ok := app.button_from_key_name("zzz")
+	testing.expect(t, !ok)
+	_, ok_empty := app.button_from_key_name("")
+	testing.expect(t, !ok_empty)
 }
 
 @(test)
