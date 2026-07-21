@@ -324,6 +324,17 @@ run_rom_window :: proc(opts: Options, cfg: Config, standalone_terminal := true) 
 						}
 						delete(eff.value)
 						menu_set_status(&menu_state, msg)
+					case .Reset:
+						// T-keybindings-reset: サブメニューのリセット行で Enter。menu_state.level に
+						// 応じて全割当をデフォルトへ戻す。key/pad は毎フレーム live_cfg のマップを
+						// 直接読むので即時反映される(apply_live_setting 不要)。
+						reset_msg: string
+						if menu_state.level == .Keyboard {
+							_, reset_msg = config_reset_key_bindings(&live_cfg, config_dir)
+						} else {
+							_, reset_msg = config_reset_pad_bindings(&live_cfg, config_dir)
+						}
+						menu_set_status(&menu_state, reset_msg)
 					case .Close:
 						menu_state_destroy(&menu_state)
 						game_view = .Now_Playing

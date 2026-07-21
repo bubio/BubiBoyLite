@@ -313,6 +313,72 @@ config_apply_set :: proc(cfg: ^Config, config_dir: string, key: string, value: s
 	return true, fmt.tprintf("%s = %s に更新しました%s", key, value, warning)
 }
 
+// config_reset_key_bindings は key_* 8個をまとめて default_key_map() の値へ戻す
+// (T-keybindings、設定メニューの「デフォルトに戻す」)。cfg.key_map を更新した上で、
+// config_dir が解決できていれば bbl.ini の key_* 8行を一度の config_patch_file 呼び出しで
+// まとめてパッチする(config_apply_set が1キーずつ書くのに対し、ここは8キー分の changes を
+// 一括で渡す)。SDL 名は sdl.GetKeyName で往復可能な形で書く(config_render_default_ini と同じ)。
+// config_dir が空(config_dir_path() 解決失敗)の場合は書き込みをスキップしメモリ上のみ反映し、
+// その旨をメッセージに含める(既存 config_apply_set の作法に合わせる)。
+config_reset_key_bindings :: proc(cfg: ^Config, config_dir: string) -> (ok: bool, message: string) {
+	defaults := default_key_map()
+	cfg.key_map = defaults
+
+	if strings.trim_space(config_dir) == "" {
+		return true, "キーボード割当をデフォルトに戻しました(設定の保存先が見つからないためメモリ上のみ反映)"
+	}
+	path := config_path(config_dir)
+	// changes は config_patch_file 内でファイルI/Oの前後にまたがって参照されるため、
+	// T9-6と同じ理由で context.allocator を使う(値も clone せず tprintf(temp) では危ういので
+	// GetKeyName の戻り(SDL内部の静的バッファ)を都度 string 化して格納する。config_patch_ini
+	// が書き出すまでの間 map が保持する必要があるが、GetKeyName の戻り cstring は呼び出しごとに
+	// 上書きされる同一バッファのため、ここで allocator 上の string へ確保して独立させる)。
+	changes := make(map[string]string, len(gb_button_order), context.allocator)
+	defer {
+		for k, v in changes {
+			delete(k)
+			delete(v)
+		}
+		delete(changes)
+	}
+	for b in gb_button_order {
+		key_name := fmt.aprintf("key_%s", button_key_name(b))
+		changes[key_name] = strings.clone(string(sdl.GetKeyName(defaults[b])))
+	}
+	if !config_patch_file(path, changes) {
+		return true, "キーボード割当をデフォルトに戻しましたが bbl.ini への書き込みに失敗しました"
+	}
+	return true, "キーボード割当をデフォルトに戻しました"
+}
+
+// config_reset_pad_bindings は config_reset_key_bindings のコントローラー割当版
+// (pad_* 8個を default_pad_map() の値へ戻す)。
+config_reset_pad_bindings :: proc(cfg: ^Config, config_dir: string) -> (ok: bool, message: string) {
+	defaults := default_pad_map()
+	cfg.pad_map = defaults
+
+	if strings.trim_space(config_dir) == "" {
+		return true, "コントローラー割当をデフォルトに戻しました(設定の保存先が見つからないためメモリ上のみ反映)"
+	}
+	path := config_path(config_dir)
+	changes := make(map[string]string, len(gb_button_order), context.allocator)
+	defer {
+		for k, v in changes {
+			delete(k)
+			delete(v)
+		}
+		delete(changes)
+	}
+	for b in gb_button_order {
+		pad_key_name := fmt.aprintf("pad_%s", button_key_name(b))
+		changes[pad_key_name] = strings.clone(string(sdl.GameControllerGetStringForButton(defaults[b])))
+	}
+	if !config_patch_file(path, changes) {
+		return true, "コントローラー割当をデフォルトに戻しましたが bbl.ini への書き込みに失敗しました"
+	}
+	return true, "コントローラー割当をデフォルトに戻しました"
+}
+
 @(private = "file")
 warn_invalid :: proc(key: string, value: string, reason: string) {
 	fmt.eprintfln("config: %s の値が不正です(%s): %q。デフォルト値を使用します。", key, reason, value)

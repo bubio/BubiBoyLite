@@ -669,16 +669,17 @@ test_menu_step_top_left_right_on_submenu_entry_is_none :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_menu_step_keyboard_up_down_clamps_over_8_buttons :: proc(t: ^testing.T) {
+test_menu_step_keyboard_up_down_clamps_over_9_items :: proc(t: ^testing.T) {
+	// gb_button_order の8ボタン + 末尾のリセット行 = 9項目(T-keybindings-reset)。
 	cfg := app.default_config()
 	m := app.Menu_State{level = .Keyboard}
 
 	eff := app.menu_step(&m, app.Key_Event{key = .Up}, cfg)
 	testing.expect(t, eff.op == .None && m.selected == 0)
 
-	m.selected = 7 // gb_button_order は8要素(Up/Down/Left/Right/A/B/Start/Select)
+	m.selected = app.BINDING_MENU_ITEM_COUNT - 1 // 末尾(リセット行、index=8)
 	eff = app.menu_step(&m, app.Key_Event{key = .Down}, cfg)
-	testing.expect(t, eff.op == .None && m.selected == 7)
+	testing.expect(t, eff.op == .None && m.selected == app.BINDING_MENU_ITEM_COUNT - 1)
 
 	m.selected = 3
 	eff = app.menu_step(&m, app.Key_Event{key = .Down}, cfg)
@@ -742,6 +743,79 @@ test_menu_state_destroy_resets_level_to_top :: proc(t: ^testing.T) {
 	m := app.Menu_State{level = .Keyboard, selected = 3}
 	app.menu_state_destroy(&m)
 	testing.expect(t, m.level == .Top)
+}
+
+// --- サブメニューの「デフォルトに戻す」行(T-keybindings-reset) ---
+
+@(test)
+test_menu_step_binding_down_reaches_reset_row :: proc(t: ^testing.T) {
+	// GB8ボタン + リセット行 = 9項目。selected は 8(=リセット行)まで到達し、そこで
+	// さらに Down は動かない。
+	cfg := app.default_config()
+	m := app.Menu_State{level = .Keyboard, selected = 7}
+
+	eff := app.menu_step(&m, app.Key_Event{key = .Down}, cfg)
+	testing.expect(t, eff.op == .Redraw && m.selected == app.BINDING_MENU_ITEM_COUNT - 1)
+	testing.expect(t, m.selected == 8, "リセット行のindexは8(=len(gb_button_order))")
+
+	eff = app.menu_step(&m, app.Key_Event{key = .Down}, cfg)
+	testing.expect(t, eff.op == .None && m.selected == 8)
+}
+
+@(test)
+test_menu_step_binding_reset_row_enter_returns_reset_op :: proc(t: ^testing.T) {
+	// リセット行で Enter → .Reset。level は不変(サブに留まる)。
+	cfg := app.default_config()
+	m := app.Menu_State{level = .Keyboard, selected = 8}
+	eff := app.menu_step(&m, app.Key_Event{key = .Enter}, cfg)
+	testing.expect(t, eff.op == .Reset)
+	testing.expect(t, m.level == .Keyboard, "リセット後もサブメニューに留まる")
+	testing.expect(t, m.selected == 8)
+
+	// Controller 側も同様。
+	m2 := app.Menu_State{level = .Controller, selected = 8}
+	eff2 := app.menu_step(&m2, app.Key_Event{key = .Enter}, cfg)
+	testing.expect(t, eff2.op == .Reset)
+	testing.expect(t, m2.level == .Controller)
+}
+
+@(test)
+test_menu_step_binding_reset_row_left_right_is_none :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	m := app.Menu_State{level = .Keyboard, selected = 8}
+	eff := app.menu_step(&m, app.Key_Event{key = .Right}, cfg)
+	testing.expect(t, eff.op == .None)
+	eff = app.menu_step(&m, app.Key_Event{key = .Left}, cfg)
+	testing.expect(t, eff.op == .None)
+}
+
+@(test)
+test_menu_step_binding_reset_row_escape_and_q_return_to_top :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+
+	m := app.Menu_State{level = .Keyboard, selected = 8}
+	eff := app.menu_step(&m, app.Key_Event{key = .Escape}, cfg)
+	testing.expect(t, eff.op == .Redraw)
+	testing.expect(t, m.level == .Top && m.selected == app.TOP_MENU_KEYBOARD_INDEX)
+
+	m2 := app.Menu_State{level = .Controller, selected = 8}
+	eff2 := app.menu_step(&m2, app.Key_Event{key = .Char, ch = 'q'}, cfg)
+	testing.expect(t, eff2.op == .Redraw)
+	testing.expect(t, m2.level == .Top && m2.selected == app.TOP_MENU_CONTROLLER_INDEX)
+}
+
+@(test)
+test_settings_menu_items_keyboard_has_reset_row_at_end :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	items := app.settings_menu_items(cfg, .Keyboard)
+	defer delete(items)
+	testing.expect_value(t, len(items), app.BINDING_MENU_ITEM_COUNT)
+	testing.expect_value(t, items[8].label, "デフォルトに戻す")
+
+	pad_items := app.settings_menu_items(cfg, .Controller)
+	defer delete(pad_items)
+	testing.expect_value(t, len(pad_items), app.BINDING_MENU_ITEM_COUNT)
+	testing.expect_value(t, pad_items[8].label, "デフォルトに戻す")
 }
 
 // --- cycle_next(T-keybindings、純粋関数) ---
@@ -841,7 +915,8 @@ test_settings_menu_items_keyboard_lists_all_gb_buttons :: proc(t: ^testing.T) {
 	items := app.settings_menu_items(cfg, .Keyboard)
 	defer delete(items)
 
-	testing.expect_value(t, len(items), 8)
+	// 8ボタン + リセット行 = 9項目(T-keybindings-reset)。GB8ボタンの中身は先頭8行。
+	testing.expect_value(t, len(items), app.BINDING_MENU_ITEM_COUNT)
 	testing.expect_value(t, items[0].label, "key_up")
 	testing.expect(t, strings.contains(items[0].info, "Up"))
 }
@@ -852,7 +927,7 @@ test_settings_menu_items_controller_lists_all_gb_buttons :: proc(t: ^testing.T) 
 	items := app.settings_menu_items(cfg, .Controller)
 	defer delete(items)
 
-	testing.expect_value(t, len(items), 8)
+	testing.expect_value(t, len(items), app.BINDING_MENU_ITEM_COUNT)
 	testing.expect_value(t, items[0].label, "pad_up")
 	testing.expect(t, strings.contains(items[0].info, "dpup"))
 }

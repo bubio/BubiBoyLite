@@ -871,6 +871,11 @@ TOP_MENU_ITEM_COUNT :: 5
 TOP_MENU_KEYBOARD_INDEX :: 3
 TOP_MENU_CONTROLLER_INDEX :: 4
 
+// Keyboard/Controller レベルの項目数: GB8ボタン(gb_button_order)+ 末尾の
+// 「デフォルトに戻す」行1つ = 9項目(T-keybindings-reset)。リセット行の index は
+// len(gb_button_order)(=8、= BINDING_MENU_ITEM_COUNT-1)。
+BINDING_MENU_ITEM_COUNT :: len(gb_button_order) + 1
+
 Menu_State :: struct {
 	level:    Menu_Level, // 現在の階層(T-keybindings)。ゼロ値は .Top
 	selected: int, // 現在のレベルの項目リスト内インデックス(Top: 0..TOP_MENU_ITEM_COUNT-1、
@@ -883,6 +888,9 @@ Menu_Op :: enum {
 	Redraw, // 選択が動いた・階層が変わった等、再描画だけ必要
 	Adjust, // key/value で config_apply_set を呼ぶこと(value は呼び出し側が delete する)
 	Close, // メニューを閉じること(Topでのみ発生。Keyboard/ControllerのEsc/q/EnterはTopへ戻るだけ)
+	Reset, // Keyboard/Controller のリセット行で Enter。呼び出し側は m.level を見て
+	// config_reset_key_bindings / config_reset_pad_bindings を呼ぶ(level は変えずサブに留まる、
+	// T-keybindings-reset)。key/value は使わない。
 }
 
 Menu_Effect :: struct {
@@ -1116,14 +1124,18 @@ menu_step_top :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator := c
 	return Menu_Effect{op = .None}
 }
 
-// menu_step_binding はKeyboard/Controllerレベル(GB8ボタンの key_*/pad_* 割当一覧)の遷移。
-// ↑↓=選択移動(clamp)。←→=選択中のGBボタンのSDL割当を候補リストでサイクル(Adjust、
-// menu_adjust_binding参照)。Esc/q/Enterは(TopのようにCloseではなく)Topへ戻るだけ:
-// selectedは元のサブメニュー入口のindex(TOP_MENU_KEYBOARD_INDEX/TOP_MENU_CONTROLLER_INDEX)
-// へ復元する(サブから一気に閉じない、実装計画の設計どおり)。
+// menu_step_binding はKeyboard/Controllerレベル(GB8ボタンの key_*/pad_* 割当一覧+末尾の
+// 「デフォルトに戻す」行)の遷移。
+// ↑↓=選択移動(clamp、リセット行=index len(gb_button_order) も含む)。
+// ←→=key_*/pad_* 行なら選択中のGBボタンのSDL割当を候補リストでサイクル(Adjust)、
+// リセット行なら None(サイクル対象外)。
+// Enter=key_*/pad_* 行なら従来どおり Top へ戻る(既存挙動維持)。リセット行なら .Reset を返し
+// level は変えない(リセット後もサブに留まり、値がデフォルトに戻ったのが見える、
+// T-keybindings-reset)。Esc/q=リセット行を含めどの行でも従来どおり Top へ戻る。
 @(private = "file")
 menu_step_binding :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator := context.allocator) -> Menu_Effect {
 	back_index := m.level == .Keyboard ? TOP_MENU_KEYBOARD_INDEX : TOP_MENU_CONTROLLER_INDEX
+	is_reset_row := m.selected == len(gb_button_order) // 末尾のリセット行(index=8)
 	#partial switch ev.key {
 	case .Up:
 		if m.selected > 0 {
@@ -1132,12 +1144,15 @@ menu_step_binding :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator 
 		}
 		return Menu_Effect{op = .None}
 	case .Down:
-		if m.selected < len(gb_button_order) - 1 {
+		if m.selected < BINDING_MENU_ITEM_COUNT - 1 {
 			m.selected += 1
 			return Menu_Effect{op = .Redraw}
 		}
 		return Menu_Effect{op = .None}
 	case .Left, .Right:
+		if is_reset_row {
+			return Menu_Effect{op = .None} // リセット行はサイクル対象外
+		}
 		delta := ev.key == .Right ? 1 : -1
 		btn := gb_button_order[m.selected]
 		value, changed := menu_adjust_binding(cfg, m.level, btn, delta, allocator)
@@ -1145,7 +1160,14 @@ menu_step_binding :: proc(m: ^Menu_State, ev: Key_Event, cfg: Config, allocator 
 			return Menu_Effect{op = .None}
 		}
 		return Menu_Effect{op = .Adjust, key = menu_binding_key_name(m.level, btn), value = value}
-	case .Escape, .Enter:
+	case .Enter:
+		if is_reset_row {
+			return Menu_Effect{op = .Reset} // level は変えずサブに留まる(呼び出し側が m.level で判断)
+		}
+		m.level = .Top
+		m.selected = back_index
+		return Menu_Effect{op = .Redraw}
+	case .Escape:
 		m.level = .Top
 		m.selected = back_index
 		return Menu_Effect{op = .Redraw}
@@ -1327,11 +1349,13 @@ settings_menu_items :: proc(cfg: Config, level: Menu_Level, allocator := context
 		items[TOP_MENU_CONTROLLER_INDEX] = List_Item{label = "コントローラー割当", info = "▸"}
 		return items
 	case .Keyboard, .Controller:
-		items := make([]List_Item, len(gb_button_order), allocator)
+		// GB8ボタン + 末尾の「デフォルトに戻す」行(T-keybindings-reset)。
+		items := make([]List_Item, BINDING_MENU_ITEM_COUNT, allocator)
 		for b, i in gb_button_order {
 			name_str := level == .Keyboard ? string(sdl.GetKeyName(cfg.key_map[b])) : string(sdl.GameControllerGetStringForButton(cfg.pad_map[b]))
 			items[i] = List_Item{label = menu_binding_key_name(level, b), info = fmt.tprintf("◂ %s ▸", name_str)}
 		}
+		items[len(gb_button_order)] = List_Item{label = "デフォルトに戻す", info = "Enter で実行"}
 		return items
 	}
 	return nil
@@ -1356,7 +1380,7 @@ settings_menu_hint :: proc(level: Menu_Level) -> string {
 	case .Top:
 		return "↑↓ 選択  ←→ 値を変更  Enter 開く  Esc 閉じる"
 	case .Keyboard, .Controller:
-		return "↑↓ 選択  ←→ 変更  Esc 戻る"
+		return "↑↓ 選択  ←→ 変更  Enter 実行/戻る  Esc 戻る"
 	}
 	return ""
 }
@@ -1409,6 +1433,17 @@ tui_run_settings_menu :: proc(cfg: ^Config, config_dir: string) {
 		case .Adjust:
 			_, msg := config_apply_set(cfg, config_dir, eff.key, eff.value)
 			delete(eff.value)
+			status = msg
+			dirty = true
+		case .Reset:
+			// T-keybindings-reset: サブメニューのリセット行で Enter。m.level に応じて
+			// キーボード/コントローラーの全割当をデフォルトへ戻す(level は変えずサブに留まる)。
+			msg: string
+			if m.level == .Keyboard {
+				_, msg = config_reset_key_bindings(cfg, config_dir)
+			} else {
+				_, msg = config_reset_pad_bindings(cfg, config_dir)
+			}
 			status = msg
 			dirty = true
 		case .Close:

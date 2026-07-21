@@ -501,6 +501,70 @@ test_button_from_key_name_invalid_name :: proc(t: ^testing.T) {
 	testing.expect(t, !ok_empty)
 }
 
+// --- config_reset_key_bindings / config_reset_pad_bindings(T-keybindings-reset) ---
+
+@(test)
+test_config_reset_key_bindings_restores_defaults_and_writes_file :: proc(t: ^testing.T) {
+	tmp_dir, dir_err := os.temp_dir(context.allocator)
+	testing.expect(t, dir_err == nil)
+	defer delete(tmp_dir)
+
+	config_dir := fmt.tprintf("%s/bbl_config_reset_key_test", tmp_dir)
+	os.remove_all(config_dir)
+	testing.expect(t, os.make_directory(config_dir) == nil)
+	defer os.remove_all(config_dir)
+
+	path := app.config_path(config_dir)
+	default_content := app.config_render_default_ini()
+	defer delete(default_content)
+	testing.expect(t, os.write_entire_file(path, transmute([]u8)default_content) == nil)
+
+	// まず割当を非デフォルトへ変えてから、リセットで戻ることを確認する。
+	cfg := app.default_config()
+	cfg.key_map[core.Button.A] = .c
+	cfg.key_map[core.Button.B] = .v
+
+	ok, msg := app.config_reset_key_bindings(&cfg, config_dir)
+	testing.expect(t, ok)
+	testing.expect(t, strings.contains(msg, "キーボード割当をデフォルトに戻しました"))
+
+	defaults := app.default_key_map()
+	testing.expect(t, cfg.key_map == defaults, "cfg.key_map が default_key_map と一致するはず")
+
+	// bbl.ini に往復可能な SDL 名で書き戻されていること(config_apply_raw で読み直して確認)。
+	data, read_err := os.read_entire_file(path, context.allocator)
+	testing.expect(t, read_err == nil)
+	defer delete(data)
+	raw := app.config_parse_ini(string(data))
+	defer delete(raw)
+	reloaded := app.config_apply_raw(app.default_config(), raw)
+	testing.expect(t, reloaded.key_map == defaults, "書き戻した SDL 名が往復し default に一致するはず")
+}
+
+@(test)
+test_config_reset_pad_bindings_restores_defaults :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	cfg.pad_map[core.Button.Start] = .GUIDE
+	cfg.pad_map[core.Button.A] = .Y
+
+	// config_dir 空 → メモリ上のみ反映＋その旨をメッセージに含める。
+	ok, msg := app.config_reset_pad_bindings(&cfg, "")
+	testing.expect(t, ok)
+	testing.expect(t, cfg.pad_map == app.default_pad_map())
+	testing.expect(t, strings.contains(msg, "コントローラー割当をデフォルトに戻しました"))
+	testing.expect(t, strings.contains(msg, "メモリ上のみ"))
+}
+
+@(test)
+test_config_reset_key_bindings_empty_dir_updates_memory_only :: proc(t: ^testing.T) {
+	cfg := app.default_config()
+	cfg.key_map[core.Button.A] = .c
+	ok, msg := app.config_reset_key_bindings(&cfg, "")
+	testing.expect(t, ok)
+	testing.expect(t, cfg.key_map == app.default_key_map())
+	testing.expect(t, strings.contains(msg, "メモリ上のみ"))
+}
+
 @(test)
 test_config_apply_set_empty_config_dir_still_updates_cfg :: proc(t: ^testing.T) {
 	cfg := app.default_config()
