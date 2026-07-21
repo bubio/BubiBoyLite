@@ -2,8 +2,10 @@
 
 A CLI-centric Game Boy Color emulator written in Odin + SDL2. The executable is named `bbl`.
 
+[![License](https://img.shields.io/github/license/bubio/BubiBoyLite)](https://github.com/bubio/BubiBoyLite/blob/main/LICENSE)
 [![Build Linux](https://github.com/bubio/BubiBoyLite/actions/workflows/build-linux.yml/badge.svg)](https://github.com/bubio/BubiBoyLite/actions/workflows/build-linux.yml)
 [![Build macOS](https://github.com/bubio/BubiBoyLite/actions/workflows/build-macos.yml/badge.svg)](https://github.com/bubio/BubiBoyLite/actions/workflows/build-macos.yml)
+[![Downloads](https://img.shields.io/github/downloads/bubio/BubiBoyLite/total.svg)](https://github.com/bubio/BubiBoyLite/releases/latest)
 
 ## Overview
 
@@ -11,6 +13,8 @@ BubiBoyLite plays Game Boy and Game Boy Color games. Launch it with a ROM to jum
 straight into a game, or run it with no arguments to open a terminal UI (TUI) where
 you can browse and start ROMs, all without leaving your terminal. Game controllers are
 supported alongside the keyboard.
+
+<p align="center"><img src="docs/Screenshot.png"></p>
 
 ## Supported platforms
 
